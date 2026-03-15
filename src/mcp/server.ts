@@ -17,7 +17,7 @@ import { homedir } from "node:os";
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
-const DEFAULT_API_URL = "https://api.agent-hive.dev";
+const DEFAULT_API_URL = "https://agent-hive-production.up.railway.app";
 const CONFIG_DIR = join(homedir(), ".agent-hive");
 const CONFIG_PATH = join(CONFIG_DIR, "config.json");
 const LOCK_PATH = join(CONFIG_DIR, ".provisioning.lock");
