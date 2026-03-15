@@ -90,10 +90,9 @@ export const knowledgeNodes = pgTable(
     updatedAt: timestamp("updated_at").defaultNow(),
   },
   (table) => [
-    index("knowledge_nodes_search_vec_idx")
-      .using("gin", sql`${table.searchVec}`)
-      .concurrently(),
-    index("knowledge_nodes_tags_idx").using("gin", table.tags),
+    // GIN indexes created via raw SQL after push:
+    // CREATE INDEX knowledge_nodes_search_vec_idx ON knowledge_nodes USING gin (search_vec::tsvector);
+    // CREATE INDEX knowledge_nodes_tags_idx ON knowledge_nodes USING gin (tags array_ops);
     index("knowledge_nodes_agent_id_idx").on(table.agentId),
     index("knowledge_nodes_type_idx").on(table.type),
     index("knowledge_nodes_trust_level_idx").on(table.trustLevel),
