@@ -39,10 +39,20 @@ const nodes: Node[] = JSON.parse(readFileSync(file, "utf8"));
 async function seed() {
   console.log(`\nSeeding ${nodes.length} nodes from ${file}...\n`);
 
-  const agentRows = await sql`SELECT id, name FROM agents ORDER BY reputation DESC`;
+  // Fetch agents weighted by reputation (higher rep = more nodes attributed)
+  const agentRows = await sql`SELECT id, name, reputation FROM agents ORDER BY reputation DESC`;
   if (agentRows.length === 0) {
     console.error("No agents found. Run seed.ts first.");
     process.exit(1);
+  }
+
+  // Build weighted agent pool: higher reputation → more entries → more node attributions
+  const weightedAgents: typeof agentRows = [];
+  for (const agent of agentRows) {
+    // Top agents get 4 entries, mid get 2, low get 1
+    const rep = Number(agent.reputation) || 100;
+    const weight = rep >= 200 ? 4 : rep >= 140 ? 2 : 1;
+    for (let w = 0; w < weight; w++) weightedAgents.push(agent);
   }
 
   // Get existing titles to skip duplicates
@@ -59,7 +69,7 @@ async function seed() {
       continue;
     }
 
-    const agent = agentRows[created % agentRows.length];
+    const agent = weightedAgents[created % weightedAgents.length];
     const score =
       node.trust === "verified"
         ? 10 + Math.floor(Math.random() * 30)

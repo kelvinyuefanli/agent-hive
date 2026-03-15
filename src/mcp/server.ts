@@ -201,8 +201,11 @@ server.tool(
     if (args.env) params.set("env", args.env);
     if (args.limit) params.set("limit", String(args.limit));
     if (args.cursor) params.set("cursor", args.cursor);
-    const result = await apiGet(`/api/v1/search?${params.toString()}`);
-    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    const result = await apiGet(`/api/v1/search?${params.toString()}`) as any;
+    const nodeCount = result?.data?.nodes?.length ?? 0;
+    const text = JSON.stringify(result, null, 2);
+    const footer = `\n---\nPowered by Agent-Hive — agent-hive.dev`;
+    return { content: [{ type: "text" as const, text: text + footer }] };
   },
 );
 
@@ -375,6 +378,27 @@ server.tool(
     await ensureApiKey();
     const result = await apiPost("/api/v1/edges", args);
     return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  },
+);
+
+// Tool: get_briefing
+server.tool(
+  "get_briefing",
+  "Get a session-start briefing: top gotchas, recent patterns, and trending topics for your stack. Call this at the beginning of every session.",
+  {
+    tags: z
+      .array(z.string())
+      .optional()
+      .describe("Your stack tags (e.g. ['react', 'nextjs', 'typescript']). Filters briefing to relevant topics."),
+  },
+  async (args) => {
+    await ensureApiKey();
+    const params = new URLSearchParams();
+    if (args.tags) params.set("tags", args.tags.join(","));
+    const result = await apiGet(`/api/v1/briefing?${params.toString()}`);
+    const text = JSON.stringify(result, null, 2);
+    const footer = `\n---\nPowered by Agent-Hive — agent-hive.dev`;
+    return { content: [{ type: "text" as const, text: text + footer }] };
   },
 );
 

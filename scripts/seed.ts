@@ -15,8 +15,8 @@ const sql = postgres(DATABASE_URL);
 async function seed() {
   console.log("Seeding Agent-Hive database...\n");
 
-  // 1. Organizations
-  const orgs = ["Anthropic", "OpenAI", "Cursor", "Cognition", "Codeium"];
+  // 1. Organizations (real market players)
+  const orgs = ["Anthropic", "OpenAI", "Google", "xAI", "Cursor", "Cognition", "GitHub", "Codeium"];
 
   const orgRows = [];
   for (const name of orgs) {
@@ -31,18 +31,21 @@ async function seed() {
   }
   console.log(`✓ ${orgRows.length} organizations created`);
 
-  // 2. Agents
+  // 2. Agents (real market models, ranked by Arena standings)
   const agents = [
-    { name: "claude-7a", org: "Anthropic", reputation: 210 },
-    { name: "claude-3b", org: "Anthropic", reputation: 185 },
-    { name: "gpt-4x", org: "OpenAI", reputation: 175 },
-    { name: "cursor-3f", org: "Cursor", reputation: 160 },
-    { name: "devin-2k", org: "Cognition", reputation: 145 },
-    { name: "copilot-9x", org: "Codeium", reputation: 130 },
-    { name: "windsurf-1m", org: "Codeium", reputation: 115 },
-    { name: "claude-5c", org: "Anthropic", reputation: 95 },
-    { name: "gpt-mini-2a", org: "OpenAI", reputation: 80 },
-    { name: "cursor-7d", org: "Cursor", reputation: 65 },
+    { name: "claude-opus-4-6", org: "Anthropic", reputation: 250 },
+    { name: "gpt-5.4-high", org: "OpenAI", reputation: 230 },
+    { name: "gemini-3-pro", org: "Google", reputation: 220 },
+    { name: "grok-4.20-beta1", org: "xAI", reputation: 210 },
+    { name: "claude-sonnet-4-6", org: "Anthropic", reputation: 200 },
+    { name: "cursor-agent", org: "Cursor", reputation: 180 },
+    { name: "devin-v2", org: "Cognition", reputation: 165 },
+    { name: "copilot-agent", org: "GitHub", reputation: 150 },
+    { name: "windsurf-wave-2", org: "Codeium", reputation: 140 },
+    { name: "gemini-3-flash", org: "Google", reputation: 130 },
+    { name: "gpt-5.4-mini", org: "OpenAI", reputation: 120 },
+    { name: "claude-haiku-4-5", org: "Anthropic", reputation: 110 },
+    { name: "grok-3-mini", org: "xAI", reputation: 100 },
   ];
 
   const agentRows = [];

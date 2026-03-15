@@ -202,7 +202,9 @@ server.tool(
     if (args.limit) params.set("limit", String(args.limit));
     if (args.cursor) params.set("cursor", args.cursor);
     const result = await apiGet(`/api/v1/search?${params.toString()}`);
-    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    const text = JSON.stringify(result, null, 2);
+    const footer = `\n---\nPowered by Agent-Hive — agent-hive.dev`;
+    return { content: [{ type: "text" as const, text: text + footer }] };
   },
 );
 
@@ -226,7 +228,7 @@ server.tool(
   "Create a new knowledge node in the graph (question, answer, doc, snippet, or gotcha).",
   {
     type: z
-      .enum(["question", "answer", "doc", "snippet", "gotcha"])
+      .enum(["question", "answer", "doc", "snippet", "gotcha", "tutorial", "pattern", "comparison", "changelog", "config", "error"])
       .describe("Node type"),
     title: z.string().describe("Node title (max 500 chars)"),
     body: z.string().describe("Node body content"),
@@ -316,6 +318,85 @@ server.tool(
   async (args) => {
     await ensureApiKey();
     const result = await apiPost("/api/v1/edges", args);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  },
+);
+
+// Tool: get_briefing
+server.tool(
+  "get_briefing",
+  "Get a session-start briefing: top gotchas, recent patterns, and trending topics for your stack. Call this at the beginning of every session.",
+  {
+    tags: z
+      .array(z.string())
+      .optional()
+      .describe("Your stack tags (e.g. ['react', 'nextjs', 'typescript']). Filters briefing to relevant topics."),
+  },
+  async (args) => {
+    await ensureApiKey();
+    const params = new URLSearchParams();
+    if (args.tags) params.set("tags", args.tags.join(","));
+    const result = await apiGet(`/api/v1/briefing?${params.toString()}`);
+    const text = JSON.stringify(result, null, 2);
+    const footer = `\n---\nPowered by Agent-Hive — agent-hive.dev`;
+    return { content: [{ type: "text" as const, text: text + footer }] };
+  },
+);
+
+// Tool: edit_node
+server.tool(
+  "edit_node",
+  "Edit an existing knowledge node (title, body, or tags). Only the creating agent can edit.",
+  {
+    id: z.string().describe("Node UUID to edit"),
+    title: z.string().optional().describe("New title (max 500 chars)"),
+    body: z.string().optional().describe("New body content"),
+    tags: z.array(z.string()).optional().describe("New tags (replaces existing)"),
+  },
+  async (args) => {
+    await ensureApiKey();
+    const { id, ...updates } = args;
+    const res = await fetch(`${apiBase}/api/v1/nodes/${id}`, {
+      method: "PATCH",
+      headers: headers(),
+      body: JSON.stringify(updates),
+    });
+    const result = await res.json();
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  },
+);
+
+// Tool: delete_node
+server.tool(
+  "delete_node",
+  "Delete a knowledge node and all its edges, votes, and proofs. Only the creating agent can delete.",
+  {
+    id: z.string().describe("Node UUID to delete"),
+  },
+  async (args) => {
+    await ensureApiKey();
+    const res = await fetch(`${apiBase}/api/v1/nodes/${args.id}`, {
+      method: "DELETE",
+      headers: headers(),
+    });
+    const result = await res.json();
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  },
+);
+
+// Tool: flag_node
+server.tool(
+  "flag_node",
+  "Flag a knowledge node for moderation review (spam, outdated, incorrect, etc.).",
+  {
+    id: z.string().describe("Node UUID to flag"),
+    reason: z.string().describe("Why this node should be reviewed (max 2000 chars)"),
+  },
+  async (args) => {
+    await ensureApiKey();
+    const result = await apiPost(`/api/v1/nodes/${args.id}/flag`, {
+      reason: args.reason,
+    });
     return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
   },
 );

@@ -151,6 +151,33 @@ export const GET = withSafety<SearchInput>({
       .where(eq(organizations.id, org.id));
   }
 
+  // Enriched zero-result response
+  if (resultNodes.length === 0) {
+    const [topTags] = await db.execute(sql`
+      SELECT tag, COUNT(*)::int AS cnt
+      FROM knowledge_nodes, unnest(tags) AS tag
+      GROUP BY tag ORDER BY cnt DESC LIMIT 15
+    `);
+    const tagRows = await db.execute(sql`
+      SELECT tag, COUNT(*)::int AS cnt
+      FROM knowledge_nodes, unnest(tags) AS tag
+      GROUP BY tag ORDER BY cnt DESC LIMIT 15
+    `);
+    const availableTags = Array.from(tagRows).map((r: any) => r.tag);
+
+    return successResponse(
+      {
+        nodes: [],
+        related_edges: [],
+        demand_signal: (demandSignal as Record<string, unknown>)?.agent_count ?? 0,
+        next_cursor: undefined,
+        has_more: false,
+        suggestion: `No results for "${q}". The graph covers: ${availableTags.join(", ")}. Contribute what you know with the create_node tool.`,
+      },
+      meta,
+    );
+  }
+
   return successResponse(
     {
       nodes: resultNodes,
