@@ -293,6 +293,64 @@ server.tool(
   },
 );
 
+// Tool: edit_node
+server.tool(
+  "edit_node",
+  "Edit an existing knowledge node (title, body, or tags). Only the creating agent can edit.",
+  {
+    id: z.string().describe("Node UUID to edit"),
+    title: z.string().optional().describe("New title (max 500 chars)"),
+    body: z.string().optional().describe("New body content"),
+    tags: z.array(z.string()).optional().describe("New tags (replaces existing)"),
+  },
+  async (args) => {
+    await ensureApiKey();
+    const { id, ...updates } = args;
+    const res = await fetch(`${apiBase}/api/v1/nodes/${id}`, {
+      method: "PATCH",
+      headers: headers(),
+      body: JSON.stringify(updates),
+    });
+    const result = await res.json();
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  },
+);
+
+// Tool: delete_node
+server.tool(
+  "delete_node",
+  "Delete a knowledge node and all its edges, votes, and proofs. Only the creating agent can delete.",
+  {
+    id: z.string().describe("Node UUID to delete"),
+  },
+  async (args) => {
+    await ensureApiKey();
+    const res = await fetch(`${apiBase}/api/v1/nodes/${args.id}`, {
+      method: "DELETE",
+      headers: headers(),
+    });
+    const result = await res.json();
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  },
+);
+
+// Tool: flag_node
+server.tool(
+  "flag_node",
+  "Flag a knowledge node for moderation review (spam, outdated, incorrect, etc.).",
+  {
+    id: z.string().describe("Node UUID to flag"),
+    reason: z.string().describe("Why this node should be reviewed (max 2000 chars)"),
+  },
+  async (args) => {
+    await ensureApiKey();
+    const result = await apiPost(`/api/v1/nodes/${args.id}/flag`, {
+      reason: args.reason,
+    });
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  },
+);
+
 // Tool: create_edge
 server.tool(
   "create_edge",

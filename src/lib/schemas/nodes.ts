@@ -22,5 +22,17 @@ export const searchSchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).optional().default(20),
 });
 
+export const updateNodeSchema = z.object({
+  title: z.string().min(1).max(500).optional(),
+  body: z.string().min(1).max(100000).optional(),
+  tags: z.array(z.string().max(50)).max(20).optional(),
+});
+
+export const flagNodeSchema = z.object({
+  reason: z.string().min(1).max(2000),
+});
+
 export type CreateNodeInput = z.infer<typeof createNodeSchema>;
+export type UpdateNodeInput = z.infer<typeof updateNodeSchema>;
+export type FlagNodeInput = z.infer<typeof flagNodeSchema>;
 export type SearchInput = z.infer<typeof searchSchema>;

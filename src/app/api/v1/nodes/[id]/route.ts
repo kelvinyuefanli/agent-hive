@@ -1,9 +1,11 @@
+import { NextResponse } from "next/server";
 import { withSafety } from "@/lib/safety/middleware";
 import { db } from "@/lib/db";
-import { knowledgeNodes, knowledgeEdges } from "@/lib/db/schema";
+import { knowledgeNodes, knowledgeEdges, votes, executionProofs, moderationFlags } from "@/lib/db/schema";
 import { successResponse } from "@/lib/utils/response";
-import { NotFoundError } from "@/lib/utils/errors";
+import { NotFoundError, ForbiddenError } from "@/lib/utils/errors";
 import { eq, sql, or } from "drizzle-orm";
+import { updateNodeSchema, type UpdateNodeInput } from "@/lib/schemas/nodes";
 
 export const GET = withSafety({
   requireAuth: true,
@@ -101,4 +103,82 @@ export const GET = withSafety({
       freshness: node.freshness ?? 1.0,
     },
   );
+});
+
+// ─── PATCH: Update a node (only by the creating agent) ─────────────────────
+
+export const PATCH = withSafety<UpdateNodeInput>({
+  schema: updateNodeSchema,
+  requireAuth: true,
+})(async ({ body, agent }, ctx) => {
+  const { id } = (ctx as { params: Promise<{ id: string }> }).params
+    ? await (ctx as { params: Promise<{ id: string }> }).params
+    : { id: "" };
+
+  const [node] = await db
+    .select()
+    .from(knowledgeNodes)
+    .where(eq(knowledgeNodes.id, id))
+    .limit(1);
+
+  if (!node) throw new NotFoundError("Node not found");
+  if (node.agentId !== agent!.id) {
+    throw new ForbiddenError("Only the creating agent can edit this node");
+  }
+
+  const updates: Record<string, unknown> = {};
+  if (body.title !== undefined) updates.title = body.title;
+  if (body.body !== undefined) updates.body = body.body;
+  if (body.tags !== undefined) updates.tags = body.tags;
+
+  if (Object.keys(updates).length === 0) {
+    return successResponse(node);
+  }
+
+  // Rebuild search vector if title or body changed
+  if (body.title !== undefined || body.body !== undefined) {
+    const newTitle = body.title ?? node.title;
+    const newBody = body.body ?? node.body;
+    (updates as any).searchVec = sql`to_tsvector('english', ${newTitle} || ' ' || ${newBody})`;
+  }
+
+  const [updated] = await db
+    .update(knowledgeNodes)
+    .set(updates)
+    .where(eq(knowledgeNodes.id, id))
+    .returning();
+
+  return successResponse(updated);
+});
+
+// ─── DELETE: Remove a node (only by the creating agent) ────────────────────
+
+export const DELETE = withSafety({
+  requireAuth: true,
+})(async ({ agent }, ctx) => {
+  const { id } = (ctx as { params: Promise<{ id: string }> }).params
+    ? await (ctx as { params: Promise<{ id: string }> }).params
+    : { id: "" };
+
+  const [node] = await db
+    .select()
+    .from(knowledgeNodes)
+    .where(eq(knowledgeNodes.id, id))
+    .limit(1);
+
+  if (!node) throw new NotFoundError("Node not found");
+  if (node.agentId !== agent!.id) {
+    throw new ForbiddenError("Only the creating agent can delete this node");
+  }
+
+  // Delete related data first (edges, votes, proofs, flags)
+  await db.delete(knowledgeEdges).where(
+    or(eq(knowledgeEdges.sourceId, id), eq(knowledgeEdges.targetId, id))
+  );
+  await db.delete(votes).where(eq(votes.nodeId, id));
+  await db.delete(executionProofs).where(eq(executionProofs.nodeId, id));
+  await db.delete(moderationFlags).where(eq(moderationFlags.nodeId, id));
+  await db.delete(knowledgeNodes).where(eq(knowledgeNodes.id, id));
+
+  return NextResponse.json({ data: { deleted: true, id } });
 });
