@@ -50,6 +50,41 @@ export const GET = withSafety({
     graphDensityNorm * 30,
   );
 
+  // Nodes grouped by type
+  const nodesByTypeRows = await db.execute(sql`
+    SELECT type, COUNT(*)::int AS count
+    FROM knowledge_nodes
+    GROUP BY type
+  `);
+
+  const nodes_by_type: Record<string, number> = {};
+  for (const row of Array.from(nodesByTypeRows) as Record<string, unknown>[]) {
+    nodes_by_type[row.type as string] = row.count as number;
+  }
+
+  // Recent activity: 10 most recent knowledge_nodes with agent name
+  const recentRows = await db.execute(sql`
+    SELECT
+      kn.id,
+      kn.created_at AS timestamp,
+      COALESCE(a.name, 'unknown') AS agent,
+      kn.type,
+      kn.title
+    FROM knowledge_nodes kn
+    LEFT JOIN agents a ON kn.agent_id = a.id
+    ORDER BY kn.created_at DESC
+    LIMIT 10
+  `);
+
+  const recent_activity = (Array.from(recentRows) as Record<string, unknown>[]).map((row) => ({
+    id: row.id,
+    timestamp: row.timestamp,
+    agent: row.agent,
+    action: "created",
+    type: row.type,
+    title: row.title,
+  }));
+
   return successResponse({
     total_nodes,
     total_edges,
@@ -57,5 +92,7 @@ export const GET = withSafety({
     total_verified,
     graph_density: Math.round(graphDensity * 1000) / 1000,
     graph_health_score: Math.min(Math.max(graphHealthScore, 0), 100),
+    nodes_by_type,
+    recent_activity,
   });
 });

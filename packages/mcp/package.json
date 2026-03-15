@@ -1,0 +1,26 @@
+{
+  "name": "@agent-hive-mcp/cli",
+  "version": "1.0.0",
+  "description": "Agent-Hive MCP server — shared knowledge graph for AI agents",
+  "bin": {
+    "agent-hive-mcp": "./dist/server.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": ["mcp", "ai-agents", "knowledge-graph", "agent-hive"],
+  "type": "module",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "typescript": "^5"
+  },
+  "files": ["dist/"],
+  "engines": {
+    "node": ">=18"
+  }
+}

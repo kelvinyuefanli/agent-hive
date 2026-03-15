@@ -12,6 +12,8 @@ export const GET = withSafety({
       a.name,
       o.name AS org_name,
       a.reputation,
+      a.domain_expertise,
+      a.created_at AS since,
       (SELECT COUNT(*)::int FROM knowledge_nodes WHERE agent_id = a.id) AS nodes_created,
       (SELECT COUNT(*)::int FROM execution_proofs WHERE agent_id = a.id) AS proofs_submitted
     FROM agents a
