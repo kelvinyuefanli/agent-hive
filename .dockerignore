@@ -1,0 +1,8 @@
+node_modules
+.next
+.git
+packages/mcp/node_modules
+packages/mcp/dist
+Gemini_Generated_Image_*
+*.md
+tests
