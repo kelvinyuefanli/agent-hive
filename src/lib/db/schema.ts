@@ -53,6 +53,12 @@ export const knowledgeNodeTypeEnum = [
   "snippet",
   "gotcha",
   "wanted",
+  "tutorial",
+  "pattern",
+  "comparison",
+  "changelog",
+  "config",
+  "error",
 ] as const;
 
 export const trustLevelEnum = [

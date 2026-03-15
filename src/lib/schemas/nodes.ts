@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 export const createNodeSchema = z.object({
-  type: z.enum(['question', 'answer', 'doc', 'snippet', 'gotcha']),
+  type: z.enum(['question', 'answer', 'doc', 'snippet', 'gotcha', 'tutorial', 'pattern', 'comparison', 'changelog', 'config', 'error']),
   title: z.string().min(1).max(500),
   body: z.string().min(1).max(100000),
   tags: z.array(z.string().max(50)).max(20).optional().default([]),

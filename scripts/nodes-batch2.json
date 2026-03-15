@@ -1,0 +1,290 @@
+[
+  {
+    "type": "answer", "trust": "verified",
+    "title": "Streaming LLM responses in Next.js App Router with ReadableStream",
+    "body": "Use the Web Streams API to pipe LLM output directly to the client. The key: return a Response with a ReadableStream body from your route handler.\n\n```typescript\nexport async function POST(req: Request) {\n  const { prompt } = await req.json();\n  const stream = await openai.chat.completions.create({\n    model: 'gpt-4',\n    messages: [{ role: 'user', content: prompt }],\n    stream: true,\n  });\n\n  const encoder = new TextEncoder();\n  const readable = new ReadableStream({\n    async start(controller) {\n      for await (const chunk of stream) {\n        const text = chunk.choices[0]?.delta?.content ?? '';\n        controller.enqueue(encoder.encode(text));\n      }\n      controller.close();\n    },\n  });\n\n  return new Response(readable, {\n    headers: { 'Content-Type': 'text/event-stream' },\n  });\n}\n```\n\nOn the client, use `fetch` with `response.body.getReader()` for progressive rendering.",
+    "tags": ["next.js", "streaming", "llm", "app-router", "readablestream"]
+  },
+  {
+    "type": "answer", "trust": "verified",
+    "title": "Implementing retry with exponential backoff in TypeScript",
+    "body": "A production-grade retry function with jitter to avoid thundering herd.\n\n```typescript\nasync function retry<T>(\n  fn: () => Promise<T>,\n  { maxRetries = 3, baseDelay = 1000, maxDelay = 30000 } = {}\n): Promise<T> {\n  for (let attempt = 0; attempt <= maxRetries; attempt++) {\n    try {\n      return await fn();\n    } catch (err) {\n      if (attempt === maxRetries) throw err;\n      const delay = Math.min(baseDelay * 2 ** attempt, maxDelay);\n      const jitter = delay * (0.5 + Math.random() * 0.5);\n      await new Promise(r => setTimeout(r, jitter));\n    }\n  }\n  throw new Error('unreachable');\n}\n```\n\nAlways add jitter. Without it, all failed requests retry at the same time and overwhelm the service again.",
+    "tags": ["typescript", "retry", "exponential-backoff", "reliability"]
+  },
+  {
+    "type": "answer", "trust": "verified",
+    "title": "How to implement API rate limiting with sliding window in Redis",
+    "body": "Sliding window rate limiting is more fair than fixed windows. Use Redis sorted sets.\n\n```typescript\nasync function checkRateLimit(key: string, limit: number, windowSec: number): Promise<boolean> {\n  const now = Date.now();\n  const windowStart = now - windowSec * 1000;\n  const pipe = redis.pipeline();\n  pipe.zremrangebyscore(key, 0, windowStart);\n  pipe.zadd(key, now, `${now}-${Math.random()}`);\n  pipe.zcard(key);\n  pipe.expire(key, windowSec);\n  const results = await pipe.exec();\n  const count = results[2][1] as number;\n  return count <= limit;\n}\n```\n\nFor multi-tier limits (per-second + per-minute), run two checks. Return 429 with Retry-After header showing seconds until the oldest entry expires.",
+    "tags": ["redis", "rate-limiting", "api-design", "sliding-window"]
+  },
+  {
+    "type": "answer", "trust": "community",
+    "title": "Setting up OpenTelemetry tracing in a Next.js application",
+    "body": "Add distributed tracing to Next.js for end-to-end visibility across API routes, middleware, and external calls.\n\n1. Install: `npm i @opentelemetry/sdk-node @opentelemetry/auto-instrumentations-node`\n\n2. Create `instrumentation.ts` in your project root:\n```typescript\nimport { NodeSDK } from '@opentelemetry/sdk-node';\nimport { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentations-node';\nimport { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';\n\nconst sdk = new NodeSDK({\n  traceExporter: new OTLPTraceExporter({ url: process.env.OTEL_ENDPOINT }),\n  instrumentations: [getNodeAutoInstrumentations()],\n  serviceName: 'my-app',\n});\nsdk.start();\n```\n\n3. In `next.config.js`: `experimental: { instrumentationHook: true }`\n\nThis auto-instruments fetch, http, pg, and most popular libraries.",
+    "tags": ["opentelemetry", "next.js", "tracing", "observability"]
+  },
+  {
+    "type": "answer", "trust": "verified",
+    "title": "Building type-safe environment variables in TypeScript with Zod",
+    "body": "Parse environment variables at startup, fail fast on missing/invalid values.\n\n```typescript\nimport { z } from 'zod';\n\nconst envSchema = z.object({\n  DATABASE_URL: z.string().url(),\n  REDIS_URL: z.string().url().optional(),\n  API_KEY: z.string().min(32),\n  NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),\n  PORT: z.coerce.number().default(3000),\n  LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),\n});\n\nexport const env = envSchema.parse(process.env);\nexport type Env = z.infer<typeof envSchema>;\n```\n\nCall this at the top of your entry point. If any variable is missing or invalid, the app crashes immediately with a clear Zod error instead of failing 10 minutes later in some random handler.",
+    "tags": ["typescript", "zod", "environment-variables", "config", "validation"]
+  },
+  {
+    "type": "answer", "trust": "community",
+    "title": "Implementing WebSocket reconnection with exponential backoff",
+    "body": "Browser WebSocket connections drop frequently. Implement auto-reconnection:\n\n```typescript\nfunction createReconnectingWS(url: string) {\n  let ws: WebSocket;\n  let attempt = 0;\n  const maxDelay = 30000;\n  const listeners = new Set<(data: any) => void>();\n\n  function connect() {\n    ws = new WebSocket(url);\n    ws.onopen = () => { attempt = 0; };\n    ws.onmessage = (e) => {\n      const data = JSON.parse(e.data);\n      listeners.forEach(fn => fn(data));\n    };\n    ws.onclose = () => {\n      const delay = Math.min(1000 * 2 ** attempt++, maxDelay);\n      setTimeout(connect, delay);\n    };\n  }\n\n  connect();\n  return {\n    subscribe: (fn: (data: any) => void) => { listeners.add(fn); return () => listeners.delete(fn); },\n    send: (data: any) => ws.readyState === 1 && ws.send(JSON.stringify(data)),\n  };\n}\n```\n\nBuffer messages during reconnection if ordering matters. Use a heartbeat ping every 30s to detect zombie connections.",
+    "tags": ["websocket", "reconnection", "real-time", "typescript"]
+  },
+  {
+    "type": "snippet", "trust": "verified",
+    "title": "PostgreSQL: Find slow queries with pg_stat_statements",
+    "body": "```sql\n-- Enable the extension first\nCREATE EXTENSION IF NOT EXISTS pg_stat_statements;\n\n-- Top 10 slowest queries by total time\nSELECT\n  calls,\n  round(total_exec_time::numeric, 2) AS total_ms,\n  round(mean_exec_time::numeric, 2) AS avg_ms,\n  round((100 * total_exec_time / sum(total_exec_time) OVER())::numeric, 2) AS pct,\n  left(query, 100) AS query_preview\nFROM pg_stat_statements\nORDER BY total_exec_time DESC\nLIMIT 10;\n```\n\nRun this weekly. Queries with high total_exec_time but low calls are optimization targets. Queries with high calls but fast avg are candidates for caching.",
+    "tags": ["postgresql", "performance", "slow-queries", "monitoring"]
+  },
+  {
+    "type": "snippet", "trust": "verified",
+    "title": "Docker multi-stage build for Node.js — minimal production image",
+    "body": "```dockerfile\nFROM node:22-alpine AS deps\nWORKDIR /app\nCOPY package.json package-lock.json ./\nRUN npm ci --omit=dev\n\nFROM node:22-alpine AS build\nWORKDIR /app\nCOPY package.json package-lock.json ./\nRUN npm ci\nCOPY . .\nRUN npm run build\n\nFROM node:22-alpine\nWORKDIR /app\nENV NODE_ENV=production\nRUN addgroup -g 1001 app && adduser -u 1001 -G app -s /bin/sh -D app\nCOPY --from=deps --chown=app:app /app/node_modules ./node_modules\nCOPY --from=build --chown=app:app /app/dist ./dist\nCOPY --chown=app:app package.json ./\nUSER app\nCMD [\"node\", \"dist/index.js\"]\n```\n\nThis produces images ~150MB instead of ~1GB. Always chown copied files to the non-root user to avoid permission issues.",
+    "tags": ["docker", "node.js", "multi-stage", "production", "devops"]
+  },
+  {
+    "type": "snippet", "trust": "community",
+    "title": "React custom hook: useDebounce with cleanup",
+    "body": "```typescript\nimport { useState, useEffect } from 'react';\n\nexport function useDebounce<T>(value: T, delay: number): T {\n  const [debouncedValue, setDebouncedValue] = useState(value);\n\n  useEffect(() => {\n    const timer = setTimeout(() => setDebouncedValue(value), delay);\n    return () => clearTimeout(timer);\n  }, [value, delay]);\n\n  return debouncedValue;\n}\n\n// Usage\nfunction SearchInput() {\n  const [query, setQuery] = useState('');\n  const debouncedQuery = useDebounce(query, 300);\n\n  useEffect(() => {\n    if (debouncedQuery) searchAPI(debouncedQuery);\n  }, [debouncedQuery]);\n\n  return <input value={query} onChange={e => setQuery(e.target.value)} />;\n}\n```\n\nThis avoids firing API calls on every keystroke. The cleanup function in useEffect cancels pending timers when the component unmounts or value changes.",
+    "tags": ["react", "hooks", "debounce", "search", "performance"]
+  },
+  {
+    "type": "snippet", "trust": "verified",
+    "title": "TypeScript: exhaustive switch with never type",
+    "body": "```typescript\ntype Status = 'pending' | 'active' | 'archived';\n\nfunction assertNever(x: never): never {\n  throw new Error(`Unexpected value: ${x}`);\n}\n\nfunction getStatusColor(status: Status): string {\n  switch (status) {\n    case 'pending':  return 'yellow';\n    case 'active':   return 'green';\n    case 'archived': return 'gray';\n    default:         return assertNever(status);\n  }\n}\n```\n\nIf you add a new Status variant, TypeScript will error at compile time on the assertNever call because the new variant won't be narrowed to never. This catches missing cases before runtime.",
+    "tags": ["typescript", "exhaustive-check", "pattern-matching", "type-safety"]
+  },
+  {
+    "type": "doc", "trust": "verified",
+    "title": "Model Context Protocol (MCP) — Architecture and Design Patterns",
+    "body": "MCP enables AI agents to interact with external tools via a standardized protocol.\n\nCore concepts:\n- **Server**: Exposes tools, resources, and prompts. One server = one domain of capability.\n- **Tool**: A function the agent can call. Define input schema with Zod.\n- **Resource**: Read-only data the agent can access (files, DB records, API responses).\n- **Prompt**: Pre-built conversation templates for common tasks.\n\nDesign patterns:\n1. **Thin tools, smart orchestration**: Keep individual tools simple. Let the LLM compose them.\n2. **Fail loudly**: Return clear error messages. The LLM needs to understand what went wrong.\n3. **Idempotent mutations**: Where possible, make write operations idempotent so retries are safe.\n4. **Schema-first**: Define Zod schemas for all inputs. The LLM uses these to construct valid calls.\n\nAnti-patterns:\n- Don't create one mega-tool that does everything. Split by domain.\n- Don't return HTML or markdown from tools — return structured data.\n- Don't require multi-step setup. Each tool call should be self-contained.",
+    "tags": ["mcp", "ai-agents", "architecture", "tool-use", "protocol"]
+  },
+  {
+    "type": "doc", "trust": "verified",
+    "title": "Drizzle ORM migration workflow for production databases",
+    "body": "Drizzle Kit provides two migration strategies: push (dev) and generate+migrate (prod).\n\n**Development: `drizzle-kit push`**\nDirectly applies schema changes to the database. Fast iteration, no migration files.\n\n**Production: `drizzle-kit generate` + custom migrate**\nGenerates SQL migration files that you commit to git and apply in CI/CD.\n\n```bash\n# Generate migration from schema diff\nnpx drizzle-kit generate\n\n# Apply migrations in your deploy script\nnpx drizzle-kit migrate\n```\n\nSafety rules:\n1. Never use `push` on production. Always use generated migrations.\n2. Review generated SQL before committing — sometimes Drizzle generates DROP + CREATE instead of ALTER.\n3. For zero-downtime: add columns as nullable first, backfill, then add constraints.\n4. Always back up before migrating.\n5. Test migrations against a staging copy of production data, not an empty database.",
+    "tags": ["drizzle", "migrations", "database", "production", "devops"]
+  },
+  {
+    "type": "doc", "trust": "community",
+    "title": "GitHub Actions CI/CD pipeline patterns for TypeScript projects",
+    "body": "A production-ready CI pipeline for TypeScript monorepos:\n\n```yaml\nname: CI\non: [push, pull_request]\n\njobs:\n  check:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-node@v4\n        with: { node-version: 22, cache: npm }\n      - run: npm ci\n      - run: npm run typecheck\n      - run: npm run lint\n      - run: npm test -- --coverage\n      - uses: actions/upload-artifact@v4\n        with: { name: coverage, path: coverage/ }\n\n  deploy:\n    needs: check\n    if: github.ref == 'refs/heads/main'\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: npm ci && npm run build\n      # Deploy step varies by platform\n```\n\nKey patterns:\n- Cache npm dependencies between runs\n- Run typecheck, lint, and test in a single job (faster than separate jobs for small projects)\n- Only deploy from main branch after all checks pass\n- Upload coverage as artifact for review",
+    "tags": ["github-actions", "ci-cd", "typescript", "devops", "testing"]
+  },
+  {
+    "type": "doc", "trust": "verified",
+    "title": "Token counting and context window management for LLM applications",
+    "body": "Every LLM has a finite context window. Managing it is critical for reliable applications.\n\n**Token counting:**\n- Claude: use @anthropic-ai/tokenizer or estimate ~3.5 chars per token\n- GPT: use tiktoken library, model-specific encodings\n- Always count tokens before sending — don't rely on the API to reject\n\n**Context management strategies:**\n1. **Sliding window**: Keep last N messages. Simple but loses early context.\n2. **Summarization**: Periodically summarize conversation history. Preserves key info.\n3. **RAG injection**: Only inject relevant context from a vector store. Most token-efficient.\n4. **Priority queue**: Rank context items by relevance, fill up to limit.\n\n**Budget allocation (for 128k context):**\n- System prompt: 2-4k tokens\n- Tool definitions: 1-3k tokens\n- Retrieved context: 10-20k tokens\n- Conversation history: remaining\n- Response buffer: always reserve 4k for output\n\nNever fill context to 100%. Leave 10-15% headroom for reliable generation.",
+    "tags": ["llm", "tokens", "context-window", "rag", "prompt-engineering"]
+  },
+  {
+    "type": "gotcha", "trust": "verified",
+    "title": "Next.js App Router: fetch() in Server Components is cached by default",
+    "body": "In the App Router, fetch() calls in Server Components are automatically cached (deduplicated) across the request lifecycle. This means:\n\n```typescript\n// These two calls hit the network ONCE, not twice\nconst data1 = await fetch('https://api.example.com/data');\nconst data2 = await fetch('https://api.example.com/data');\n```\n\nThis is usually what you want, but it bites you when:\n- You expect fresh data on every request (add `{ cache: 'no-store' }`)\n- You're calling a mutation endpoint (use `{ method: 'POST' }`)\n- You want time-based revalidation (use `{ next: { revalidate: 60 } }`)\n\nThe default changed between Next.js 14 and 15 — Next.js 15 defaults to no caching. Check which version you're on.",
+    "tags": ["next.js", "caching", "fetch", "app-router", "gotcha"]
+  },
+  {
+    "type": "gotcha", "trust": "verified",
+    "title": "PostgreSQL JSONB operator precedence: -> vs ->> matters for WHERE clauses",
+    "body": "Common mistake: using -> when you need ->> in WHERE clauses.\n\n```sql\n-- WRONG: This compares a JSON value to a text literal — always false\nSELECT * FROM nodes WHERE metadata->'status' = 'active';\n\n-- RIGHT: ->> extracts as text\nSELECT * FROM nodes WHERE metadata->>'status' = 'active';\n\n-- ALSO RIGHT: Cast explicitly\nSELECT * FROM nodes WHERE (metadata->'status')::text = '\"active\"';\n```\n\n`->` returns a JSONB value (with quotes), `->>` returns text (without quotes). In Drizzle ORM, use `sql` template literals for JSONB operations — the query builder doesn't handle operators natively.\n\nFor indexing: CREATE INDEX ON nodes USING gin (metadata jsonb_path_ops); This covers @> containment queries.",
+    "tags": ["postgresql", "jsonb", "sql", "gotcha", "drizzle"]
+  },
+  {
+    "type": "gotcha", "trust": "community",
+    "title": "Vercel VITE_* env vars are baked at build time, not runtime",
+    "body": "Vite replaces `import.meta.env.VITE_*` with literal values during `vite build`. This means:\n\n1. Environment variables must exist at BUILD time, not deploy time\n2. Changing a VITE_ var requires a full rebuild\n3. You can't use different values per-request (no SSR env injection)\n\n```typescript\n// This becomes a string literal in the bundle:\nconst apiUrl = import.meta.env.VITE_API_URL;\n// Compiled output: const apiUrl = \"https://api.example.com\";\n```\n\nIf you need runtime env vars in a Vite SPA:\n- Inject a `<script>` tag in index.html with `window.__ENV__`\n- Or use a `/config.json` endpoint that the app fetches on load\n\nFor Vercel specifically: set env vars in Project Settings > Environment Variables before deploying. They're injected during the build step.",
+    "tags": ["vercel", "vite", "environment-variables", "build-time", "gotcha"]
+  },
+  {
+    "type": "gotcha", "trust": "verified",
+    "title": "TypeScript: interface extends vs type intersection — subtle difference with conflicting keys",
+    "body": "Interface extends and type intersection (&) behave differently when keys conflict:\n\n```typescript\ninterface A { x: number }\ninterface B extends A { x: string } // ERROR: Types of property 'x' are incompatible\n\ntype A2 = { x: number }\ntype B2 = A2 & { x: string } // No error! x becomes `never`\n```\n\nWith `extends`, TypeScript catches the conflict at declaration. With `&`, it silently creates an impossible type (`number & string = never`). Any code trying to assign to `x` will fail with a confusing error far from the actual problem.\n\nRule: prefer `interface extends` for object types. Use `&` only for combining unrelated types or when you specifically want intersection behavior.",
+    "tags": ["typescript", "interfaces", "types", "gotcha"]
+  },
+  {
+    "type": "gotcha", "trust": "community",
+    "title": "React useEffect cleanup runs BEFORE the new effect, not on unmount only",
+    "body": "Common misconception: useEffect cleanup only runs on component unmount. It actually runs:\n1. Before each re-execution of the effect (when deps change)\n2. On unmount\n\n```typescript\nuseEffect(() => {\n  const ws = new WebSocket(url);\n  ws.onmessage = handleMessage;\n\n  return () => {\n    ws.close(); // This runs EVERY TIME url changes, not just unmount\n  };\n}, [url]);\n```\n\nThis matters for:\n- Subscriptions (multiple listeners if you forget cleanup)\n- Timers (setInterval without cleanup = memory leak + multiple timers)\n- AbortController (cancel previous fetch when deps change)\n- WebSockets (close old connection before opening new one)\n\nIf your effect's cleanup is expensive, consider whether the dependency array is too broad.",
+    "tags": ["react", "useEffect", "cleanup", "lifecycle", "gotcha"]
+  },
+  {
+    "type": "question", "trust": "unverified",
+    "title": "Best practices for LLM output caching — when is it safe to cache?",
+    "body": "When building LLM-powered features, caching responses can save significant cost and latency. But when is caching safe?\n\nConsiderations:\n- Same prompt doesn't always mean same intent (user context matters)\n- Temperature > 0 means responses are non-deterministic by design\n- Cached responses don't improve with model updates\n- Cache invalidation for knowledge-dependent responses\n\nLooking for patterns on: cache key design, TTL strategies, and when to bypass cache.",
+    "tags": ["llm", "caching", "cost-optimization", "architecture"]
+  },
+  {
+    "type": "question", "trust": "unverified",
+    "title": "How to handle database schema changes when using Drizzle with feature branches?",
+    "body": "With multiple developers on feature branches that each modify the schema, how do you prevent migration conflicts?\n\nScenario:\n- Branch A adds a `status` column to users table\n- Branch B adds an `avatar_url` column to users table\n- Both generate migration files, both merge to main\n- Migration order is now ambiguous\n\nLooking for workflows that prevent this without requiring manual coordination.",
+    "tags": ["drizzle", "migrations", "git", "team-workflow", "database"]
+  },
+  {
+    "type": "question", "trust": "unverified",
+    "title": "What's the right abstraction layer for multi-provider LLM support?",
+    "body": "Building an app that needs to support Claude, GPT-4, and Gemini. What's the right abstraction?\n\nOptions considered:\n1. Vercel AI SDK — unified interface but ties you to their ecosystem\n2. LiteLLM — proxy approach, another service to manage\n3. Custom adapter pattern — full control but maintenance burden\n4. LangChain — heavy abstraction, debatable value\n\nKey requirements: streaming, tool use, structured output, token counting. Which approach scales best?",
+    "tags": ["llm", "multi-provider", "architecture", "abstraction", "ai-sdk"]
+  },
+  {
+    "type": "question", "trust": "unverified",
+    "title": "Strategies for testing code that calls LLM APIs?",
+    "body": "LLM responses are non-deterministic, slow, and expensive. How do you test code that depends on them?\n\nApproaches I've seen:\n- Record/replay fixtures (brittle, hard to maintain)\n- Mock the LLM client entirely (tests pass but doesn't catch prompt regressions)\n- Use a cheap/fast model for tests (still non-deterministic)\n- Eval-based testing with assertions on output quality (complex setup)\n\nWhat actually works in production codebases?",
+    "tags": ["testing", "llm", "mocking", "eval", "best-practices"]
+  },
+  {
+    "type": "question", "trust": "unverified",
+    "title": "Edge runtime vs Node.js runtime on Vercel — when to choose which?",
+    "body": "Vercel offers Edge Runtime (V8 isolates) and Node.js Runtime for API routes and middleware.\n\nEdge: ~0ms cold start, limited API surface, no native modules, 128KB limit\nNode.js: slower cold start, full Node.js API, all npm packages work\n\nWhen does Edge actually matter? Is the cold start difference significant enough to deal with the API limitations?",
+    "tags": ["vercel", "edge-runtime", "node.js", "serverless", "performance"]
+  },
+  {
+    "type": "wanted", "trust": "unverified",
+    "title": "Patterns for building AI agent memory systems",
+    "body": "Looking for practical patterns for giving AI agents persistent memory across conversations. Not just vector stores — structured memory with:\n- Short-term (current conversation context)\n- Working memory (current task state)\n- Long-term (user preferences, learned behaviors)\n- Episodic (past interactions, what worked/didn't)\n\nHow to implement retrieval, consolidation, and forgetting.",
+    "tags": ["ai-agents", "memory", "architecture", "rag", "knowledge-management"]
+  },
+  {
+    "type": "wanted", "trust": "unverified",
+    "title": "Production-ready error boundary patterns for React 19",
+    "body": "React 19 changed error handling significantly. Error boundaries now work differently with Server Components, Suspense, and the new use() hook. Need updated patterns for:\n- Granular error boundaries (per-feature, not per-page)\n- Error recovery without full page reload\n- Logging errors to observability platforms\n- Fallback UI that's actually useful\n- Handling async errors in Server Components",
+    "tags": ["react", "react-19", "error-boundaries", "error-handling", "production"]
+  },
+  {
+    "type": "wanted", "trust": "unverified",
+    "title": "Comprehensive guide to PostgreSQL index types and when to use each",
+    "body": "PostgreSQL has B-tree, Hash, GiST, SP-GiST, GIN, BRIN, and now pgvector's HNSW and IVFFlat. Need a decision framework:\n- Which index type for which query pattern?\n- When do composite indexes help vs hurt?\n- Partial indexes for filtered queries\n- Expression indexes for computed values\n- How to measure if an index is actually being used\n- When to drop indexes (write-heavy tables)",
+    "tags": ["postgresql", "indexing", "performance", "database", "optimization"]
+  },
+  {
+    "type": "wanted", "trust": "unverified",
+    "title": "How to build an MCP server that handles concurrent tool calls safely",
+    "body": "MCP servers can receive multiple tool calls in parallel from the same agent. How to handle:\n- Concurrent database writes that might conflict\n- Rate limiting per-agent across parallel calls\n- Transaction isolation for multi-step operations\n- Cancellation when the agent aborts mid-operation\n- Resource cleanup on connection drop",
+    "tags": ["mcp", "concurrency", "ai-agents", "server-design", "safety"]
+  },
+  {
+    "type": "answer", "trust": "verified",
+    "title": "Setting up path aliases in TypeScript + Vite projects",
+    "body": "Path aliases like `@/components/Button` require configuration in both TypeScript and Vite.\n\n```json\n// tsconfig.json\n{\n  \"compilerOptions\": {\n    \"baseUrl\": \".\",\n    \"paths\": {\n      \"@/*\": [\"./src/*\"]\n    }\n  }\n}\n```\n\n```typescript\n// vite.config.ts\nimport { defineConfig } from 'vite';\nimport path from 'path';\n\nexport default defineConfig({\n  resolve: {\n    alias: {\n      '@': path.resolve(__dirname, './src'),\n    },\n  },\n});\n```\n\nCommon mistake: only configuring tsconfig (TypeScript resolves types but Vite bundles). You need both. For monorepos, each package needs its own alias configuration.",
+    "tags": ["typescript", "vite", "path-aliases", "dx", "configuration"]
+  },
+  {
+    "type": "answer", "trust": "verified",
+    "title": "Implementing optimistic updates with React Query (TanStack Query)",
+    "body": "Optimistic updates show the result immediately, then reconcile with the server response.\n\n```typescript\nconst mutation = useMutation({\n  mutationFn: updateTodo,\n  onMutate: async (newTodo) => {\n    await queryClient.cancelQueries({ queryKey: ['todos'] });\n    const previous = queryClient.getQueryData(['todos']);\n    queryClient.setQueryData(['todos'], (old) =>\n      old.map(t => t.id === newTodo.id ? { ...t, ...newTodo } : t)\n    );\n    return { previous };\n  },\n  onError: (err, newTodo, context) => {\n    queryClient.setQueryData(['todos'], context.previous);\n  },\n  onSettled: () => {\n    queryClient.invalidateQueries({ queryKey: ['todos'] });\n  },\n});\n```\n\nKey: always cancel in-flight queries first, save the previous state for rollback, and invalidate on settle (not just error). The `onSettled` ensures the cache matches the server regardless of success/failure.",
+    "tags": ["react-query", "optimistic-updates", "tanstack", "react", "ux"]
+  },
+  {
+    "type": "answer", "trust": "community",
+    "title": "Secure API key management for client-side applications",
+    "body": "Never expose secret API keys in client-side code. Instead, proxy through your backend.\n\n```typescript\n// BAD: API key in client bundle\nconst response = await fetch('https://api.openai.com/v1/chat', {\n  headers: { 'Authorization': `Bearer ${import.meta.env.VITE_OPENAI_KEY}` },\n});\n\n// GOOD: Proxy through your API route\n// Client:\nconst response = await fetch('/api/chat', { method: 'POST', body: JSON.stringify({ prompt }) });\n\n// Server (Next.js API route):\nexport async function POST(req: Request) {\n  const { prompt } = await req.json();\n  const response = await openai.chat.completions.create({\n    model: 'gpt-4',\n    messages: [{ role: 'user', content: prompt }],\n  });\n  return Response.json(response);\n}\n```\n\nFor third-party APIs that require client-side keys (Stripe, Mapbox): use publishable/public keys only. Restrict by domain in the provider's dashboard.",
+    "tags": ["security", "api-keys", "client-side", "proxy", "best-practices"]
+  },
+  {
+    "type": "answer", "trust": "verified",
+    "title": "Implementing content-based deduplication with SHA-256 hashing",
+    "body": "Prevent duplicate content in your knowledge base by hashing the body.\n\n```typescript\nimport { createHash } from 'crypto';\n\nfunction contentHash(body: string): string {\n  return createHash('sha256')\n    .update(body.trim().toLowerCase().replace(/\\s+/g, ' '))\n    .digest('hex');\n}\n\n// In your schema:\nconst nodes = pgTable('knowledge_nodes', {\n  id: uuid('id').primaryKey().defaultRandom(),\n  bodyHash: varchar('body_hash', { length: 64 }).unique(),\n  // ...\n});\n\n// Before insert:\nconst hash = contentHash(body);\nconst existing = await db.select().from(nodes).where(eq(nodes.bodyHash, hash));\nif (existing.length > 0) {\n  return { duplicate: true, existingId: existing[0].id };\n}\n```\n\nNormalize before hashing (trim, lowercase, collapse whitespace) to catch near-duplicates. For fuzzy dedup, use SimHash or MinHash instead.",
+    "tags": ["deduplication", "hashing", "knowledge-graph", "data-quality"]
+  },
+  {
+    "type": "snippet", "trust": "verified",
+    "title": "Zod: recursive schema for tree structures",
+    "body": "```typescript\nimport { z } from 'zod';\n\ninterface TreeNode {\n  name: string;\n  children: TreeNode[];\n}\n\nconst TreeNodeSchema: z.ZodType<TreeNode> = z.object({\n  name: z.string(),\n  children: z.lazy(() => z.array(TreeNodeSchema)),\n});\n\n// Usage\nconst tree = TreeNodeSchema.parse({\n  name: 'root',\n  children: [\n    { name: 'child1', children: [] },\n    { name: 'child2', children: [\n      { name: 'grandchild', children: [] },\n    ]},\n  ],\n});\n```\n\nThe `z.lazy()` wrapper is required for recursive types — without it, the schema references itself before it's defined. You need the explicit TypeScript interface because Zod can't infer recursive types.",
+    "tags": ["zod", "typescript", "recursive", "tree", "validation"]
+  },
+  {
+    "type": "snippet", "trust": "community",
+    "title": "Git: interactive rebase to clean up feature branch before PR",
+    "body": "```bash\n# Rebase last 5 commits interactively\ngit rebase -i HEAD~5\n\n# Or rebase everything since branching from main\ngit rebase -i main\n\n# In the editor, change 'pick' to:\n# s (squash) - combine with previous commit\n# f (fixup) - squash but discard commit message\n# r (reword) - change commit message\n# d (drop) - remove commit entirely\n# e (edit) - pause to amend\n\n# Example: squash fix commits into their parent\npick abc1234 Add user authentication\nfixup def5678 fix typo in auth\nfixup ghi9012 fix auth test\npick jkl3456 Add user profile page\n```\n\nGolden rule: never rebase commits that have been pushed to a shared branch. Only rebase your local/feature branch commits.",
+    "tags": ["git", "rebase", "workflow", "clean-history"]
+  },
+  {
+    "type": "snippet", "trust": "verified",
+    "title": "Tailwind CSS: responsive design with container queries",
+    "body": "```css\n/* Enable container queries */\n@tailwind base;\n@tailwind components;\n@tailwind utilities;\n\n/* In tailwind.config.js, container queries are built-in since v3.4 */\n```\n\n```html\n<!-- Parent container -->\n<div class=\"@container\">\n  <!-- Responsive to parent width, not viewport -->\n  <div class=\"@sm:flex @lg:grid @lg:grid-cols-3 gap-4\">\n    <div class=\"@sm:w-1/2 @lg:w-full\">Card 1</div>\n    <div class=\"@sm:w-1/2 @lg:w-full\">Card 2</div>\n    <div class=\"@sm:hidden @lg:block\">Card 3</div>\n  </div>\n</div>\n```\n\nContainer queries let components be responsive to their container, not the viewport. Perfect for reusable components that appear in different layouts (sidebar vs main content).",
+    "tags": ["tailwind", "css", "responsive", "container-queries", "ui"]
+  },
+  {
+    "type": "doc", "trust": "community",
+    "title": "Railway deployment guide — from zero to production",
+    "body": "Railway provides infrastructure-as-code with a git-based workflow.\n\n**Setup:**\n1. Create project on railway.app\n2. Add services: your app + PostgreSQL + Redis (if needed)\n3. Connect GitHub repo for auto-deploy on push\n\n**Networking:**\n- Internal: services communicate via `service-name.railway.internal`\n- Public: auto-generated `*.up.railway.app` domain or custom domain\n- Important: internal DNS may not resolve immediately after deploy. Use public URLs as fallback.\n\n**Environment variables:**\n- Railway auto-injects DATABASE_URL for linked PostgreSQL\n- Set custom vars in service Settings > Variables\n- Use reference variables: `${{Postgres.DATABASE_URL}}`\n\n**Databases:**\n- PostgreSQL: auto-provisioned, backups included\n- Connection string: use the public proxy URL for reliability\n- Migrations: run via one-off commands or deploy hooks\n\n**Gotchas:**\n- Internal hostnames don't resolve across regions\n- Sleep mode on hobby tier pauses after 30min inactivity\n- Build cache is shared across deploys — sometimes stale",
+    "tags": ["railway", "deployment", "postgresql", "devops", "hosting"]
+  },
+  {
+    "type": "doc", "trust": "verified",
+    "title": "React Query (TanStack Query) — patterns for data fetching architecture",
+    "body": "React Query turns server state management from a nightmare into a solved problem.\n\n**Core patterns:**\n\n1. **Query keys as cache identifiers:**\n```typescript\n// Hierarchical keys for smart invalidation\nuseQuery({ queryKey: ['nodes', { type: 'answer', page: 1 }] });\nqueryClient.invalidateQueries({ queryKey: ['nodes'] }); // Invalidates all node queries\n```\n\n2. **Placeholder data for instant UI:**\n```typescript\nuseQuery({\n  queryKey: ['node', id],\n  queryFn: () => fetchNode(id),\n  placeholderData: () => queryClient.getQueryData(['nodes'])?.find(n => n.id === id),\n});\n```\n\n3. **Prefetching on hover:**\n```typescript\nconst prefetch = () => queryClient.prefetchQuery({\n  queryKey: ['node', id],\n  queryFn: () => fetchNode(id),\n  staleTime: 60_000,\n});\nreturn <Link onMouseEnter={prefetch} to={`/node/${id}`}>...</Link>;\n```\n\n4. **Stale-while-revalidate:**\n```typescript\n{ staleTime: 5 * 60_000 }  // Data is fresh for 5 minutes\n// After staleTime: serves cached data immediately, refetches in background\n```\n\nAnti-patterns:\n- Don't use React Query for client state (use useState/Zustand)\n- Don't set cacheTime to 0 (defeats the purpose)\n- Don't manually set query data without also invalidating",
+    "tags": ["react-query", "tanstack", "data-fetching", "caching", "react"]
+  },
+  {
+    "type": "answer", "trust": "verified",
+    "title": "How to safely run database migrations in zero-downtime deployments",
+    "body": "Zero-downtime migrations follow the expand-contract pattern:\n\n**Phase 1: Expand (backward-compatible)**\n- Add new columns as nullable\n- Create new tables\n- Add new indexes concurrently\n\n```sql\n-- Safe: nullable column, no lock\nALTER TABLE users ADD COLUMN email_verified boolean;\n\n-- Safe: concurrent index, no lock\nCREATE INDEX CONCURRENTLY idx_users_email ON users(email);\n```\n\n**Phase 2: Migrate data**\n- Backfill new columns in batches\n- Dual-write to old and new columns during transition\n\n**Phase 3: Contract (after all code is deployed)**\n- Drop old columns\n- Add NOT NULL constraints\n- Remove dual-write code\n\n**Dangerous operations (avoid in production):**\n- ALTER TABLE ... SET NOT NULL (full table scan + lock)\n- DROP COLUMN on large tables (lock)\n- RENAME COLUMN (breaks running code)\n- ALTER TYPE (full rewrite)\n\nAlways test migrations against a copy of production data. Time them. If it takes >1 second, it probably locks.",
+    "tags": ["database", "migrations", "zero-downtime", "postgresql", "devops"]
+  },
+  {
+    "type": "answer", "trust": "community",
+    "title": "Implementing semantic search with pgvector and Drizzle ORM",
+    "body": "pgvector adds vector similarity search to PostgreSQL. Combined with LLM embeddings, it enables semantic search.\n\n```sql\n-- Enable extension\nCREATE EXTENSION vector;\n\n-- Add embedding column\nALTER TABLE knowledge_nodes ADD COLUMN embedding vector(1536);\n\n-- Create HNSW index for fast similarity search\nCREATE INDEX ON knowledge_nodes USING hnsw (embedding vector_cosine_ops);\n```\n\n```typescript\n// Generate embedding\nconst embedding = await openai.embeddings.create({\n  model: 'text-embedding-3-small',\n  input: query,\n});\n\n// Similarity search with Drizzle\nconst results = await db.execute(sql`\n  SELECT id, title, body,\n    1 - (embedding <=> ${embedding.data[0].embedding}::vector) AS similarity\n  FROM knowledge_nodes\n  WHERE embedding IS NOT NULL\n  ORDER BY embedding <=> ${embedding.data[0].embedding}::vector\n  LIMIT 10\n`);\n```\n\nKey decisions:\n- text-embedding-3-small (1536d): good quality, cheaper\n- text-embedding-3-large (3072d): better quality, 2x storage\n- HNSW vs IVFFlat: HNSW has better recall, IVFFlat builds faster",
+    "tags": ["pgvector", "semantic-search", "embeddings", "postgresql", "drizzle"]
+  },
+  {
+    "type": "answer", "trust": "verified",
+    "title": "Implementing a circuit breaker pattern in TypeScript",
+    "body": "Circuit breakers prevent cascading failures by failing fast when a downstream service is unhealthy.\n\n```typescript\nclass CircuitBreaker {\n  private failures = 0;\n  private lastFailure = 0;\n  private state: 'closed' | 'open' | 'half-open' = 'closed';\n\n  constructor(\n    private threshold: number = 5,\n    private resetTimeout: number = 60_000,\n  ) {}\n\n  async call<T>(fn: () => Promise<T>): Promise<T> {\n    if (this.state === 'open') {\n      if (Date.now() - this.lastFailure > this.resetTimeout) {\n        this.state = 'half-open';\n      } else {\n        throw new Error('Circuit breaker is open');\n      }\n    }\n\n    try {\n      const result = await fn();\n      this.onSuccess();\n      return result;\n    } catch (err) {\n      this.onFailure();\n      throw err;\n    }\n  }\n\n  private onSuccess() {\n    this.failures = 0;\n    this.state = 'closed';\n  }\n\n  private onFailure() {\n    this.failures++;\n    this.lastFailure = Date.now();\n    if (this.failures >= this.threshold) this.state = 'open';\n  }\n}\n```\n\nUse one circuit breaker per downstream service. Log state transitions for observability.",
+    "tags": ["circuit-breaker", "resilience", "typescript", "microservices", "patterns"]
+  },
+  {
+    "type": "snippet", "trust": "verified",
+    "title": "Drizzle ORM: complex WHERE clauses with dynamic conditions",
+    "body": "```typescript\nimport { and, or, eq, like, gt, SQL } from 'drizzle-orm';\n\nfunction buildFilters(params: {\n  type?: string;\n  trust?: string;\n  minScore?: number;\n  search?: string;\n}) {\n  const conditions: SQL[] = [];\n\n  if (params.type) conditions.push(eq(nodes.type, params.type));\n  if (params.trust) conditions.push(eq(nodes.trustLevel, params.trust));\n  if (params.minScore) conditions.push(gt(nodes.score, params.minScore));\n  if (params.search) {\n    conditions.push(\n      or(\n        like(nodes.title, `%${params.search}%`),\n        like(nodes.body, `%${params.search}%`)\n      )!\n    );\n  }\n\n  return conditions.length > 0 ? and(...conditions) : undefined;\n}\n\nconst results = await db.select()\n  .from(nodes)\n  .where(buildFilters({ type: 'answer', minScore: 10 }))\n  .limit(20);\n```\n\nThis pattern avoids string concatenation SQL injection and keeps queries type-safe.",
+    "tags": ["drizzle", "sql", "dynamic-queries", "typescript", "filtering"]
+  },
+  {
+    "type": "snippet", "trust": "community",
+    "title": "Playwright: screenshot-based visual regression testing",
+    "body": "```typescript\nimport { test, expect } from '@playwright/test';\n\ntest('homepage visual regression', async ({ page }) => {\n  await page.goto('/');\n  await page.waitForLoadState('networkidle');\n\n  // Full page screenshot comparison\n  await expect(page).toHaveScreenshot('homepage.png', {\n    maxDiffPixelRatio: 0.01, // Allow 1% difference\n    fullPage: true,\n  });\n});\n\ntest('component visual regression', async ({ page }) => {\n  await page.goto('/dashboard');\n  const chart = page.locator('[data-testid=\"activity-chart\"]');\n  await expect(chart).toHaveScreenshot('activity-chart.png', {\n    maxDiffPixelRatio: 0.02,\n  });\n});\n\n// Update snapshots: npx playwright test --update-snapshots\n```\n\nTips:\n- Set viewport size explicitly for consistency across CI environments\n- Mask dynamic content (timestamps, avatars) with `mask: [page.locator('.timestamp')]`\n- Run in CI with the same OS/browser as your snapshots",
+    "tags": ["playwright", "visual-regression", "testing", "screenshots", "ci"]
+  },
+  {
+    "type": "answer", "trust": "verified",
+    "title": "Implementing cursor-based pagination for GraphQL APIs",
+    "body": "Relay-style cursor pagination is the standard for GraphQL. The key: encode cursor as opaque string, decode on server.\n\n```typescript\nimport { z } from 'zod';\n\nfunction encodeCursor(id: string, createdAt: Date): string {\n  return Buffer.from(JSON.stringify({ id, t: createdAt.toISOString() })).toString('base64url');\n}\n\nfunction decodeCursor(cursor: string): { id: string; t: string } {\n  return JSON.parse(Buffer.from(cursor, 'base64url').toString());\n}\n\nasync function getConnection(first: number, after?: string) {\n  let where;\n  if (after) {\n    const { t } = decodeCursor(after);\n    where = lt(nodes.createdAt, new Date(t));\n  }\n\n  const items = await db.select().from(nodes)\n    .where(where)\n    .orderBy(desc(nodes.createdAt))\n    .limit(first + 1);\n\n  const hasNextPage = items.length > first;\n  const edges = items.slice(0, first).map(node => ({\n    cursor: encodeCursor(node.id, node.createdAt),\n    node,\n  }));\n\n  return {\n    edges,\n    pageInfo: {\n      hasNextPage,\n      endCursor: edges[edges.length - 1]?.cursor ?? null,\n    },\n  };\n}\n```",
+    "tags": ["graphql", "pagination", "cursor", "relay", "api-design"]
+  },
+  {
+    "type": "gotcha", "trust": "verified",
+    "title": "npm publish: scoped packages are private by default",
+    "body": "When publishing a scoped package (@org/package), npm defaults to private (paid) access.\n\n```bash\n# FAILS unless you have npm Pro/Org plan\nnpm publish\n\n# Works: explicitly set public access\nnpm publish --access public\n\n# Or set it in package.json permanently:\n{\n  \"publishConfig\": {\n    \"access\": \"public\"\n  }\n}\n```\n\nOther publish gotchas:\n- `files` field in package.json controls what's included (whitelist approach)\n- Without `files`, npm uses `.npmignore`, falling back to `.gitignore`\n- `prepublishOnly` script runs before every publish — use it for builds\n- `npm pack --dry-run` shows exactly what will be published\n- Granular access tokens need the \"Bypass 2FA\" checkbox enabled",
+    "tags": ["npm", "publishing", "scoped-packages", "gotcha", "devops"]
+  },
+  {
+    "type": "answer", "trust": "community",
+    "title": "Implementing a job queue with PostgreSQL SKIP LOCKED",
+    "body": "PostgreSQL can be a simple job queue without Redis or RabbitMQ.\n\n```sql\nCREATE TABLE jobs (\n  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),\n  queue varchar(50) NOT NULL DEFAULT 'default',\n  payload jsonb NOT NULL,\n  status varchar(20) NOT NULL DEFAULT 'pending',\n  attempts int NOT NULL DEFAULT 0,\n  max_attempts int NOT NULL DEFAULT 3,\n  scheduled_at timestamptz NOT NULL DEFAULT now(),\n  locked_at timestamptz,\n  completed_at timestamptz,\n  error text\n);\n\nCREATE INDEX idx_jobs_fetch ON jobs (queue, scheduled_at)\n  WHERE status = 'pending';\n```\n\n```typescript\nasync function fetchJob(queue: string) {\n  const [job] = await db.execute(sql`\n    UPDATE jobs SET status = 'running', locked_at = now(), attempts = attempts + 1\n    WHERE id = (\n      SELECT id FROM jobs\n      WHERE queue = ${queue}\n        AND status = 'pending'\n        AND scheduled_at <= now()\n      ORDER BY scheduled_at\n      FOR UPDATE SKIP LOCKED\n      LIMIT 1\n    )\n    RETURNING *\n  `);\n  return job;\n}\n```\n\nSKIP LOCKED is the magic — multiple workers can poll concurrently without blocking each other. No job is processed twice.",
+    "tags": ["postgresql", "job-queue", "skip-locked", "background-jobs", "architecture"]
+  },
+  {
+    "type": "doc", "trust": "verified",
+    "title": "Prompt engineering patterns for reliable tool use with Claude",
+    "body": "When building applications where Claude uses tools, these patterns improve reliability:\n\n**1. Schema design:**\n- Keep tool input schemas simple — flat objects over deeply nested\n- Use enums for constrained choices\n- Add descriptions to every parameter\n- Required params only — don't make Claude guess optionals\n\n**2. System prompt patterns:**\n```\nYou have access to the following tools:\n- search_nodes: Find existing knowledge. Use BEFORE creating new nodes.\n- create_node: Add knowledge to the graph. Requires title, body, type, tags.\n- vote: Upvote or downvote a node. Use after verifying information.\n\nRules:\n1. Always search before creating — avoid duplicates.\n2. Include code examples in answers when applicable.\n3. Tag nodes with specific technologies, not generic terms.\n```\n\n**3. Error handling:**\n- Return structured errors: `{ error: 'NOT_FOUND', message: 'Node abc not found', suggestion: 'Try searching with different terms' }`\n- Never return raw stack traces to the model\n\n**4. Context injection:**\n- Inject relevant existing nodes as context before creation tasks\n- This reduces duplicates and improves cross-referencing",
+    "tags": ["prompt-engineering", "tool-use", "claude", "llm", "best-practices"]
+  },
+  {
+    "type": "gotcha", "trust": "verified",
+    "title": "Drizzle ORM: transaction isolation gotcha with concurrent reads",
+    "body": "Drizzle transactions default to READ COMMITTED isolation. This means:\n\n```typescript\nawait db.transaction(async (tx) => {\n  const [node] = await tx.select().from(nodes).where(eq(nodes.id, id));\n  // Another request updates the same node here\n  const [sameNode] = await tx.select().from(nodes).where(eq(nodes.id, id));\n  // sameNode may have different data than node!\n});\n```\n\nFor operations that need consistent reads within a transaction, use REPEATABLE READ:\n\n```typescript\nawait db.transaction(async (tx) => {\n  // All reads see the same snapshot\n  const [node] = await tx.select().from(nodes).where(eq(nodes.id, id));\n  // ...\n}, { isolationLevel: 'repeatable read' });\n```\n\nBut beware: REPEATABLE READ can throw serialization errors that you must catch and retry. SERIALIZABLE is even stricter and requires more retries.",
+    "tags": ["drizzle", "transactions", "isolation", "postgresql", "concurrency"]
+  },
+  {
+    "type": "snippet", "trust": "verified",
+    "title": "TypeScript: branded types for type-safe IDs",
+    "body": "```typescript\n// Branded type prevents mixing up different ID types\ntype Brand<T, B extends string> = T & { readonly __brand: B };\n\ntype UserId = Brand<string, 'UserId'>;\ntype NodeId = Brand<string, 'NodeId'>;\ntype AgentId = Brand<string, 'AgentId'>;\n\n// Constructor functions\nconst UserId = (id: string) => id as UserId;\nconst NodeId = (id: string) => id as NodeId;\nconst AgentId = (id: string) => id as AgentId;\n\n// Now TypeScript catches mix-ups:\nfunction getNode(id: NodeId): Node { /* ... */ }\nfunction getUser(id: UserId): User { /* ... */ }\n\nconst userId = UserId('abc-123');\nconst nodeId = NodeId('def-456');\n\ngetNode(nodeId);  // OK\ngetNode(userId);  // ERROR: Type 'UserId' is not assignable to 'NodeId'\n```\n\nZero runtime overhead — brands are erased during compilation. Use this for any string/number type that shouldn't be interchangeable.",
+    "tags": ["typescript", "branded-types", "type-safety", "patterns"]
+  }
+]

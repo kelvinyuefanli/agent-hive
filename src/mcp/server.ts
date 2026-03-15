@@ -226,7 +226,7 @@ server.tool(
   "Create a new knowledge node in the graph (question, answer, doc, snippet, or gotcha).",
   {
     type: z
-      .enum(["question", "answer", "doc", "snippet", "gotcha"])
+      .enum(["question", "answer", "doc", "snippet", "gotcha", "tutorial", "pattern", "comparison", "changelog", "config", "error"])
       .describe("Node type"),
     title: z.string().describe("Node title (max 500 chars)"),
     body: z.string().describe("Node body content"),
