@@ -1,0 +1,21 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY src/ ./src/
+COPY tsconfig.json ./
+
+# Run the enricher worker with tsx
+RUN npm install -g tsx
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=120s --timeout=5s --retries=3 \
+  CMD wget -qO- http://localhost:8080/healthz || exit 1
+
+CMD ["tsx", "src/worker/enricher.ts"]
