@@ -1,0 +1,525 @@
+[
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "FastAPI dependency injection with Depends \u2014 nested dependencies and caching",
+    "body": "FastAPI's `Depends()` system resolves a DAG of callables per request. Dependencies are cached by default within a single request, so the same dependency referenced in multiple places is only executed once.\n\n```python\nfrom fastapi import Depends, FastAPI\nfrom sqlalchemy.ext.asyncio import AsyncSession\n\nasync def get_db() -> AsyncGenerator[AsyncSession, None]:\n    async with async_session() as session:\n        yield session\n\nasync def get_current_user(\n    db: AsyncSession = Depends(get_db),\n    token: str = Depends(oauth2_scheme),\n) -> User:\n    user = await db.execute(select(User).where(User.token == token))\n    return user.scalar_one_or_none()\n\n@app.get(\"/profile\")\nasync def profile(\n    user: User = Depends(get_current_user),\n    db: AsyncSession = Depends(get_db),  # same session instance as above\n):\n    return {\"name\": user.name}\n```\n\nThe `yield` pattern in `get_db` acts like a context manager: code after `yield` runs as cleanup. If you need a fresh instance per injection site, use `Depends(get_db, use_cache=False)`. For class-based dependencies, implement `__call__` on a class and pass an instance to `Depends()`.",
+    "tags": [
+      "fastapi",
+      "dependency-injection",
+      "python",
+      "sqlalchemy",
+      "async"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "FastAPI BackgroundTasks \u2014 fire-and-forget after response",
+    "body": "Use `BackgroundTasks` to run work after the HTTP response is sent. Tasks run in the same event loop (for async functions) or in a thread pool (for sync functions).\n\n```python\nfrom fastapi import BackgroundTasks, FastAPI\nimport httpx\n\napp = FastAPI()\n\nasync def send_webhook(url: str, payload: dict):\n    async with httpx.AsyncClient() as client:\n        await client.post(url, json=payload)\n\ndef write_audit_log(user_id: int, action: str):\n    with open(\"audit.log\", \"a\") as f:\n        f.write(f\"{user_id}:{action}\\n\")\n\n@app.post(\"/orders\")\nasync def create_order(order: OrderCreate, bg: BackgroundTasks):\n    result = await process_order(order)\n    bg.add_task(send_webhook, \"https://hooks.example.com\", result.dict())\n    bg.add_task(write_audit_log, order.user_id, \"order_created\")\n    return result\n```\n\nTasks execute sequentially in the order they are added. If a background task raises an exception, it is logged but does not affect the response. For heavy workloads or reliability requirements, use Celery or arq instead \u2014 BackgroundTasks has no retry mechanism and dies if the process restarts.",
+    "tags": [
+      "fastapi",
+      "background-tasks",
+      "python",
+      "async",
+      "webhooks"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "FastAPI sync vs async route handlers \u2014 thread pool starvation",
+    "body": "FastAPI runs synchronous route handlers in a thread pool (default 40 threads via anyio). If all threads are blocked on slow I/O, the entire application stalls.\n\n```python\n# BAD \u2014 blocks a thread pool slot for 30 seconds\n@app.get(\"/report\")\ndef generate_report():\n    time.sleep(30)  # simulates slow DB query\n    return {\"done\": True}\n\n# GOOD \u2014 use async with an async DB driver\n@app.get(\"/report\")\nasync def generate_report():\n    await asyncio.sleep(30)\n    return {\"done\": True}\n\n# ALSO BAD \u2014 async def with blocking call blocks the event loop\n@app.get(\"/report\")\nasync def generate_report():\n    time.sleep(30)  # blocks the entire event loop!\n    return {\"done\": True}\n```\n\nThe rule is simple: if your handler uses blocking I/O, declare it as `def` (not `async def`) so FastAPI runs it in a thread. If everything is truly async, use `async def`. Never mix blocking calls inside `async def` without wrapping them in `asyncio.to_thread()`. You can increase the thread pool size with `anyio.to_thread.current_default_thread_limiter().total_tokens = 100` at startup.",
+    "tags": [
+      "fastapi",
+      "async",
+      "python",
+      "performance",
+      "thread-pool"
+    ]
+  },
+  {
+    "type": "tutorial",
+    "trust": "verified",
+    "title": "Django async views \u2014 mixing sync ORM with async handlers",
+    "body": "Django 4.1+ supports async views, but the ORM is still predominantly synchronous. Use `sync_to_async` to call ORM methods from async views without blocking the event loop.\n\n```python\nfrom django.http import JsonResponse\nfrom asgiref.sync import sync_to_async\nfrom .models import Article\n\n# Async view with ORM access\nasync def article_list(request):\n    articles = await sync_to_async(list)(\n        Article.objects.filter(published=True).values(\"id\", \"title\")[:20]\n    )\n    return JsonResponse({\"articles\": articles})\n\n# Using the async ORM methods (Django 4.1+)\nasync def article_detail(request, pk):\n    try:\n        article = await Article.objects.aget(pk=pk)\n    except Article.DoesNotExist:\n        return JsonResponse({\"error\": \"not found\"}, status=404)\n    return JsonResponse({\"title\": article.title, \"body\": article.body})\n```\n\nDjango provides native async ORM methods prefixed with `a`: `aget()`, `acreate()`, `acount()`, `aexists()`, and async iterators via `async for obj in queryset`. Deploy under Uvicorn or Daphne with ASGI. Key pitfall: middleware must also be async-aware; sync middleware wrapping an async view forces a thread context switch on every request.",
+    "tags": [
+      "django",
+      "async",
+      "python",
+      "orm",
+      "asgi"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "asyncio.TaskGroup \u2014 structured concurrency in Python 3.11+",
+    "body": "Python 3.11 introduced `TaskGroup` for structured concurrency. All tasks in a group are awaited, and if any raises an exception, the rest are cancelled.\n\n```python\nimport asyncio\nimport httpx\n\nasync def fetch(client: httpx.AsyncClient, url: str) -> dict:\n    resp = await client.get(url)\n    resp.raise_for_status()\n    return resp.json()\n\nasync def fetch_all(urls: list[str]) -> list[dict]:\n    results = []\n    async with httpx.AsyncClient() as client:\n        async with asyncio.TaskGroup() as tg:\n            for url in urls:\n                task = tg.create_task(fetch(client, url))\n                results.append(task)\n    return [t.result() for t in results]\n\nasync def main():\n    urls = [\"https://api.example.com/a\", \"https://api.example.com/b\"]\n    try:\n        data = await fetch_all(urls)\n    except* httpx.HTTPStatusError as eg:\n        for exc in eg.exceptions:\n            print(f\"Request failed: {exc.response.status_code}\")\n```\n\nUnlike `asyncio.gather(return_exceptions=True)`, TaskGroup cancels all remaining tasks on first failure. Use `except*` (ExceptionGroup syntax) to handle multiple errors. This is the recommended pattern over `gather()` for Python 3.11+.",
+    "tags": [
+      "python",
+      "asyncio",
+      "structured-concurrency",
+      "taskgroup",
+      "python-3.11"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "community",
+    "title": "asyncio Semaphore \u2014 rate limiting concurrent async operations",
+    "body": "Use `asyncio.Semaphore` to cap the number of concurrent coroutines when hitting rate-limited APIs or database connection limits.\n\n```python\nimport asyncio\nimport httpx\n\nasync def fetch_with_limit(\n    sem: asyncio.Semaphore,\n    client: httpx.AsyncClient,\n    url: str,\n) -> dict:\n    async with sem:\n        response = await client.get(url)\n        return response.json()\n\nasync def main():\n    sem = asyncio.Semaphore(10)  # max 10 concurrent requests\n    urls = [f\"https://api.example.com/items/{i}\" for i in range(200)]\n    async with httpx.AsyncClient(timeout=30) as client:\n        tasks = [fetch_with_limit(sem, client, url) for url in urls]\n        results = await asyncio.gather(*tasks)\n    return results\n```\n\nFor more complex rate limiting (e.g., X requests per second), combine Semaphore with a token bucket. A common mistake is creating the Semaphore outside the running event loop in Python 3.10+, which raises `DeprecationWarning`. Always create it inside an async function or after the loop is running. `BoundedSemaphore` prevents calling `release()` more times than `acquire()` and is safer for manual acquire/release usage.",
+    "tags": [
+      "python",
+      "asyncio",
+      "semaphore",
+      "rate-limiting",
+      "concurrency"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "verified",
+    "title": "Python Protocol classes \u2014 structural subtyping without inheritance",
+    "body": "PEP 544 introduced `Protocol` for structural (duck) typing. A class matches a Protocol if it has the required methods and attributes, with no explicit inheritance needed.\n\n```python\nfrom typing import Protocol, runtime_checkable\n\n@runtime_checkable\nclass Drawable(Protocol):\n    def draw(self, x: int, y: int) -> None: ...\n    @property\n    def visible(self) -> bool: ...\n\nclass Circle:\n    visible = True\n    def draw(self, x: int, y: int) -> None:\n        print(f\"Circle at ({x}, {y})\")\n\nclass Square:\n    visible = False\n    def draw(self, x: int, y: int) -> None:\n        print(f\"Square at ({x}, {y})\")\n\ndef render(items: list[Drawable]) -> None:\n    for item in items:\n        if item.visible:\n            item.draw(0, 0)\n\nrender([Circle(), Square()])  # works \u2014 both satisfy Drawable\nassert isinstance(Circle(), Drawable)  # True at runtime with @runtime_checkable\n```\n\n`@runtime_checkable` enables `isinstance()` checks but only verifies method existence, not signatures. Use Protocol when you want to decouple modules \u2014 consumers define the interface they need, and any compatible class works without importing a base class. Prefer Protocol over ABC when you do not need to share implementation code.",
+    "tags": [
+      "python",
+      "protocol",
+      "typing",
+      "structural-subtyping",
+      "duck-typing"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "community",
+    "title": "TypeVar with bound vs constrained \u2014 when to use each",
+    "body": "TypeVar supports two modes that behave very differently. `bound` sets an upper limit; `constraints` restricts to specific types.\n\n```python\nfrom typing import TypeVar\n\n# BOUND: T can be Animal or any subclass\nclass Animal:\n    name: str\nclass Dog(Animal):\n    breed: str\n\nT_bound = TypeVar(\"T_bound\", bound=Animal)\ndef clone(obj: T_bound) -> T_bound:\n    return type(obj)(**vars(obj))  # returns same type as input\n\nresult = clone(Dog(name=\"Rex\", breed=\"Lab\"))  # result is Dog, not Animal\n\n# CONSTRAINTS: T must be exactly str or bytes, not a subclass\nT_strlike = TypeVar(\"T_strlike\", str, bytes)\ndef concat(a: T_strlike, b: T_strlike) -> T_strlike:\n    return a + b\n\nconcat(\"hello\", \"world\")  # OK \u2014 both str\nconcat(b\"a\", b\"b\")        # OK \u2014 both bytes\nconcat(\"a\", b\"b\")         # Error \u2014 cannot mix\n```\n\nUse `bound` for class hierarchies where subtype preservation matters. Use constraints when you want overloading behavior \u2014 the type checker treats each constraint as a separate overload. In Python 3.12+, prefer the `type T[T: SomeType]` syntax for bound and `type T[T: (str, bytes)]` for constraints using PEP 695.",
+    "tags": [
+      "python",
+      "typing",
+      "typevar",
+      "generics",
+      "type-hints"
+    ]
+  },
+  {
+    "type": "tutorial",
+    "trust": "verified",
+    "title": "uv package manager \u2014 fast Python project setup and dependency management",
+    "body": "uv is a Rust-based Python package manager that replaces pip, pip-tools, and virtualenv. It resolves and installs dependencies 10-100x faster than pip.\n\n```bash\n# Install uv\ncurl -LsSf https://astral.sh/uv/install.sh | sh\n\n# Create a new project with pyproject.toml\nuv init myproject\ncd myproject\n\n# Add dependencies (automatically creates venv and locks)\nuv add fastapi uvicorn sqlalchemy\n\n# Add dev dependencies\nuv add --dev pytest pytest-asyncio ruff\n\n# Sync environment from lockfile\nuv sync\n\n# Run a command in the venv\nuv run python -m pytest\nuv run uvicorn main:app --reload\n\n# Pin a specific Python version\nuv python pin 3.12\n\n# Compile a requirements.txt from pyproject.toml\nuv pip compile pyproject.toml -o requirements.txt\n```\n\nuv generates a `uv.lock` file for reproducible installs. Unlike pip, it resolves the entire dependency graph before installing anything, catching conflicts early. The `uv run` command auto-creates and activates the virtualenv. For Docker, use `uv sync --frozen --no-dev` to install only production dependencies from the lockfile without re-resolving.",
+    "tags": [
+      "uv",
+      "python",
+      "package-manager",
+      "virtualenv",
+      "dependencies"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Claude API tool use \u2014 defining and calling tools with the Anthropic SDK",
+    "body": "The Anthropic Python SDK supports tool use (function calling) with structured input schemas. Define tools as JSON Schema, and Claude will return `tool_use` content blocks when it wants to call one.\n\n```python\nimport anthropic\n\nclient = anthropic.Anthropic()\n\ntools = [\n    {\n        \"name\": \"get_weather\",\n        \"description\": \"Get current weather for a city\",\n        \"input_schema\": {\n            \"type\": \"object\",\n            \"properties\": {\n                \"city\": {\"type\": \"string\", \"description\": \"City name\"},\n                \"units\": {\"type\": \"string\", \"enum\": [\"celsius\", \"fahrenheit\"]},\n            },\n            \"required\": [\"city\"],\n        },\n    }\n]\n\nresponse = client.messages.create(\n    model=\"claude-sonnet-4-20250514\",\n    max_tokens=1024,\n    tools=tools,\n    messages=[{\"role\": \"user\", \"content\": \"What is the weather in Tokyo?\"}],\n)\n\nfor block in response.content:\n    if block.type == \"tool_use\":\n        print(f\"Tool: {block.name}, Input: {block.input}\")\n        # Execute the tool, then send result back as tool_result\n```\n\nAfter execution, send a `tool_result` message back to continue the conversation. Set `tool_choice={\"type\": \"tool\", \"name\": \"get_weather\"}` to force a specific tool, or `{\"type\": \"any\"}` to require some tool call.",
+    "tags": [
+      "claude",
+      "anthropic",
+      "tool-use",
+      "function-calling",
+      "python"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Claude tool use \u2014 agentic loop with tool_result messages",
+    "body": "An agentic tool-use loop sends tool results back to Claude and continues until the model stops requesting tools.\n\n```python\nimport anthropic\n\nclient = anthropic.Anthropic()\nTOOL_HANDLERS = {\"get_weather\": get_weather, \"search_db\": search_db}\n\ndef run_agent(user_message: str, tools: list) -> str:\n    messages = [{\"role\": \"user\", \"content\": user_message}]\n    while True:\n        response = client.messages.create(\n            model=\"claude-sonnet-4-20250514\",\n            max_tokens=4096,\n            tools=tools,\n            messages=messages,\n        )\n        messages.append({\"role\": \"assistant\", \"content\": response.content})\n        if response.stop_reason == \"end_turn\":\n            return next(b.text for b in response.content if b.type == \"text\")\n        tool_results = []\n        for block in response.content:\n            if block.type == \"tool_use\":\n                result = TOOL_HANDLERS[block.name](**block.input)\n                tool_results.append({\n                    \"type\": \"tool_result\",\n                    \"tool_use_id\": block.id,\n                    \"content\": str(result),\n                })\n        messages.append({\"role\": \"user\", \"content\": tool_results})\n```\n\nCritical: the `tool_use_id` in `tool_result` must match the `id` from the `tool_use` block. If a tool errors, set `is_error: True` in the tool_result. Add a max iteration guard to prevent infinite loops.",
+    "tags": [
+      "claude",
+      "anthropic",
+      "tool-use",
+      "agentic-loop",
+      "python"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "OpenAI function calling with tool_choice and parallel tool calls",
+    "body": "OpenAI's Chat Completions API supports function calling via the `tools` parameter. The model can request multiple tool calls in a single response.\n\n```python\nfrom openai import OpenAI\nimport json\n\nclient = OpenAI()\n\ntools = [{\n    \"type\": \"function\",\n    \"function\": {\n        \"name\": \"search_products\",\n        \"description\": \"Search product catalog\",\n        \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n                \"query\": {\"type\": \"string\"},\n                \"max_price\": {\"type\": \"number\"},\n            },\n            \"required\": [\"query\"],\n        },\n    },\n}]\n\nresponse = client.chat.completions.create(\n    model=\"gpt-4o\",\n    messages=[{\"role\": \"user\", \"content\": \"Find red shoes under $50 and blue hats\"}],\n    tools=tools,\n    tool_choice=\"auto\",  # or {\"type\": \"function\", \"function\": {\"name\": \"search_products\"}}\n)\n\nfor call in response.choices[0].message.tool_calls or []:\n    args = json.loads(call.function.arguments)\n    result = search_products(**args)\n    # Append tool result with call.id as tool_call_id\n```\n\nParallel tool calls are enabled by default. Set `parallel_tool_calls=False` if your tools have ordering dependencies. Use `tool_choice=\"required\"` to force at least one function call.",
+    "tags": [
+      "openai",
+      "function-calling",
+      "tools",
+      "gpt-4o",
+      "python"
+    ]
+  },
+  {
+    "type": "comparison",
+    "trust": "community",
+    "title": "Claude tool use vs OpenAI function calling \u2014 key API differences",
+    "body": "Both APIs enable function calling but differ in structure and behavior.\n\n**Schema location:**\n- Claude: `tools[].input_schema` (top-level property)\n- OpenAI: `tools[].function.parameters` (nested under function)\n\n**Response format:**\n- Claude: `response.content` is a list mixing `text` and `tool_use` blocks. Each `tool_use` has `.id`, `.name`, `.input` (already parsed dict).\n- OpenAI: `response.choices[0].message.tool_calls` is a list. Each has `.id`, `.function.name`, `.function.arguments` (JSON string \u2014 must parse yourself).\n\n**Result submission:**\n- Claude: send `{\"role\": \"user\", \"content\": [{\"type\": \"tool_result\", \"tool_use_id\": id, \"content\": result}]}`\n- OpenAI: send `{\"role\": \"tool\", \"tool_call_id\": id, \"content\": result}`\n\n**Key behavioral differences:**\n- Claude can interleave text and tool calls in one response; OpenAI separates them.\n- OpenAI supports `parallel_tool_calls` flag; Claude may return multiple tool_use blocks but has no explicit toggle.\n- Claude `tool_choice` uses `{\"type\": \"tool\", \"name\": \"x\"}`; OpenAI uses `{\"type\": \"function\", \"function\": {\"name\": \"x\"}}`.\n\nBoth support `\"auto\"` and `\"any\"`/`\"required\"` for forcing tool usage.",
+    "tags": [
+      "claude",
+      "openai",
+      "function-calling",
+      "tool-use",
+      "comparison"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "verified",
+    "title": "RAG chunking strategies \u2014 fixed-size vs semantic vs recursive splitting",
+    "body": "Chunking strategy directly affects retrieval quality. The three main approaches:\n\n**Fixed-size with overlap:**\n```python\ndef fixed_chunks(text: str, size: int = 512, overlap: int = 50) -> list[str]:\n    chunks = []\n    for i in range(0, len(text), size - overlap):\n        chunks.append(text[i:i + size])\n    return chunks\n```\nSimple but splits mid-sentence. Good for uniform content like logs.\n\n**Recursive character splitting (LangChain default):**\nSplits on `[\"\\n\\n\", \"\\n\", \". \", \" \"]` in order, keeping chunks under a max size. Preserves paragraph structure.\n\n**Semantic chunking:**\nUse sentence embeddings to detect topic shifts. Group consecutive sentences whose cosine similarity exceeds a threshold.\n\n```python\nfrom sentence_transformers import SentenceTransformer\nimport numpy as np\n\nmodel = SentenceTransformer(\"all-MiniLM-L6-v2\")\nsentences = text.split(\". \")\nembeddings = model.encode(sentences)\n\nchunks, current = [], [sentences[0]]\nfor i in range(1, len(sentences)):\n    sim = np.dot(embeddings[i], embeddings[i-1])\n    if sim < 0.75:  # topic shift threshold\n        chunks.append(\". \".join(current))\n        current = []\n    current.append(sentences[i])\n```\n\nBest practice: 256-512 tokens per chunk for most embedding models. Always include metadata (source, page, section header) with each chunk for filtering at retrieval time.",
+    "tags": [
+      "rag",
+      "chunking",
+      "embeddings",
+      "nlp",
+      "information-retrieval"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "community",
+    "title": "RAG retrieval \u2014 hybrid search with dense vectors and BM25 sparse retrieval",
+    "body": "Combining dense vector search with sparse BM25 retrieval (hybrid search) consistently outperforms either alone. Dense vectors capture semantic meaning; BM25 catches exact keyword matches.\n\n```python\nfrom rank_bm25 import BM25Okapi\nimport numpy as np\n\n# Sparse retrieval\ntokenized = [doc.split() for doc in documents]\nbm25 = BM25Okapi(tokenized)\nbm25_scores = bm25.get_scores(query.split())\n\n# Dense retrieval (precomputed embeddings)\nquery_emb = embed_model.encode(query)\ndense_scores = np.dot(doc_embeddings, query_emb)\n\n# Reciprocal Rank Fusion (RRF)\ndef rrf(rankings: list[list[int]], k: int = 60) -> list[tuple[int, float]]:\n    scores = {}\n    for ranking in rankings:\n        for rank, doc_id in enumerate(ranking):\n            scores[doc_id] = scores.get(doc_id, 0) + 1 / (k + rank + 1)\n    return sorted(scores.items(), key=lambda x: -x[1])\n\nbm25_ranking = np.argsort(-bm25_scores).tolist()\ndense_ranking = np.argsort(-dense_scores).tolist()\nfused = rrf([bm25_ranking, dense_ranking])\n```\n\nRRF is preferred over weighted score combination because it does not require score normalization. Weaviate, Qdrant, and Pinecone all support hybrid search natively. For production, use the database's built-in hybrid mode rather than implementing fusion yourself.",
+    "tags": [
+      "rag",
+      "hybrid-search",
+      "bm25",
+      "vector-search",
+      "retrieval"
+    ]
+  },
+  {
+    "type": "tutorial",
+    "trust": "verified",
+    "title": "Prompt engineering \u2014 few-shot examples with structured output",
+    "body": "Few-shot prompting provides input-output examples so the model learns the desired format and reasoning pattern. For structured extraction, include 2-3 diverse examples.\n\n```python\nprompt = \"\"\"Extract entities from the text. Return JSON with the schema:\n{\"entities\": [{\"name\": str, \"type\": \"person\"|\"org\"|\"location\", \"context\": str}]}\n\nExample 1:\nText: \"Tim Cook announced new products at Apple Park in Cupertino.\"\nOutput: {\"entities\": [\n  {\"name\": \"Tim Cook\", \"type\": \"person\", \"context\": \"announced new products\"},\n  {\"name\": \"Apple Park\", \"type\": \"location\", \"context\": \"event venue\"},\n  {\"name\": \"Cupertino\", \"type\": \"location\", \"context\": \"city of Apple Park\"}\n]}\n\nExample 2:\nText: \"The WHO report was reviewed by Dr. Chen in Geneva.\"\nOutput: {\"entities\": [\n  {\"name\": \"WHO\", \"type\": \"org\", \"context\": \"published report\"},\n  {\"name\": \"Dr. Chen\", \"type\": \"person\", \"context\": \"reviewed report\"},\n  {\"name\": \"Geneva\", \"type\": \"location\", \"context\": \"review location\"}\n]}\n\nNow extract from:\nText: \"{user_text}\"\nOutput:\"\"\"\n```\n\nKey principles: examples should cover edge cases (abbreviations, titles, ambiguous names). Place examples before the actual input. Keep examples short but representative. For Claude specifically, use XML tags like `<example>` to clearly delineate examples from instructions.",
+    "tags": [
+      "prompt-engineering",
+      "few-shot",
+      "structured-output",
+      "llm",
+      "extraction"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Chain-of-thought prompting \u2014 step-by-step reasoning for complex tasks",
+    "body": "Chain-of-thought (CoT) prompting instructs the model to reason step-by-step before answering. This dramatically improves accuracy on math, logic, and multi-step analysis.\n\n```python\n# Zero-shot CoT \u2014 just add the magic phrase\nprompt = f\"\"\"Question: {question}\n\nLet's think through this step by step before giving the final answer.\"\"\"\n\n# Structured CoT with XML (works well with Claude)\nprompt = f\"\"\"Analyze whether this code has a security vulnerability.\n\n<code>\n{code_snippet}\n</code>\n\nThink through your analysis in <thinking> tags, then provide your verdict.\n\n<thinking>\n1. Identify all user inputs\n2. Trace data flow through the code\n3. Check for sanitization at each boundary\n4. Consider edge cases and attack vectors\n</thinking>\n\n<verdict>\n  <vulnerable>true/false</vulnerable>\n  <type>vulnerability type</type>\n  <fix>recommended fix</fix>\n</verdict>\"\"\"\n```\n\nFor production pipelines, use CoT inside a `thinking` block and extract only the final structured answer. This gives you reasoning quality without parsing overhead. CoT adds tokens, so balance cost vs accuracy. It is most valuable for tasks where the model would otherwise skip steps \u2014 classification tasks rarely benefit, while debugging and planning tasks almost always do.",
+    "tags": [
+      "prompt-engineering",
+      "chain-of-thought",
+      "reasoning",
+      "llm",
+      "claude"
+    ]
+  },
+  {
+    "type": "comparison",
+    "trust": "community",
+    "title": "Vector database comparison \u2014 Pinecone vs Qdrant vs Weaviate vs ChromaDB",
+    "body": "Choosing a vector DB depends on scale, deployment model, and feature needs.\n\n**Pinecone:** Fully managed, serverless option available. Supports hybrid search (sparse+dense), metadata filtering, and namespaces. No self-hosted option. Best for teams that want zero operational overhead. Pricing scales with storage and queries.\n\n**Qdrant:** Open-source, written in Rust. Excellent performance on filtered search. Supports quantization (scalar, product, binary) for memory reduction. Docker or Qdrant Cloud. Rich filtering with payload indexes. Best for: self-hosted production with complex filtering requirements.\n\n**Weaviate:** Open-source, Go-based. Built-in vectorization modules (text2vec, img2vec). GraphQL API. Supports hybrid BM25+vector search natively. Multi-tenancy support. Best for: projects wanting integrated ML model inference.\n\n**ChromaDB:** Open-source, Python-native. Lightweight, runs in-process or client-server. Minimal setup \u2014 great for prototyping and small datasets. Limited scalability (single-node). Best for: local development, RAG prototyping, datasets under 1M vectors.\n\n**Quick decision matrix:**\n- Prototype/dev: ChromaDB\n- Production managed: Pinecone\n- Production self-hosted, complex filters: Qdrant\n- Need built-in vectorization: Weaviate\n\nAll support cosine, dot product, and euclidean distance metrics. Qdrant and Weaviate support HNSW index tuning; Pinecone abstracts this away.",
+    "tags": [
+      "vector-database",
+      "pinecone",
+      "qdrant",
+      "weaviate",
+      "chromadb",
+      "comparison"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "community",
+    "title": "LLM streaming with Server-Sent Events in FastAPI",
+    "body": "Stream LLM responses to the client using SSE with FastAPI's `StreamingResponse` and the Anthropic SDK's streaming API.\n\n```python\nfrom fastapi import FastAPI\nfrom fastapi.responses import StreamingResponse\nimport anthropic\nimport json\n\napp = FastAPI()\nclient = anthropic.Anthropic()\n\nasync def stream_claude(prompt: str):\n    with client.messages.stream(\n        model=\"claude-sonnet-4-20250514\",\n        max_tokens=2048,\n        messages=[{\"role\": \"user\", \"content\": prompt}],\n    ) as stream:\n        for text in stream.text_stream:\n            data = json.dumps({\"text\": text})\n            yield f\"data: {data}\\n\\n\"\n    yield \"data: [DONE]\\n\\n\"\n\n@app.get(\"/stream\")\nasync def stream_endpoint(prompt: str):\n    return StreamingResponse(\n        stream_claude(prompt),\n        media_type=\"text/event-stream\",\n        headers={\n            \"Cache-Control\": \"no-cache\",\n            \"Connection\": \"keep-alive\",\n            \"X-Accel-Buffering\": \"no\",  # disable nginx buffering\n        },\n    )\n```\n\nClient-side consumption:\n```javascript\nconst source = new EventSource('/stream?prompt=Hello');\nsource.onmessage = (e) => {\n  if (e.data === '[DONE]') { source.close(); return; }\n  const { text } = JSON.parse(e.data);\n  document.getElementById('output').textContent += text;\n};\n```\n\nSet `X-Accel-Buffering: no` header to prevent nginx/reverse proxies from buffering the stream.",
+    "tags": [
+      "llm",
+      "streaming",
+      "sse",
+      "fastapi",
+      "claude",
+      "python"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "community",
+    "title": "LLM streaming \u2014 handling backpressure and client disconnection",
+    "body": "When streaming LLM responses, you must handle client disconnects gracefully to avoid wasting API credits and server resources.\n\n```python\nfrom fastapi import FastAPI, Request\nfrom fastapi.responses import StreamingResponse\nimport anthropic\nimport asyncio\n\napp = FastAPI()\nclient = anthropic.AsyncAnthropic()\n\nasync def stream_with_disconnect(prompt: str, request: Request):\n    async with client.messages.stream(\n        model=\"claude-sonnet-4-20250514\",\n        max_tokens=2048,\n        messages=[{\"role\": \"user\", \"content\": prompt}],\n    ) as stream:\n        async for text in stream.text_stream:\n            if await request.is_disconnected():\n                # Client left \u2014 stop consuming from the API\n                break\n            yield f\"data: {json.dumps({'text': text})}\\n\\n\"\n            await asyncio.sleep(0)  # yield control to check disconnect\n    yield \"data: [DONE]\\n\\n\"\n\n@app.get(\"/stream\")\nasync def stream_endpoint(prompt: str, request: Request):\n    return StreamingResponse(\n        stream_with_disconnect(prompt, request),\n        media_type=\"text/event-stream\",\n    )\n```\n\nThe `await asyncio.sleep(0)` is critical \u2014 without it, the loop may never check `is_disconnected()` because the async generator runs synchronously between yields. For the async Anthropic client, cancellation of the stream context manager properly closes the underlying HTTP connection. Always use `AsyncAnthropic` for async FastAPI routes to avoid blocking the event loop.",
+    "tags": [
+      "llm",
+      "streaming",
+      "backpressure",
+      "fastapi",
+      "async",
+      "python"
+    ]
+  },
+  {
+    "type": "tutorial",
+    "trust": "verified",
+    "title": "MCP server implementation \u2014 building a Model Context Protocol tool server in Python",
+    "body": "The Model Context Protocol (MCP) lets you expose tools, resources, and prompts to LLM clients like Claude Desktop. Use the `mcp` Python SDK to build a server.\n\n```python\nfrom mcp.server.fastmcp import FastMCP\n\nmcp = FastMCP(\"my-tools\")\n\n@mcp.tool()\ndef search_docs(query: str, limit: int = 5) -> str:\n    \"\"\"Search the documentation database for relevant articles.\"\"\"\n    results = db.search(query, limit=limit)\n    return \"\\n\".join(f\"- {r.title}: {r.summary}\" for r in results)\n\n@mcp.tool()\nasync def run_query(sql: str) -> str:\n    \"\"\"Execute a read-only SQL query against the analytics database.\"\"\"\n    if not sql.strip().upper().startswith(\"SELECT\"):\n        return \"Error: Only SELECT queries are allowed\"\n    rows = await db.fetch(sql)\n    return json.dumps(rows, default=str)\n\n@mcp.resource(\"config://app\")\ndef get_app_config() -> str:\n    \"\"\"Current application configuration.\"\"\"\n    return json.dumps(config.to_dict())\n\nif __name__ == \"__main__\":\n    mcp.run(transport=\"stdio\")  # or \"sse\" for HTTP\n```\n\nConfigure in Claude Desktop's `claude_desktop_config.json`:\n```json\n{\"mcpServers\": {\"my-tools\": {\"command\": \"uv\", \"args\": [\"run\", \"server.py\"]}}}\n```\n\nTool docstrings become the tool descriptions sent to the model. Type annotations are converted to JSON Schema automatically. The `FastMCP` class handles the JSON-RPC protocol, capability negotiation, and message framing.",
+    "tags": [
+      "mcp",
+      "model-context-protocol",
+      "claude",
+      "tools",
+      "python"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "community",
+    "title": "MCP server \u2014 common errors with stdio transport and logging conflicts",
+    "body": "When running an MCP server with stdio transport, any output to stdout that is not valid JSON-RPC will crash the connection. This is the most common source of MCP server failures.\n\n```\nError: Parse error - unexpected token 'D' at position 0\n```\n\nThis happens because `print()` statements, logging to stdout, or library warnings corrupt the JSON-RPC stream.\n\n```python\n# BAD \u2014 print goes to stdout, corrupts the protocol\n@mcp.tool()\ndef my_tool(query: str) -> str:\n    print(f\"Searching for: {query}\")  # breaks everything\n    return search(query)\n\n# GOOD \u2014 log to stderr instead\nimport sys\n\n@mcp.tool()\ndef my_tool(query: str) -> str:\n    print(f\"Searching for: {query}\", file=sys.stderr)\n    return search(query)\n\n# BEST \u2014 use Python logging configured for stderr\nimport logging\nlogging.basicConfig(stream=sys.stderr, level=logging.DEBUG)\nlogger = logging.getLogger(__name__)\n\n@mcp.tool()\ndef my_tool(query: str) -> str:\n    logger.info(f\"Searching for: {query}\")\n    return search(query)\n```\n\nAnother common issue: forgetting to handle exceptions in tools. Unhandled exceptions cause the MCP server process to exit. Always wrap tool implementations in try/except and return error strings rather than raising.",
+    "tags": [
+      "mcp",
+      "debugging",
+      "stdio",
+      "logging",
+      "python"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "unverified",
+    "title": "Tailwind CSS responsive design \u2014 mobile-first breakpoints and container queries",
+    "body": "Tailwind uses mobile-first breakpoints. Unprefixed utilities apply to all sizes; prefixed utilities apply at that breakpoint and above.\n\n```html\n<!-- Mobile: 1 col, Tablet: 2 cols, Desktop: 3 cols -->\n<div class=\"grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4\">\n  <div class=\"p-4 bg-white rounded-lg shadow\">Card 1</div>\n  <div class=\"p-4 bg-white rounded-lg shadow\">Card 2</div>\n  <div class=\"p-4 bg-white rounded-lg shadow\">Card 3</div>\n</div>\n\n<!-- Responsive typography -->\n<h1 class=\"text-2xl sm:text-3xl md:text-4xl lg:text-5xl font-bold\">\n  Responsive Heading\n</h1>\n\n<!-- Hide/show based on breakpoint -->\n<nav class=\"hidden md:flex gap-4\">Desktop Nav</nav>\n<button class=\"md:hidden\">Menu</button>\n\n<!-- Container queries (Tailwind v3.4+) -->\n<div class=\"@container\">\n  <div class=\"@sm:flex @sm:gap-4 @lg:grid @lg:grid-cols-3\">\n    <div>Responds to container width, not viewport</div>\n  </div>\n</div>\n```\n\nBreakpoints: `sm` (640px), `md` (768px), `lg` (1024px), `xl` (1280px), `2xl` (1536px). Container query sizes: `@sm` (20rem), `@md` (28rem), `@lg` (32rem). Container queries are ideal for reusable components that may appear in different layout contexts \u2014 sidebars, modals, or widget grids.",
+    "tags": [
+      "tailwind",
+      "responsive",
+      "css",
+      "container-queries",
+      "mobile-first"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "verified",
+    "title": "Tailwind dark mode \u2014 class strategy with system preference detection",
+    "body": "Tailwind supports dark mode via the `dark:` variant. Use the `class` strategy for manual toggling or `media` for automatic OS preference.\n\n```javascript\n// tailwind.config.js\nmodule.exports = {\n  darkMode: 'class', // or 'media' for OS preference only\n}\n```\n\n```html\n<!-- Components use dark: prefix -->\n<div class=\"bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100\">\n  <h2 class=\"text-xl font-bold\">Title</h2>\n  <p class=\"text-gray-600 dark:text-gray-400\">Subtitle</p>\n  <button class=\"bg-blue-600 dark:bg-blue-500 hover:bg-blue-700\n                 dark:hover:bg-blue-400 text-white px-4 py-2 rounded\">\n    Action\n  </button>\n</div>\n```\n\n```javascript\n// Toggle with system preference detection and localStorage override\nfunction initTheme() {\n  const stored = localStorage.getItem('theme');\n  if (stored === 'dark' || (!stored && window.matchMedia('(prefers-color-scheme: dark)').matches)) {\n    document.documentElement.classList.add('dark');\n  }\n}\n\nfunction toggleTheme() {\n  const isDark = document.documentElement.classList.toggle('dark');\n  localStorage.setItem('theme', isDark ? 'dark' : 'light');\n}\n```\n\nPut the `initTheme()` call in `<head>` as a blocking script to prevent flash of wrong theme (FOWT). With `class` strategy, add `dark` to the `<html>` element, not `<body>`.",
+    "tags": [
+      "tailwind",
+      "dark-mode",
+      "css",
+      "theming",
+      "javascript"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "community",
+    "title": "Tailwind dark mode \u2014 flash of unstyled content (FOUC) with SSR frameworks",
+    "body": "When using Tailwind's `class` dark mode strategy with Next.js or Nuxt, users see a flash of the light theme before JavaScript hydrates and applies the dark class.\n\n```html\n<!-- BAD: theme script in component \u2014 runs after hydration -->\n<script>\n  // Too late! Page already rendered in light mode\n  if (localStorage.theme === 'dark') document.documentElement.classList.add('dark');\n</script>\n```\n\nThe fix: inject a blocking script in `<head>` that runs before any rendering.\n\n```html\n<!-- In Next.js: app/layout.tsx -->\n<head>\n  <script dangerouslySetInnerHTML={{ __html: `\n    try {\n      if (localStorage.theme === 'dark' ||\n          (!('theme' in localStorage) &&\n           window.matchMedia('(prefers-color-scheme: dark)').matches)) {\n        document.documentElement.classList.add('dark')\n      } else {\n        document.documentElement.classList.remove('dark')\n      }\n    } catch (_) {}\n  `}} />\n</head>\n```\n\nThis runs synchronously before the browser paints, preventing the flash. The `try/catch` handles environments where `localStorage` is unavailable (private browsing in some browsers, SSR). For Nuxt, use the `useHead` composable with `tagPosition: 'head'`.",
+    "tags": [
+      "tailwind",
+      "dark-mode",
+      "fouc",
+      "nextjs",
+      "ssr"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "verified",
+    "title": "CSS container queries \u2014 responsive components independent of viewport",
+    "body": "CSS container queries let elements respond to their parent container's size rather than the viewport. This enables truly reusable components.\n\n```css\n/* Define a containment context */\n.card-container {\n  container-type: inline-size;\n  container-name: card;\n}\n\n/* Style based on container width */\n@container card (min-width: 400px) {\n  .card {\n    display: grid;\n    grid-template-columns: 200px 1fr;\n    gap: 1rem;\n  }\n}\n\n@container card (min-width: 700px) {\n  .card {\n    grid-template-columns: 250px 1fr 150px;\n  }\n  .card__actions {\n    flex-direction: column;\n  }\n}\n\n/* Container query units */\n.card__title {\n  font-size: clamp(1rem, 3cqi, 1.5rem); /* cqi = 1% of container inline size */\n}\n```\n\n```html\n<div class=\"card-container\">\n  <article class=\"card\">\n    <img class=\"card__image\" src=\"...\" />\n    <div class=\"card__body\">\n      <h2 class=\"card__title\">Responsive to parent</h2>\n    </div>\n  </article>\n</div>\n```\n\n`container-type: inline-size` enables width-based queries. Container query units: `cqw` (width), `cqh` (height), `cqi` (inline), `cqb` (block). Browser support: all modern browsers since February 2023. No polyfill needed for new projects.",
+    "tags": [
+      "css",
+      "container-queries",
+      "responsive",
+      "components",
+      "layout"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Framer Motion \u2014 animate presence for mount/unmount transitions in React",
+    "body": "Framer Motion's `AnimatePresence` enables exit animations when components unmount \u2014 something CSS alone cannot handle.\n\n```tsx\nimport { motion, AnimatePresence } from 'framer-motion';\nimport { useState } from 'react';\n\nfunction Notifications({ items }: { items: Notification[] }) {\n  return (\n    <AnimatePresence mode=\"popLayout\">\n      {items.map((item) => (\n        <motion.div\n          key={item.id}\n          initial={{ opacity: 0, y: -20, scale: 0.95 }}\n          animate={{ opacity: 1, y: 0, scale: 1 }}\n          exit={{ opacity: 0, x: 100, scale: 0.95 }}\n          transition={{ type: \"spring\", stiffness: 300, damping: 25 }}\n          layout\n          className=\"bg-white p-4 rounded-lg shadow mb-2\"\n        >\n          {item.message}\n        </motion.div>\n      ))}\n    </AnimatePresence>\n  );\n}\n```\n\nKey props: `mode=\"popLayout\"` removes items from layout flow immediately so remaining items animate smoothly. The `layout` prop animates position changes when siblings are added/removed. Use `mode=\"wait\"` if only one child should show at a time (page transitions). The `key` prop is critical \u2014 AnimatePresence tracks children by key to know when one has been removed and should play its exit animation.",
+    "tags": [
+      "framer-motion",
+      "react",
+      "animation",
+      "animate-presence",
+      "transitions"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "community",
+    "title": "Framer Motion \u2014 reusable animation variants with staggered children",
+    "body": "Define animation variants as objects for reusable, orchestrated animations. Use `staggerChildren` to cascade animations through a list.\n\n```tsx\nimport { motion } from 'framer-motion';\n\nconst container = {\n  hidden: { opacity: 0 },\n  show: {\n    opacity: 1,\n    transition: {\n      staggerChildren: 0.08,\n      delayChildren: 0.1,\n    },\n  },\n};\n\nconst item = {\n  hidden: { opacity: 0, y: 20 },\n  show: {\n    opacity: 1,\n    y: 0,\n    transition: { type: 'spring', stiffness: 300, damping: 24 },\n  },\n};\n\nfunction FeatureGrid({ features }: { features: Feature[] }) {\n  return (\n    <motion.ul\n      variants={container}\n      initial=\"hidden\"\n      animate=\"show\"\n      className=\"grid grid-cols-3 gap-4\"\n    >\n      {features.map((f) => (\n        <motion.li key={f.id} variants={item} className=\"p-6 rounded-xl bg-white shadow\">\n          <h3>{f.title}</h3>\n          <p>{f.description}</p>\n        </motion.li>\n      ))}\n    </motion.ul>\n  );\n}\n```\n\nVariant labels propagate down the component tree \u2014 children automatically inherit `initial` and `animate` from parents. You only need to define `variants` on children; the orchestration (`staggerChildren`, `delayChildren`) is defined on the parent's transition. This pattern works well with `whileInView` for scroll-triggered reveals.",
+    "tags": [
+      "framer-motion",
+      "react",
+      "animation",
+      "variants",
+      "stagger"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Python asyncio \u2014 RuntimeError: cannot schedule new futures after shutdown",
+    "body": "This error occurs when you try to submit tasks to a `ThreadPoolExecutor` or call `asyncio.run_coroutine_threadsafe` after the event loop or executor has been shut down.\n\n```\nRuntimeError: cannot schedule new futures after shutdown\n```\n\nCommon cause: a FastAPI/Starlette `on_event('shutdown')` handler tries to dispatch async work.\n\n```python\n# BAD \u2014 executor already shutting down\n@app.on_event(\"shutdown\")\nasync def shutdown():\n    await asyncio.to_thread(db.close)  # may hit shutdown executor\n\n# GOOD \u2014 close synchronously or use lifespan\nfrom contextlib import asynccontextmanager\n\n@asynccontextmanager\nasync def lifespan(app: FastAPI):\n    db = await create_connection()\n    yield {\"db\": db}\n    await db.close()  # runs before executor shutdown\n\napp = FastAPI(lifespan=lifespan)\n```\n\nThe lifespan context manager (FastAPI 0.93+) is the correct pattern. Its cleanup runs while the event loop is still active, before the executor is torn down. The old `on_event(\"shutdown\")` approach has a race condition because Uvicorn may shut down the thread pool before all shutdown handlers complete. If you must use threads during cleanup, create a dedicated `ThreadPoolExecutor` that you manage yourself rather than relying on the default executor.",
+    "tags": [
+      "python",
+      "asyncio",
+      "runtime-error",
+      "fastapi",
+      "shutdown"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Python \u2014 TypeError: object async_generator cannot be used in await expression",
+    "body": "This error means you tried to `await` an async generator function instead of iterating it with `async for`.\n\n```\nTypeError: object async_generator can't be used in 'await' expression\n```\n\n```python\n# BAD \u2014 await on an async generator\nasync def stream_data():\n    for i in range(10):\n        yield i\n        await asyncio.sleep(0.1)\n\nasync def main():\n    data = await stream_data()  # TypeError!\n\n# GOOD \u2014 use async for\nasync def main():\n    async for chunk in stream_data():\n        print(chunk)\n\n# GOOD \u2014 collect into list\nasync def main():\n    data = [chunk async for chunk in stream_data()]\n```\n\nThis often happens when refactoring a coroutine into a generator. If a function contains `yield`, it becomes a generator regardless of whether it is `async def`. Check the return annotation: `AsyncGenerator[int, None]` vs `Coroutine`. Another variant of this error appears when passing an async generator to `asyncio.gather()` \u2014 gather expects awaitables, not async iterables. Wrap in a collector coroutine first:\n\n```python\nasync def collect(agen):\n    return [item async for item in agen]\n\nresults = await asyncio.gather(collect(stream_a()), collect(stream_b()))\n```",
+    "tags": [
+      "python",
+      "asyncio",
+      "async-generator",
+      "type-error",
+      "debugging"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "community",
+    "title": "Python 3.12 type parameter syntax (PEP 695) \u2014 cleaner generics",
+    "body": "Python 3.12 introduced a new syntax for type parameters that replaces the verbose `TypeVar` declarations.\n\n```python\n# OLD (pre-3.12)\nfrom typing import TypeVar, Generic\n\nT = TypeVar(\"T\")\nK = TypeVar(\"K\", bound=str)\n\nclass Stack(Generic[T]):\n    def __init__(self) -> None:\n        self._items: list[T] = []\n    def push(self, item: T) -> None:\n        self._items.append(item)\n    def pop(self) -> T:\n        return self._items.pop()\n\ndef first(items: list[T]) -> T:\n    return items[0]\n\n# NEW (3.12+)\nclass Stack[T]:\n    def __init__(self) -> None:\n        self._items: list[T] = []\n    def push(self, item: T) -> None:\n        self._items.append(item)\n    def pop(self) -> T:\n        return self._items.pop()\n\ndef first[T](items: list[T]) -> T:\n    return items[0]\n\n# Bounded and constrained\ndef find_key[K: str](mapping: dict[K, object], value: object) -> K: ...\ndef encode[S: (str, bytes)](data: S) -> S: ...\n\n# Type aliases (PEP 695)\ntype Vector[T] = list[T]\ntype Matrix[T] = list[Vector[T]]\ntype JSONValue = str | int | float | bool | None | list['JSONValue'] | dict[str, 'JSONValue']\n```\n\nThe new syntax is more readable and scopes type parameters to the class/function. The `type` statement also supports recursive type aliases without forward references.",
+    "tags": [
+      "python",
+      "typing",
+      "generics",
+      "pep-695",
+      "python-3.12"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "FastAPI Pydantic V2 migration \u2014 model_dump replaces dict, model_validate replaces parse_obj",
+    "body": "Pydantic V2 (used by FastAPI 0.100+) renamed several core methods. Code using V1 methods will raise deprecation warnings or errors.\n\n```python\n# V1 (deprecated) -> V2 (current)\nmodel.dict()           -> model.model_dump()\nmodel.json()           -> model.model_dump_json()\nModel.parse_obj(data)  -> Model.model_validate(data)\nModel.parse_raw(json)  -> Model.model_validate_json(json)\nModel.schema()         -> Model.model_json_schema()\n\n# V1 Config class -> V2 model_config\nclass UserV1(BaseModel):\n    name: str\n    class Config:\n        from_attributes = True\n\nclass UserV2(BaseModel):\n    model_config = ConfigDict(from_attributes=True)\n    name: str\n\n# V1 validator -> V2 field_validator\nfrom pydantic import field_validator\n\nclass Order(BaseModel):\n    quantity: int\n\n    @field_validator('quantity')\n    @classmethod\n    def must_be_positive(cls, v: int) -> int:\n        if v <= 0:\n            raise ValueError('quantity must be positive')\n        return v\n```\n\nKey breaking change: `orm_mode` is now `from_attributes`. The `@validator` decorator is replaced by `@field_validator` (for per-field) and `@model_validator` (for cross-field). V2 is 5-50x faster than V1 due to the Rust core. Use `model.model_dump(exclude_unset=True)` for PATCH endpoints.",
+    "tags": [
+      "pydantic",
+      "fastapi",
+      "migration",
+      "python",
+      "validation"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "community",
+    "title": "Python dataclasses with slots and frozen \u2014 immutable value objects",
+    "body": "Python 3.10+ dataclasses support `slots=True` for memory savings and faster attribute access, and `frozen=True` for immutability.\n\n```python\nfrom dataclasses import dataclass, field\nfrom typing import Self\n\n@dataclass(frozen=True, slots=True)\nclass Point:\n    x: float\n    y: float\n\n    def distance_to(self, other: Self) -> float:\n        return ((self.x - other.x) ** 2 + (self.y - other.y) ** 2) ** 0.5\n\n    def translate(self, dx: float, dy: float) -> Self:\n        # Cannot mutate \u2014 return new instance\n        return Point(self.x + dx, self.y + dy)\n\n@dataclass(frozen=True, slots=True)\nclass LineSegment:\n    start: Point\n    end: Point\n    metadata: dict = field(default_factory=dict)\n\n    @property\n    def length(self) -> float:\n        return self.start.distance_to(self.end)\n\np1 = Point(0, 0)\np2 = Point(3, 4)\nline = LineSegment(p1, p2)\nprint(line.length)  # 5.0\np1.x = 10  # FrozenInstanceError!\n```\n\n`slots=True` (3.10+) generates `__slots__` automatically, reducing memory by ~30-40% and preventing accidental attribute creation. `frozen=True` makes instances hashable (usable as dict keys and set members). Gotcha: `frozen` dataclasses with mutable default fields (like `dict`) are not truly immutable \u2014 the dict contents can still be modified.",
+    "tags": [
+      "python",
+      "dataclasses",
+      "immutability",
+      "slots",
+      "value-objects"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "community",
+    "title": "Prompt engineering \u2014 system prompts and role-based instructions for Claude",
+    "body": "System prompts set Claude's behavior, persona, and constraints. They are processed before user messages and have strong influence on output quality.\n\n```python\nimport anthropic\n\nclient = anthropic.Anthropic()\n\nsystem_prompt = \"\"\"You are a senior Python code reviewer. Your job is to:\n1. Identify bugs, security issues, and performance problems\n2. Suggest improvements following PEP 8 and modern Python idioms\n3. Rate severity: critical, warning, info\n4. Always provide corrected code snippets\n\nRules:\n- Be concise. No pleasantries.\n- If the code is correct, say \"LGTM\" and note any minor style suggestions.\n- Focus on correctness over style. Flag actual bugs before nitpicks.\n- Use Python 3.12+ features when suggesting improvements.\n\nOutput format:\n<review>\n  <issue severity=\"critical|warning|info\">\n    <location>file:line</location>\n    <description>What's wrong</description>\n    <fix>Corrected code</fix>\n  </issue>\n</review>\"\"\"\n\nresponse = client.messages.create(\n    model=\"claude-sonnet-4-20250514\",\n    max_tokens=2048,\n    system=system_prompt,\n    messages=[{\"role\": \"user\", \"content\": f\"Review this code:\\n```python\\n{code}\\n```\"}],\n)\n```\n\nBest practices: put output format in the system prompt, not user message. Use XML tags for structure \u2014 Claude follows XML formatting instructions reliably. Keep rules as numbered lists. Avoid contradictory instructions. Test with adversarial inputs.",
+    "tags": [
+      "prompt-engineering",
+      "system-prompt",
+      "claude",
+      "code-review",
+      "llm"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Framer Motion \u2014 layout animations for shared element transitions",
+    "body": "The `layoutId` prop in Framer Motion creates shared layout animations \u2014 an element smoothly transitions between positions when its component tree changes.\n\n```tsx\nimport { motion, AnimatePresence } from 'framer-motion';\nimport { useState } from 'react';\n\nfunction ImageGallery({ images }: { images: ImageItem[] }) {\n  const [selected, setSelected] = useState<string | null>(null);\n\n  return (\n    <>\n      <div className=\"grid grid-cols-3 gap-2\">\n        {images.map((img) => (\n          <motion.div\n            key={img.id}\n            layoutId={`image-${img.id}`}\n            onClick={() => setSelected(img.id)}\n            className=\"cursor-pointer rounded-lg overflow-hidden\"\n          >\n            <img src={img.src} className=\"w-full h-40 object-cover\" />\n          </motion.div>\n        ))}\n      </div>\n\n      <AnimatePresence>\n        {selected && (\n          <motion.div\n            className=\"fixed inset-0 z-50 flex items-center justify-center bg-black/50\"\n            initial={{ opacity: 0 }}\n            animate={{ opacity: 1 }}\n            exit={{ opacity: 0 }}\n            onClick={() => setSelected(null)}\n          >\n            <motion.div layoutId={`image-${selected}`} className=\"w-3/4 rounded-xl overflow-hidden\">\n              <img src={images.find(i => i.id === selected)!.src} className=\"w-full\" />\n            </motion.div>\n          </motion.div>\n        )}\n      </AnimatePresence>\n    </>\n  );\n}\n```\n\nThe browser animates position, size, and border-radius automatically between the grid thumbnail and the expanded modal. Use `layout=\"position\"` to only animate position without size changes.",
+    "tags": [
+      "framer-motion",
+      "react",
+      "layout-animation",
+      "shared-element",
+      "gallery"
+    ]
+  },
+  {
+    "type": "tutorial",
+    "trust": "unverified",
+    "title": "RAG with Claude \u2014 implementing retrieval-augmented generation end to end",
+    "body": "A complete RAG pipeline: chunk documents, embed them, store in a vector DB, retrieve relevant chunks, and augment the prompt.\n\n```python\nimport anthropic\nimport chromadb\nfrom sentence_transformers import SentenceTransformer\n\n# 1. Setup\nembed_model = SentenceTransformer(\"all-MiniLM-L6-v2\")\nchroma = chromadb.PersistentClient(path=\"./chroma_db\")\ncollection = chroma.get_or_create_collection(\"docs\", metadata={\"hnsw:space\": \"cosine\"})\nclaude = anthropic.Anthropic()\n\n# 2. Ingest documents\ndef ingest(doc_id: str, text: str, chunk_size: int = 500):\n    chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size - 50)]\n    embeddings = embed_model.encode(chunks).tolist()\n    collection.add(\n        ids=[f\"{doc_id}_{i}\" for i in range(len(chunks))],\n        embeddings=embeddings,\n        documents=chunks,\n        metadatas=[{\"source\": doc_id, \"chunk\": i} for i in range(len(chunks))],\n    )\n\n# 3. Query with RAG\ndef ask(question: str, n_results: int = 5) -> str:\n    query_emb = embed_model.encode(question).tolist()\n    results = collection.query(query_embeddings=[query_emb], n_results=n_results)\n    context = \"\\n---\\n\".join(results[\"documents\"][0])\n\n    response = claude.messages.create(\n        model=\"claude-sonnet-4-20250514\",\n        max_tokens=1024,\n        system=\"Answer based on the provided context. Cite sources.\",\n        messages=[{\"role\": \"user\", \"content\": f\"Context:\\n{context}\\n\\nQuestion: {question}\"}],\n    )\n    return response.content[0].text\n```\n\nKey design decisions: use the same embedding model for ingestion and query. Overlap chunks by 10% to preserve context across boundaries. Add metadata for source attribution. For production, replace ChromaDB with Qdrant or Pinecone.",
+    "tags": [
+      "rag",
+      "claude",
+      "chromadb",
+      "embeddings",
+      "python"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "unverified",
+    "title": "anthropic.BadRequestError: messages.0.content.0.tool_result.tool_use_id not found",
+    "body": "This error occurs when you send a `tool_result` message with a `tool_use_id` that does not match any `tool_use` block in the preceding assistant message.\n\n```\nanthropic.BadRequestError: 400 - {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\n\"message\":\"messages.1.content.0.tool_result.tool_use_id: tool_use_id not found in preceding assistant message\"}}\n```\n\nCommon causes:\n\n```python\n# Cause 1: Forgetting to include the assistant message before tool results\nmessages = [\n    {\"role\": \"user\", \"content\": \"What's the weather?\"},\n    # Missing: {\"role\": \"assistant\", \"content\": response.content}\n    {\"role\": \"user\", \"content\": [{\"type\": \"tool_result\", \"tool_use_id\": \"xxx\", \"content\": \"72F\"}]},\n]\n\n# Cause 2: Using a stale or fabricated tool_use_id\nfor block in response.content:\n    if block.type == \"tool_use\":\n        result = execute_tool(block.name, block.input)\n        tool_results.append({\n            \"type\": \"tool_result\",\n            \"tool_use_id\": block.id,  # must use block.id, not a custom ID\n            \"content\": str(result),\n        })\n\n# Cause 3: Appending tool results to wrong position in messages\n# The tool_result must immediately follow the assistant message containing the tool_use\n```\n\nFix: always append the full `response.content` as an assistant message, then append the user message containing tool_results. The `tool_use_id` values must be the exact string IDs from the assistant response.",
+    "tags": [
+      "anthropic",
+      "claude",
+      "tool-use",
+      "error",
+      "debugging"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "unverified",
+    "title": "Python asyncio.to_thread \u2014 running sync code without blocking the event loop",
+    "body": "`asyncio.to_thread()` (Python 3.9+) runs synchronous functions in a separate thread, returning an awaitable. Essential for calling blocking libraries from async code.\n\n```python\nimport asyncio\nimport time\nfrom PIL import Image\n\n# CPU-bound work that would block the event loop\ndef process_image(path: str) -> bytes:\n    img = Image.open(path)\n    img = img.resize((800, 600))\n    img = img.convert(\"RGB\")\n    buffer = io.BytesIO()\n    img.save(buffer, format=\"JPEG\", quality=85)\n    return buffer.getvalue()\n\n# Blocking file I/O\ndef read_large_file(path: str) -> str:\n    with open(path, \"r\") as f:\n        return f.read()\n\nasync def handle_upload(path: str):\n    # Run blocking operations in threads\n    content, processed = await asyncio.gather(\n        asyncio.to_thread(read_large_file, path),\n        asyncio.to_thread(process_image, path),\n    )\n    return content, processed\n```\n\nUnder the hood, `to_thread` uses the default executor (`ThreadPoolExecutor`). For CPU-bound work with many cores, consider `ProcessPoolExecutor`:\n\n```python\nfrom concurrent.futures import ProcessPoolExecutor\n\nexecutor = ProcessPoolExecutor(max_workers=4)\nloop = asyncio.get_event_loop()\nresult = await loop.run_in_executor(executor, cpu_heavy_function, arg)\n```\n\n`to_thread` copies the current `contextvars.Context`, so context variables (like request IDs) propagate correctly to the thread.",
+    "tags": [
+      "python",
+      "asyncio",
+      "to-thread",
+      "blocking",
+      "concurrency"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "community",
+    "title": "Tailwind CSS \u2014 composing utility classes with cva for variant-based components",
+    "body": "Class Variance Authority (cva) provides type-safe variant management for Tailwind components, replacing messy conditional class concatenation.\n\n```typescript\nimport { cva, type VariantProps } from 'class-variance-authority';\nimport { cn } from '@/lib/utils'; // clsx + tailwind-merge\n\nconst button = cva(\n  'inline-flex items-center justify-center rounded-md font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 disabled:pointer-events-none disabled:opacity-50',\n  {\n    variants: {\n      variant: {\n        default: 'bg-blue-600 text-white hover:bg-blue-700 dark:bg-blue-500',\n        destructive: 'bg-red-600 text-white hover:bg-red-700',\n        outline: 'border border-gray-300 bg-transparent hover:bg-gray-100 dark:border-gray-600',\n        ghost: 'hover:bg-gray-100 dark:hover:bg-gray-800',\n      },\n      size: {\n        sm: 'h-8 px-3 text-sm',\n        md: 'h-10 px-4 text-sm',\n        lg: 'h-12 px-6 text-base',\n      },\n    },\n    defaultVariants: { variant: 'default', size: 'md' },\n  }\n);\n\ntype ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> &\n  VariantProps<typeof button>;\n\nfunction Button({ variant, size, className, ...props }: ButtonProps) {\n  return <button className={cn(button({ variant, size }), className)} {...props} />;\n}\n```\n\ncva generates the class string based on variant selections. `cn()` (clsx + tailwind-merge) deduplicates conflicting utilities so custom `className` overrides work correctly. This pattern is used by shadcn/ui.",
+    "tags": [
+      "tailwind",
+      "cva",
+      "react",
+      "component-patterns",
+      "variants"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "OpenAI structured output \u2014 response_format with JSON schema enforcement",
+    "body": "OpenAI's structured outputs feature guarantees the response matches a JSON schema, eliminating parsing failures.\n\n```python\nfrom openai import OpenAI\nfrom pydantic import BaseModel\n\nclient = OpenAI()\n\nclass CalendarEvent(BaseModel):\n    title: str\n    date: str\n    duration_minutes: int\n    participants: list[str]\n    is_recurring: bool\n\ncompletion = client.beta.chat.completions.parse(\n    model=\"gpt-4o-2024-08-06\",\n    messages=[\n        {\"role\": \"system\", \"content\": \"Extract calendar events from text.\"},\n        {\"role\": \"user\", \"content\": \"Meeting with Alice and Bob next Tuesday at 2pm for 1 hour, weekly\"},\n    ],\n    response_format=CalendarEvent,\n)\n\nevent = completion.choices[0].message.parsed\nprint(event.title)            # \"Meeting with Alice and Bob\"\nprint(event.participants)     # [\"Alice\", \"Bob\"]\nprint(event.is_recurring)     # True\n```\n\nThe `.parse()` method converts a Pydantic model into a JSON schema and constrains the model's output to match it exactly. This is more reliable than asking for JSON in the prompt. Supports nested models, enums, optionals, and unions. Limitation: does not support `default` values or complex validators \u2014 the schema is structural only. If the model refuses (content filter), `message.refusal` will be set instead of `parsed`.",
+    "tags": [
+      "openai",
+      "structured-output",
+      "pydantic",
+      "json-schema",
+      "python"
+    ]
+  }
+]

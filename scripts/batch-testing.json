@@ -1,0 +1,514 @@
+[
+  {
+    "type": "tutorial",
+    "trust": "verified",
+    "title": "Vitest setup with TypeScript and path aliases",
+    "body": "Setting up Vitest in a TypeScript project requires configuring the test runner to understand your path aliases and TypeScript settings. Vitest uses Vite under the hood, so configuration goes in `vitest.config.ts`.\n\n```typescript\nimport { defineConfig } from 'vitest/config';\nimport tsconfigPaths from 'vite-tsconfig-paths';\n\nexport default defineConfig({\n  plugins: [tsconfigPaths()],\n  test: {\n    globals: true,\n    environment: 'jsdom',\n    setupFiles: ['./src/test/setup.ts'],\n    include: ['src/**/*.{test,spec}.{ts,tsx}'],\n    coverage: {\n      provider: 'v8',\n      reporter: ['text', 'json', 'html'],\n      exclude: ['node_modules/', 'src/test/'],\n    },\n  },\n});\n```\n\nThe setup file typically configures Testing Library matchers and global mocks:\n\n```typescript\n// src/test/setup.ts\nimport '@testing-library/jest-dom/vitest';\nimport { cleanup } from '@testing-library/react';\nimport { afterEach } from 'vitest';\n\nafterEach(() => {\n  cleanup();\n});\n```\n\nSet `globals: true` to avoid importing `describe`, `it`, `expect` in every file. Add `types: [\"vitest/globals\"]` to your `tsconfig.json` compilerOptions for proper type support. The `vite-tsconfig-paths` plugin ensures aliases like `@/components` resolve correctly in tests.",
+    "tags": [
+      "vitest",
+      "setup",
+      "typescript",
+      "path-aliases",
+      "configuration"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Vitest mocking modules with vi.mock and vi.importActual",
+    "body": "Vitest provides `vi.mock` for module mocking. The factory function is hoisted to the top of the file automatically. Use `vi.importActual` to partially mock a module while keeping real implementations for some exports.\n\n```typescript\nimport { describe, it, expect, vi } from 'vitest';\nimport { fetchUser } from '@/services/user';\nimport { api } from '@/lib/api';\n\nvi.mock('@/lib/api', async () => {\n  const actual = await vi.importActual<typeof import('@/lib/api')>('@/lib/api');\n  return {\n    ...actual,\n    api: {\n      get: vi.fn(),\n      post: vi.fn(),\n    },\n  };\n});\n\ndescribe('fetchUser', () => {\n  it('calls api.get with the correct endpoint', async () => {\n    const mockUser = { id: '1', name: 'Alice' };\n    vi.mocked(api.get).mockResolvedValue({ data: mockUser });\n\n    const user = await fetchUser('1');\n\n    expect(api.get).toHaveBeenCalledWith('/users/1');\n    expect(user).toEqual(mockUser);\n  });\n\n  it('resets mocks between tests', () => {\n    vi.mocked(api.get).mockReset();\n  });\n});\n```\n\nKey distinction: `vi.fn()` creates a mock function, `vi.spyOn(obj, 'method')` wraps an existing method. Use `vi.mocked()` to get TypeScript-aware mock types without casting. Always call `mockReset()` or use `clearMocks: true` in config to avoid state leaking between tests.",
+    "tags": [
+      "vitest",
+      "mocking",
+      "vi-mock",
+      "vi-importActual",
+      "typescript"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Vitest inline snapshots for compact assertions",
+    "body": "Inline snapshots write the expected value directly into your test file, eliminating separate `.snap` files. Vitest updates them automatically when you run with `--update`.\n\n```typescript\nimport { describe, it, expect } from 'vitest';\nimport { formatError } from '@/utils/errors';\n\ndescribe('formatError', () => {\n  it('formats validation errors', () => {\n    const error = formatError({\n      code: 'VALIDATION',\n      fields: { email: 'required', age: 'must be positive' },\n    });\n\n    expect(error).toMatchInlineSnapshot(`\n      {\n        \"code\": \"VALIDATION\",\n        \"message\": \"Validation failed\",\n        \"details\": [\n          \"email: required\",\n          \"age: must be positive\"\n        ]\n      }\n    `);\n  });\n\n  it('formats network errors', () => {\n    const error = formatError({ code: 'NETWORK', status: 503 });\n    expect(error.message).toMatchInlineSnapshot('\"Service unavailable\"');\n  });\n});\n```\n\nInline snapshots work best for small-to-medium outputs (under 20 lines). For larger structures, use file snapshots with `toMatchSnapshot()`. Avoid snapshotting timestamps, random IDs, or other non-deterministic values \u2014 use `expect.any(String)` or strip them before snapshotting. Run `vitest --update` or press `u` in watch mode to update stale snapshots.",
+    "tags": [
+      "vitest",
+      "snapshots",
+      "inline-snapshot",
+      "testing-patterns"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Vitest vi.mock hoisting \u2014 cannot reference outer variables",
+    "body": "A common mistake with Vitest (and Jest) mocking is referencing variables declared outside `vi.mock` in the factory function. The mock factory is hoisted to the top of the file, so variables declared after it do not exist yet.\n\n```typescript\n// BROKEN \u2014 mockFn is undefined when vi.mock factory runs\nconst mockFn = vi.fn();\nvi.mock('@/lib/analytics', () => ({\n  track: mockFn, // ReferenceError: Cannot access 'mockFn' before initialization\n}));\n\n// FIX 1: Use vi.hoisted to declare variables that need hoisting\nconst { mockTrack } = vi.hoisted(() => ({\n  mockTrack: vi.fn(),\n}));\nvi.mock('@/lib/analytics', () => ({\n  track: mockTrack,\n}));\n\n// FIX 2: Define the mock inline and access via vi.mocked later\nvi.mock('@/lib/analytics', () => ({\n  track: vi.fn(),\n}));\nimport { track } from '@/lib/analytics';\n// In tests: vi.mocked(track).mockReturnValue(...)\n```\n\nThe `vi.hoisted` helper (Vitest 1.0+) is the cleanest solution. It explicitly marks code that should be hoisted alongside `vi.mock`. This same issue affects `vi.mock` with any closure over test-file scope \u2014 including imported constants and helper functions.",
+    "tags": [
+      "vitest",
+      "mocking",
+      "hoisting",
+      "gotcha",
+      "vi-hoisted"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Testing Library \u2014 findBy queries for async content",
+    "body": "Testing Library provides `findBy*` queries that combine `waitFor` with `getBy*`. Use them when content appears asynchronously after rendering \u2014 such as data fetched on mount or elements that appear after state updates.\n\n```typescript\nimport { render, screen } from '@testing-library/react';\nimport { UserProfile } from '@/components/UserProfile';\n\ntest('displays user data after loading', async () => {\n  render(<UserProfile userId=\"123\" />);\n\n  // Immediately visible\n  expect(screen.getByRole('progressbar')).toBeInTheDocument();\n\n  // Wait for async content (polls with default 1000ms timeout)\n  const heading = await screen.findByRole('heading', { name: /alice/i });\n  expect(heading).toBeInTheDocument();\n\n  // Multiple async elements\n  const [email, avatar] = await Promise.all([\n    screen.findByText('alice@example.com'),\n    screen.findByAltText('User avatar'),\n  ]);\n\n  expect(email).toBeInTheDocument();\n  expect(avatar).toHaveAttribute('src', expect.stringContaining('avatar'));\n\n  // Verify loading indicator is gone\n  expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();\n});\n```\n\nQuery priority matters: prefer `getByRole` > `getByLabelText` > `getByText` > `getByTestId`. The `findBy` variants accept an optional `waitForOptions` second argument: `await screen.findByText('loaded', {}, { timeout: 3000 })`. Never use `getBy` for async content \u2014 it throws synchronously instead of waiting.",
+    "tags": [
+      "testing-library",
+      "findBy",
+      "async",
+      "queries",
+      "react-testing"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Testing Library userEvent over fireEvent for realistic interactions",
+    "body": "The `@testing-library/user-event` library simulates real user interactions more faithfully than `fireEvent`. It fires all intermediate events a browser would \u2014 focus, keydown, keypress, input, keyup, change, blur.\n\n```typescript\nimport { render, screen } from '@testing-library/react';\nimport userEvent from '@testing-library/user-event';\nimport { LoginForm } from '@/components/LoginForm';\n\ntest('submits login form with credentials', async () => {\n  const user = userEvent.setup();\n  const onSubmit = vi.fn();\n  render(<LoginForm onSubmit={onSubmit} />);\n\n  // Type into fields \u2014 fires focus, keydown, input, keyup per character\n  await user.type(screen.getByLabelText('Email'), 'alice@test.com');\n  await user.type(screen.getByLabelText('Password'), 'secret123');\n\n  // Click submit \u2014 fires pointerdown, mousedown, pointerup, mouseup, click\n  await user.click(screen.getByRole('button', { name: /sign in/i }));\n\n  expect(onSubmit).toHaveBeenCalledWith({\n    email: 'alice@test.com',\n    password: 'secret123',\n  });\n});\n\ntest('clears input before typing with clear()', async () => {\n  const user = userEvent.setup();\n  render(<input defaultValue=\"old\" aria-label=\"field\" />);\n\n  await user.clear(screen.getByLabelText('field'));\n  await user.type(screen.getByLabelText('field'), 'new');\n\n  expect(screen.getByLabelText('field')).toHaveValue('new');\n});\n```\n\nAlways call `userEvent.setup()` at the start of each test \u2014 it returns a user instance with consistent internal state. Avoid mixing `fireEvent` and `userEvent` in the same test. The `user.keyboard('{Enter}')` API handles special keys.",
+    "tags": [
+      "testing-library",
+      "userEvent",
+      "user-interactions",
+      "react-testing"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "community",
+    "title": "Testing custom React hooks with renderHook",
+    "body": "Testing Library's `renderHook` lets you test custom hooks in isolation without creating wrapper components. It handles the hook lifecycle and re-renders.\n\n```typescript\nimport { renderHook, act, waitFor } from '@testing-library/react';\nimport { useCounter } from '@/hooks/useCounter';\nimport { useDebounce } from '@/hooks/useDebounce';\nimport { QueryClient, QueryClientProvider } from '@tanstack/react-query';\n\ntest('useCounter increments and decrements', () => {\n  const { result } = renderHook(() => useCounter(0));\n\n  expect(result.current.count).toBe(0);\n\n  act(() => {\n    result.current.increment();\n  });\n  expect(result.current.count).toBe(1);\n\n  act(() => {\n    result.current.decrement();\n  });\n  expect(result.current.count).toBe(0);\n});\n\ntest('useDebounce delays value update', async () => {\n  const { result, rerender } = renderHook(\n    ({ value }) => useDebounce(value, 300),\n    { initialProps: { value: 'hello' } }\n  );\n\n  expect(result.current).toBe('hello');\n  rerender({ value: 'world' });\n  expect(result.current).toBe('hello'); // Still debounced\n\n  await waitFor(() => {\n    expect(result.current).toBe('world');\n  });\n});\n\ntest('hooks needing providers use wrapper option', () => {\n  const client = new QueryClient();\n  const wrapper = ({ children }) => (\n    <QueryClientProvider client={client}>{children}</QueryClientProvider>\n  );\n  const { result } = renderHook(() => useMyQuery(), { wrapper });\n});\n```\n\nWrap state updates in `act()` to flush React updates synchronously. Use `rerender` to simulate prop changes. The `wrapper` option is essential for hooks that consume context (React Query, Redux, etc.).",
+    "tags": [
+      "testing-library",
+      "renderHook",
+      "custom-hooks",
+      "react-testing"
+    ]
+  },
+  {
+    "type": "tutorial",
+    "trust": "verified",
+    "title": "Playwright page object model for maintainable E2E tests",
+    "body": "Page objects encapsulate page-specific selectors and actions, reducing duplication across Playwright tests. Each page class exposes semantic methods rather than raw locator chains.\n\n```typescript\n// pages/login.page.ts\nimport { type Page, type Locator } from '@playwright/test';\n\nexport class LoginPage {\n  readonly emailInput: Locator;\n  readonly passwordInput: Locator;\n  readonly submitButton: Locator;\n  readonly errorMessage: Locator;\n\n  constructor(private page: Page) {\n    this.emailInput = page.getByLabel('Email');\n    this.passwordInput = page.getByLabel('Password');\n    this.submitButton = page.getByRole('button', { name: 'Sign in' });\n    this.errorMessage = page.getByRole('alert');\n  }\n\n  async goto() {\n    await this.page.goto('/login');\n  }\n\n  async login(email: string, password: string) {\n    await this.emailInput.fill(email);\n    await this.passwordInput.fill(password);\n    await this.submitButton.click();\n  }\n}\n\n// tests/login.spec.ts\nimport { test, expect } from '@playwright/test';\nimport { LoginPage } from '../pages/login.page';\n\ntest('successful login redirects to dashboard', async ({ page }) => {\n  const loginPage = new LoginPage(page);\n  await loginPage.goto();\n  await loginPage.login('admin@test.com', 'password123');\n  await expect(page).toHaveURL('/dashboard');\n});\n\ntest('invalid credentials show error', async ({ page }) => {\n  const loginPage = new LoginPage(page);\n  await loginPage.goto();\n  await loginPage.login('wrong@test.com', 'bad');\n  await expect(loginPage.errorMessage).toHaveText('Invalid credentials');\n});\n```\n\nWhen selectors change, you update one page object instead of every test. Keep page objects focused \u2014 one per page or major component. Return new page objects from navigation methods for fluent chaining.",
+    "tags": [
+      "playwright",
+      "page-object-model",
+      "e2e",
+      "test-architecture"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Playwright custom fixtures for test setup and teardown",
+    "body": "Playwright fixtures provide dependency injection for tests. Custom fixtures replace repetitive setup code and share state safely across tests.\n\n```typescript\n// fixtures.ts\nimport { test as base, expect } from '@playwright/test';\nimport { LoginPage } from './pages/login.page';\nimport { DashboardPage } from './pages/dashboard.page';\n\ntype MyFixtures = {\n  loginPage: LoginPage;\n  dashboardPage: DashboardPage;\n  authenticatedPage: DashboardPage;\n};\n\nexport const test = base.extend<MyFixtures>({\n  loginPage: async ({ page }, use) => {\n    const loginPage = new LoginPage(page);\n    await loginPage.goto();\n    await use(loginPage);\n  },\n\n  dashboardPage: async ({ page }, use) => {\n    await use(new DashboardPage(page));\n  },\n\n  authenticatedPage: async ({ page, dashboardPage }, use) => {\n    // Setup: log in via API to skip UI login\n    await page.request.post('/api/auth/login', {\n      data: { email: 'test@example.com', password: 'test123' },\n    });\n    await page.goto('/dashboard');\n    await use(dashboardPage);\n    // Teardown: runs after the test\n    await page.request.post('/api/auth/logout');\n  },\n});\n\nexport { expect };\n\n// tests/dashboard.spec.ts\nimport { test, expect } from '../fixtures';\n\ntest('shows welcome message', async ({ authenticatedPage }) => {\n  await expect(authenticatedPage.welcomeHeading).toBeVisible();\n});\n```\n\nFixtures compose: `authenticatedPage` depends on `dashboardPage` and `page`. Playwright resolves the dependency graph and runs teardown in reverse order. Worker-scoped fixtures share state across tests in a worker with `{ scope: 'worker' }`.",
+    "tags": [
+      "playwright",
+      "fixtures",
+      "dependency-injection",
+      "e2e",
+      "test-setup"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "community",
+    "title": "Playwright visual regression testing with toHaveScreenshot",
+    "body": "Playwright includes built-in visual regression testing. The `toHaveScreenshot` assertion captures a screenshot and compares it against a stored baseline on subsequent runs.\n\n```typescript\nimport { test, expect } from '@playwright/test';\n\ntest('landing page matches visual baseline', async ({ page }) => {\n  await page.goto('/');\n  // Wait for fonts and images to load\n  await page.waitForLoadState('networkidle');\n\n  // Full page screenshot\n  await expect(page).toHaveScreenshot('landing-full.png', {\n    fullPage: true,\n    maxDiffPixelRatio: 0.01, // Allow 1% pixel difference\n  });\n});\n\ntest('button states match baseline', async ({ page }) => {\n  await page.goto('/components');\n  const button = page.getByRole('button', { name: 'Submit' });\n\n  // Element screenshot \u2014 default state\n  await expect(button).toHaveScreenshot('button-default.png');\n\n  // Hover state\n  await button.hover();\n  await expect(button).toHaveScreenshot('button-hover.png');\n\n  // Focus state\n  await button.focus();\n  await expect(button).toHaveScreenshot('button-focus.png');\n});\n\ntest('hides dynamic content for stable screenshots', async ({ page }) => {\n  await page.goto('/dashboard');\n  // Mask non-deterministic elements\n  await expect(page).toHaveScreenshot('dashboard.png', {\n    mask: [page.locator('.timestamp'), page.locator('.avatar')],\n    animations: 'disabled',\n  });\n});\n```\n\nFirst run creates baselines in `__screenshots__`. Update baselines with `npx playwright test --update-snapshots`. Use `animations: 'disabled'` and mask dynamic content (timestamps, avatars) to prevent flaky comparisons. Configure `maxDiffPixelRatio` or `maxDiffPixels` per project for cross-platform tolerance. Run visual tests on a single OS in CI for consistency.",
+    "tags": [
+      "playwright",
+      "visual-regression",
+      "screenshots",
+      "e2e",
+      "baseline-testing"
+    ]
+  },
+  {
+    "type": "tutorial",
+    "trust": "verified",
+    "title": "MSW request handlers for API mocking in tests",
+    "body": "Mock Service Worker (MSW) intercepts HTTP requests at the network level, making it framework-agnostic. Define request handlers that return mock responses without changing application code.\n\n```typescript\n// mocks/handlers.ts\nimport { http, HttpResponse } from 'msw';\n\nexport const handlers = [\n  http.get('/api/users/:id', ({ params }) => {\n    return HttpResponse.json({\n      id: params.id,\n      name: 'Alice',\n      email: 'alice@example.com',\n    });\n  }),\n\n  http.post('/api/users', async ({ request }) => {\n    const body = await request.json();\n    return HttpResponse.json(\n      { id: 'new-1', ...body },\n      { status: 201 }\n    );\n  }),\n\n  http.delete('/api/users/:id', () => {\n    return new HttpResponse(null, { status: 204 });\n  }),\n];\n\n// mocks/server.ts\nimport { setupServer } from 'msw/node';\nimport { handlers } from './handlers';\nexport const server = setupServer(...handlers);\n\n// test/setup.ts\nimport { server } from '../mocks/server';\nbeforeAll(() => server.listen({ onUnhandledRequest: 'error' }));\nafterEach(() => server.resetHandlers());\nafterAll(() => server.close());\n\n// In individual tests \u2014 override a handler\nimport { http, HttpResponse } from 'msw';\nimport { server } from '../mocks/server';\n\ntest('shows error when API fails', async () => {\n  server.use(\n    http.get('/api/users/:id', () => {\n      return HttpResponse.json({ error: 'Not found' }, { status: 404 });\n    })\n  );\n  // Render component and assert error UI\n});\n```\n\nSet `onUnhandledRequest: 'error'` to catch any API calls you forgot to mock. Use `server.use()` for per-test overrides \u2014 `resetHandlers()` restores the defaults after each test. MSW 2.0 uses the `http` and `HttpResponse` API instead of the older `rest` API.",
+    "tags": [
+      "msw",
+      "api-mocking",
+      "request-handlers",
+      "testing",
+      "mock-service-worker"
+    ]
+  },
+  {
+    "type": "comparison",
+    "trust": "community",
+    "title": "Jest vs Vitest \u2014 migration considerations and key differences",
+    "body": "Vitest is designed as a drop-in replacement for Jest with native ESM and TypeScript support, but there are meaningful differences to understand before migrating.\n\n```typescript\n// Jest config (jest.config.ts)\nexport default {\n  preset: 'ts-jest',\n  testEnvironment: 'jsdom',\n  moduleNameMapper: { '^@/(.*)$': '<rootDir>/src/$1' },\n  transform: { '^.+\\\\.tsx?$': 'ts-jest' },\n};\n\n// Vitest config (vitest.config.ts) \u2014 much simpler\nimport { defineConfig } from 'vitest/config';\nimport tsconfigPaths from 'vite-tsconfig-paths';\nexport default defineConfig({\n  plugins: [tsconfigPaths()],\n  test: { globals: true, environment: 'jsdom' },\n});\n```\n\nKey differences: (1) Vitest uses Vite's transformer \u2014 no separate `ts-jest` or `babel-jest` needed. Tests run significantly faster on large codebases due to Vite's on-demand compilation. (2) Vitest runs test files in parallel with isolated module graphs by default, while Jest uses worker processes. (3) `vi.mock` replaces `jest.mock` \u2014 same hoisting behavior but `vi.hoisted()` is cleaner than Jest's `jest.requireActual`. (4) Vitest supports in-source testing with `if (import.meta.vitest)` blocks. (5) Snapshot formats are slightly different \u2014 regenerate all snapshots when migrating. (6) Timer fakes: `vi.useFakeTimers()` vs `jest.useFakeTimers()`. Most assertions (`expect` API) are identical. Migration typically involves find-and-replace of `jest.` to `vi.` and updating config.",
+    "tags": [
+      "vitest",
+      "jest",
+      "migration",
+      "comparison",
+      "test-runners"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Arrange-Act-Assert pattern for clear test structure",
+    "body": "The Arrange-Act-Assert (AAA) pattern structures each test into three distinct phases: setup, execution, and verification. This makes tests self-documenting and easier to debug.\n\n```typescript\nimport { describe, it, expect, vi } from 'vitest';\nimport { OrderService } from '@/services/order';\nimport { PaymentGateway } from '@/services/payment';\nimport { InventoryService } from '@/services/inventory';\n\ndescribe('OrderService.placeOrder', () => {\n  it('deducts inventory and charges payment for valid order', async () => {\n    // Arrange \u2014 set up dependencies and test data\n    const payment = { charge: vi.fn().mockResolvedValue({ txId: 'tx-1' }) } as unknown as PaymentGateway;\n    const inventory = {\n      check: vi.fn().mockResolvedValue(true),\n      deduct: vi.fn().mockResolvedValue(undefined),\n    } as unknown as InventoryService;\n    const service = new OrderService(payment, inventory);\n    const order = { sku: 'WIDGET-1', quantity: 3, total: 29.97 };\n\n    // Act \u2014 execute the behavior under test\n    const result = await service.placeOrder(order);\n\n    // Assert \u2014 verify outcomes\n    expect(inventory.check).toHaveBeenCalledWith('WIDGET-1', 3);\n    expect(inventory.deduct).toHaveBeenCalledWith('WIDGET-1', 3);\n    expect(payment.charge).toHaveBeenCalledWith(29.97);\n    expect(result).toEqual({ status: 'confirmed', txId: 'tx-1' });\n  });\n\n  it('rejects order when inventory is insufficient', async () => {\n    // Arrange\n    const payment = { charge: vi.fn() } as unknown as PaymentGateway;\n    const inventory = { check: vi.fn().mockResolvedValue(false) } as unknown as InventoryService;\n    const service = new OrderService(payment, inventory);\n\n    // Act & Assert \u2014 for expected errors\n    await expect(service.placeOrder({ sku: 'X', quantity: 1, total: 10 }))\n      .rejects.toThrow('Insufficient inventory');\n    expect(payment.charge).not.toHaveBeenCalled();\n  });\n});\n```\n\nThe AAA comments are optional once the team adopts the convention \u2014 blank lines between sections provide the same clarity. Keep each section focused: multiple actions or assertions about unrelated behaviors belong in separate tests.",
+    "tags": [
+      "testing-patterns",
+      "arrange-act-assert",
+      "test-structure",
+      "unit-testing"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "community",
+    "title": "Factory pattern for generating test data",
+    "body": "Factory functions generate test objects with sensible defaults while allowing per-test overrides. This eliminates repetitive object literals and makes tests resilient to schema changes.\n\n```typescript\n// test/factories.ts\nimport { faker } from '@faker-js/faker';\n\ntype User = {\n  id: string;\n  email: string;\n  name: string;\n  role: 'admin' | 'user';\n  createdAt: Date;\n};\n\nexport function createUser(overrides: Partial<User> = {}): User {\n  return {\n    id: faker.string.uuid(),\n    email: faker.internet.email(),\n    name: faker.person.fullName(),\n    role: 'user',\n    createdAt: new Date('2025-01-15'),\n    ...overrides,\n  };\n}\n\ntype Order = {\n  id: string;\n  userId: string;\n  items: { sku: string; qty: number; price: number }[];\n  status: 'pending' | 'shipped' | 'delivered';\n};\n\nexport function createOrder(overrides: Partial<Order> = {}): Order {\n  return {\n    id: faker.string.uuid(),\n    userId: faker.string.uuid(),\n    items: [{ sku: 'WIDGET-1', qty: 1, price: 9.99 }],\n    status: 'pending',\n    ...overrides,\n  };\n}\n\n// Usage in tests\ntest('admin can cancel any order', async () => {\n  const admin = createUser({ role: 'admin' });\n  const order = createOrder({ userId: 'other-user', status: 'pending' });\n\n  const result = await cancelOrder(admin, order);\n  expect(result.status).toBe('cancelled');\n});\n\ntest('user cannot cancel shipped orders', async () => {\n  const user = createUser();\n  const order = createOrder({ userId: user.id, status: 'shipped' });\n\n  await expect(cancelOrder(user, order)).rejects.toThrow();\n});\n```\n\nFactories centralize data creation so schema changes require updating one function, not hundreds of tests. Use deterministic defaults for dates and avoid random values in assertions. Combine with `faker` for realistic data when randomness is acceptable.",
+    "tags": [
+      "testing-patterns",
+      "factories",
+      "test-data",
+      "faker"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "community",
+    "title": "act() warnings in React tests and how to resolve them",
+    "body": "The `act()` warning is one of the most common React testing pitfalls. It fires when a state update happens outside of React's awareness during a test.\n\n```\nWarning: An update to MyComponent inside a test was not wrapped in act(...).\nWhen testing, code that causes React state updates should be wrapped in act(...):\n\nact(() => {\n  /* fire events that update state */\n});\n/* assert on the output */\n```\n\nCommon causes and fixes:\n\n```typescript\n// CAUSE 1: Fire-and-forget async operations (useEffect fetch)\ntest('loads data', async () => {\n  render(<DataLoader />);\n  // FIX: Wait for the async update to complete\n  await screen.findByText('Loaded');\n});\n\n// CAUSE 2: Timers triggering state updates\ntest('debounced search', async () => {\n  vi.useFakeTimers();\n  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });\n  render(<Search />);\n\n  await user.type(screen.getByRole('searchbox'), 'query');\n  // FIX: advance timers inside act\n  await act(async () => {\n    vi.advanceTimersByTime(500);\n  });\n  expect(screen.getByText('Results')).toBeInTheDocument();\n  vi.useRealTimers();\n});\n\n// CAUSE 3: Unfinished promises after unmount\n// FIX: Abort controllers in useEffect cleanup\nuseEffect(() => {\n  const controller = new AbortController();\n  fetch('/api', { signal: controller.signal }).then(/* ... */);\n  return () => controller.abort();\n}, []);\n```\n\nUsing `userEvent.setup()` and `findBy` queries usually eliminates act warnings automatically. If warnings persist after component unmount, ensure all async effects are properly cleaned up with abort controllers or cleanup functions.",
+    "tags": [
+      "react-testing",
+      "act-warning",
+      "async",
+      "gotcha",
+      "state-updates"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "community",
+    "title": "Playwright test sharding for parallel CI execution",
+    "body": "Playwright supports test sharding to split tests across multiple CI machines. Each shard runs a portion of the total test suite, reducing wall-clock time proportionally.\n\n```yaml\n# .github/workflows/e2e.yml\njobs:\n  e2e:\n    strategy:\n      fail-fast: false\n      matrix:\n        shard: [1/4, 2/4, 3/4, 4/4]\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-node@v4\n        with:\n          node-version: 20\n      - run: npm ci\n      - run: npx playwright install --with-deps\n      - run: npx playwright test --shard=${{ matrix.shard }}\n      - uses: actions/upload-artifact@v4\n        if: always()\n        with:\n          name: blob-report-${{ strategy.job-index }}\n          path: blob-report/\n          retention-days: 1\n\n  merge-reports:\n    needs: e2e\n    if: always()\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/download-artifact@v4\n        with:\n          pattern: blob-report-*\n          merge-multiple: true\n          path: all-blob-reports\n      - run: npx playwright merge-reports --reporter html ./all-blob-reports\n```\n\nConfigure the reporter in `playwright.config.ts` for blob output when sharding:\n\n```typescript\nexport default defineConfig({\n  reporter: process.env.CI ? 'blob' : 'html',\n});\n```\n\nPlaywright distributes tests by file across shards. Use `--shard=1/4` syntax where the numerator is the shard index and denominator is the total count. The `merge-reports` job combines blob reports from all shards into a single HTML report.",
+    "tags": [
+      "playwright",
+      "ci",
+      "sharding",
+      "parallel-testing",
+      "github-actions"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "verified",
+    "title": "Setting and enforcing code coverage thresholds",
+    "body": "Coverage thresholds prevent test coverage from regressing below acceptable levels. Both Vitest and Jest support threshold configuration that fails CI when coverage drops.\n\n```typescript\n// vitest.config.ts\nexport default defineConfig({\n  test: {\n    coverage: {\n      provider: 'v8',\n      reporter: ['text', 'json-summary', 'html'],\n      thresholds: {\n        lines: 80,\n        branches: 75,\n        functions: 80,\n        statements: 80,\n      },\n      exclude: [\n        'node_modules/',\n        'src/test/',\n        '**/*.d.ts',\n        '**/*.config.*',\n        '**/types/',\n        'src/mocks/',\n      ],\n    },\n  },\n});\n```\n\nPer-directory thresholds for critical code:\n\n```typescript\n// vitest.config.ts \u2014 different thresholds per path\ncoverage: {\n  thresholds: {\n    'src/services/': {\n      lines: 90,\n      branches: 85,\n    },\n    'src/utils/': {\n      lines: 95,\n      functions: 95,\n    },\n  },\n}\n```\n\nRun with `vitest run --coverage`. The process exits with code 1 when thresholds are violated:\n\n```\nERROR: Coverage for lines (72.5%) does not meet global threshold (80%)\nERROR: Coverage for branches (68.3%) does not meet global threshold (75%)\n```\n\nAvoid chasing 100% coverage \u2014 it incentivizes testing implementation details. Focus higher thresholds on business logic (services, utils) and lower thresholds on UI components and framework glue. The `json-summary` reporter integrates with CI tools for coverage badges and PR comments.",
+    "tags": [
+      "coverage",
+      "thresholds",
+      "vitest",
+      "ci",
+      "code-quality"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Debugging flaky tests \u2014 common causes and systematic fixes",
+    "body": "Flaky tests pass and fail non-deterministically, eroding CI trust. Most flakiness stems from shared state, timing assumptions, or non-deterministic data.\n\n```typescript\n// CAUSE 1: Shared mutable state between tests\n// BAD \u2014 module-level variable persists across tests\nlet counter = 0;\ntest('first', () => { counter++; expect(counter).toBe(1); }); // Depends on order\n\n// FIX: Reset in beforeEach\nbeforeEach(() => { counter = 0; });\n\n// CAUSE 2: Hardcoded timing\n// BAD \u2014 setTimeout race condition\ntest('debounce', async () => {\n  triggerSearch('query');\n  await new Promise(r => setTimeout(r, 300)); // Might not be enough\n  expect(results).toHaveLength(5);\n});\n\n// FIX: Use fake timers or waitFor\ntest('debounce', async () => {\n  vi.useFakeTimers();\n  triggerSearch('query');\n  await vi.advanceTimersByTimeAsync(300);\n  expect(results).toHaveLength(5);\n  vi.useRealTimers();\n});\n\n// CAUSE 3: Non-deterministic IDs/timestamps in assertions\n// BAD\nexpect(response).toEqual({ id: 'abc-123', createdAt: '2025-01-01' });\n\n// FIX: Use flexible matchers\nexpect(response).toEqual({\n  id: expect.any(String),\n  createdAt: expect.stringMatching(/^\\d{4}-\\d{2}-\\d{2}/),\n});\n\n// CAUSE 4: Test order dependency\n// FIX: Run with --sequence.shuffle in Vitest\n// vitest run --sequence.shuffle\n```\n\nSystematic debugging approach: (1) Run the failing test in isolation with `test.only`. (2) If it passes alone, you have shared state \u2014 run with `--sequence.shuffle` to find the interfering test. (3) Add `--retry=3` temporarily in CI to confirm flakiness, then fix the root cause. Never leave retries as a permanent solution.",
+    "tags": [
+      "flaky-tests",
+      "debugging",
+      "testing-patterns",
+      "ci",
+      "test-stability"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Playwright \u2014 TimeoutError waiting for selector",
+    "body": "Playwright throws `TimeoutError` when a locator action cannot find the target element within the configured timeout (default 30 seconds). This is the most common Playwright error.\n\n```\nTimeoutError: locator.click: Timeout 30000ms exceeded.\nCall log:\n  - waiting for locator(\"button[data-testid='submit']\") to be visible\n  - locator resolved to 0 elements\n```\n\nCommon causes and fixes:\n\n```typescript\n// CAUSE 1: Wrong selector \u2014 element exists but selector doesn't match\n// BAD: data-testid may differ or not exist\nawait page.locator('button[data-testid=\"submit\"]').click();\n// FIX: Use role-based locators\nawait page.getByRole('button', { name: 'Submit' }).click();\n\n// CAUSE 2: Element behind navigation or loading state\n// FIX: Wait for navigation or loading to complete\nawait page.getByRole('link', { name: 'Dashboard' }).click();\nawait page.waitForURL('/dashboard');\nawait page.getByRole('heading', { name: 'Dashboard' }).waitFor();\n\n// CAUSE 3: Element inside iframe\n// FIX: Access via frameLocator\nconst frame = page.frameLocator('#payment-iframe');\nawait frame.getByRole('textbox', { name: 'Card number' }).fill('4242424242424242');\n\n// CAUSE 4: Conditional rendering based on viewport\n// FIX: Set viewport explicitly\nawait page.setViewportSize({ width: 1280, height: 720 });\n\n// Debug: Generate trace for failed tests\n// playwright.config.ts\nexport default defineConfig({\n  use: {\n    trace: 'on-first-retry', // Captures DOM snapshots, network, console\n  },\n});\n```\n\nRun `npx playwright test --debug` to step through tests with the inspector. Use `trace: 'on-first-retry'` in CI to get detailed traces for failures. The trace viewer shows the DOM state, network requests, and console output at each step, making it straightforward to identify why a selector failed.",
+    "tags": [
+      "playwright",
+      "error",
+      "timeout",
+      "selectors",
+      "debugging"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "community",
+    "title": "Vitest fake timers for testing debounce and throttle",
+    "body": "Vitest's fake timers replace `setTimeout`, `setInterval`, `Date.now`, and `performance.now` with controllable implementations. Essential for testing time-dependent logic without real delays.\n\n```typescript\nimport { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';\nimport { debounce } from '@/utils/debounce';\n\ndescribe('debounce', () => {\n  beforeEach(() => {\n    vi.useFakeTimers();\n  });\n\n  afterEach(() => {\n    vi.useRealTimers();\n  });\n\n  it('delays execution by the specified time', () => {\n    const callback = vi.fn();\n    const debounced = debounce(callback, 500);\n\n    debounced('first');\n    debounced('second');\n    debounced('third');\n\n    expect(callback).not.toHaveBeenCalled();\n\n    vi.advanceTimersByTime(499);\n    expect(callback).not.toHaveBeenCalled();\n\n    vi.advanceTimersByTime(1);\n    expect(callback).toHaveBeenCalledOnce();\n    expect(callback).toHaveBeenCalledWith('third');\n  });\n\n  it('works with Date.now for timestamp checks', () => {\n    vi.setSystemTime(new Date('2025-06-15T10:00:00Z'));\n\n    const timestamp = Date.now();\n    expect(new Date(timestamp).toISOString()).toBe('2025-06-15T10:00:00.000Z');\n\n    vi.advanceTimersByTime(60_000);\n    expect(Date.now() - timestamp).toBe(60_000);\n  });\n});\n```\n\nWhen combining fake timers with `userEvent`, pass the advancer: `userEvent.setup({ advanceTimers: vi.advanceTimersByTime })`. For async code with timers, use `vi.advanceTimersByTimeAsync(ms)` which processes microtasks between advances. Always restore real timers in `afterEach` to prevent leaking into other tests.",
+    "tags": [
+      "vitest",
+      "fake-timers",
+      "debounce",
+      "testing-time",
+      "vi-useFakeTimers"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Integration testing React components with MSW and Testing Library",
+    "body": "Integration tests verify that components work correctly with their data-fetching logic by combining Testing Library rendering with MSW network mocking. This tests the full component lifecycle without hitting real APIs.\n\n```typescript\nimport { render, screen, within } from '@testing-library/react';\nimport userEvent from '@testing-library/user-event';\nimport { server } from '@/mocks/server';\nimport { http, HttpResponse } from 'msw';\nimport { TodoList } from '@/components/TodoList';\nimport { QueryClient, QueryClientProvider } from '@tanstack/react-query';\n\nfunction renderWithProviders(ui: React.ReactElement) {\n  const client = new QueryClient({\n    defaultOptions: { queries: { retry: false } },\n  });\n  return render(\n    <QueryClientProvider client={client}>{ui}</QueryClientProvider>\n  );\n}\n\ntest('displays todos and allows adding a new one', async () => {\n  const user = userEvent.setup();\n  renderWithProviders(<TodoList />);\n\n  // Verify loaded data from MSW default handler\n  const items = await screen.findAllByRole('listitem');\n  expect(items).toHaveLength(2);\n  expect(within(items[0]).getByText('Write tests')).toBeInTheDocument();\n\n  // Override handler for the POST\n  server.use(\n    http.post('https://api.example.com/todos', async ({ request }) => {\n      const body = await request.json() as { title: string };\n      return HttpResponse.json({ id: 3, title: body.title, done: false });\n    })\n  );\n\n  await user.type(screen.getByRole('textbox'), 'New todo');\n  await user.click(screen.getByRole('button', { name: 'Add' }));\n\n  await screen.findByText('New todo');\n  expect(screen.getAllByRole('listitem')).toHaveLength(3);\n});\n```\n\nSet `retry: false` on QueryClient in tests to fail fast instead of retrying failed requests. This pattern tests component rendering, user interaction, network requests, and state updates as an integrated unit.",
+    "tags": [
+      "integration-testing",
+      "msw",
+      "testing-library",
+      "react-query",
+      "react-testing"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "community",
+    "title": "Jest \u2014 Cannot use import statement outside a module",
+    "body": "This error appears when Jest encounters ESM syntax (import/export) in files it tries to require as CommonJS. It is the most common Jest configuration error with modern packages.\n\n```\nSyntaxError: Cannot use import statement outside a module\n\n    > 1 | import { clsx } from 'clsx';\n        | ^\n    at Runtime.createScriptFromCode (node_modules/jest-runtime/build/index.js:1728:14)\n```\n\nThe root cause is that the package (in this case `clsx`) ships only ESM, but Jest defaults to CommonJS transformation. Fix with `transformIgnorePatterns`:\n\n```javascript\n// jest.config.js\nmodule.exports = {\n  // Default ignores all node_modules, but ESM-only packages need transforming\n  transformIgnorePatterns: [\n    'node_modules/(?!(clsx|uuid|nanoid|another-esm-package)/)',\n  ],\n  transform: {\n    '^.+\\\\.(ts|tsx|js|jsx)$': ['babel-jest', {\n      presets: [\n        ['@babel/preset-env', { targets: { node: 'current' } }],\n        '@babel/preset-typescript',\n      ],\n    }],\n  },\n};\n```\n\nAlternative approaches: (1) Use `moduleNameMapper` to point at a CJS build: `{ '^clsx$': 'clsx/dist/clsx.cjs' }`. (2) Switch to Vitest, which handles ESM natively without configuration. (3) Use `@jest/globals` with `--experimental-vm-modules` for native ESM support in Jest 29+, though this is still experimental. The `transformIgnorePatterns` approach is the most reliable for Jest users.",
+    "tags": [
+      "jest",
+      "error",
+      "esm",
+      "configuration",
+      "transformIgnorePatterns"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "verified",
+    "title": "Testing error boundaries in React with Testing Library",
+    "body": "Error boundaries catch rendering errors in child components. Testing them requires triggering an error during render and verifying the fallback UI appears.\n\n```typescript\nimport { render, screen } from '@testing-library/react';\nimport { ErrorBoundary } from '@/components/ErrorBoundary';\nimport { vi } from 'vitest';\n\n// Component that throws during render\nfunction BrokenComponent({ shouldThrow }: { shouldThrow: boolean }) {\n  if (shouldThrow) {\n    throw new Error('Component exploded');\n  }\n  return <div>Working fine</div>;\n}\n\ntest('renders fallback UI when child throws', () => {\n  // Suppress React error boundary console.error noise\n  const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});\n\n  render(\n    <ErrorBoundary fallback={<div>Something went wrong</div>}>\n      <BrokenComponent shouldThrow={true} />\n    </ErrorBoundary>\n  );\n\n  expect(screen.getByText('Something went wrong')).toBeInTheDocument();\n  expect(screen.queryByText('Working fine')).not.toBeInTheDocument();\n\n  consoleSpy.mockRestore();\n});\n\ntest('renders children when no error occurs', () => {\n  render(\n    <ErrorBoundary fallback={<div>Something went wrong</div>}>\n      <BrokenComponent shouldThrow={false} />\n    </ErrorBoundary>\n  );\n\n  expect(screen.getByText('Working fine')).toBeInTheDocument();\n  expect(screen.queryByText('Something went wrong')).not.toBeInTheDocument();\n});\n\ntest('calls onError callback with error details', () => {\n  const onError = vi.fn();\n  vi.spyOn(console, 'error').mockImplementation(() => {});\n\n  render(\n    <ErrorBoundary onError={onError} fallback={<div>Error</div>}>\n      <BrokenComponent shouldThrow={true} />\n    </ErrorBoundary>\n  );\n\n  expect(onError).toHaveBeenCalledWith(\n    expect.objectContaining({ message: 'Component exploded' }),\n    expect.any(Object)\n  );\n});\n```\n\nAlways spy on `console.error` and suppress it \u2014 React intentionally logs caught errors to the console, creating noisy test output. Restore the spy in the same test or in `afterEach`.",
+    "tags": [
+      "react-testing",
+      "error-boundary",
+      "testing-library",
+      "fallback-ui"
+    ]
+  },
+  {
+    "type": "tutorial",
+    "trust": "community",
+    "title": "Testcontainers for integration tests with real databases",
+    "body": "Testcontainers spins up real Docker containers for databases, message queues, or any service your tests need. This gives integration tests production-like fidelity without managing external test infrastructure.\n\n```typescript\nimport { describe, it, expect, beforeAll, afterAll } from 'vitest';\nimport { PostgreSqlContainer, StartedPostgreSqlContainer } from '@testcontainers/postgresql';\nimport { drizzle } from 'drizzle-orm/node-postgres';\nimport { migrate } from 'drizzle-orm/node-postgres/migrator';\nimport { Pool } from 'pg';\nimport { users } from '@/db/schema';\n\ndescribe('User repository', () => {\n  let container: StartedPostgreSqlContainer;\n  let db: ReturnType<typeof drizzle>;\n  let pool: Pool;\n\n  beforeAll(async () => {\n    container = await new PostgreSqlContainer('postgres:16-alpine')\n      .withDatabase('testdb')\n      .start();\n\n    pool = new Pool({ connectionString: container.getConnectionUri() });\n    db = drizzle(pool);\n    await migrate(db, { migrationsFolder: './drizzle' });\n  }, 60_000); // Container startup can take time\n\n  afterAll(async () => {\n    await pool.end();\n    await container.stop();\n  });\n\n  it('inserts and retrieves a user', async () => {\n    await db.insert(users).values({\n      email: 'test@example.com',\n      name: 'Test User',\n    });\n\n    const result = await db.select().from(users)\n      .where(eq(users.email, 'test@example.com'));\n\n    expect(result).toHaveLength(1);\n    expect(result[0].name).toBe('Test User');\n  });\n});\n```\n\nSet a generous timeout for `beforeAll` since pulling images on first run takes time. Use `.withReuse()` during local development to keep containers running between test runs. In CI, containers start fresh every run. Testcontainers requires Docker to be available \u2014 configure CI runners with Docker-in-Docker or use a machine executor.",
+    "tags": [
+      "testcontainers",
+      "integration-testing",
+      "database",
+      "docker",
+      "postgresql"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Vitest parameterized tests with test.each",
+    "body": "Vitest's `test.each` (or `it.each`) runs the same test logic with different inputs, reducing duplication for data-driven tests.\n\n```typescript\nimport { describe, it, expect } from 'vitest';\nimport { validateEmail, formatCurrency, parseDate } from '@/utils';\n\ndescribe('validateEmail', () => {\n  it.each([\n    { input: 'user@example.com', expected: true },\n    { input: 'user+tag@example.com', expected: true },\n    { input: 'user@sub.domain.com', expected: true },\n    { input: 'invalid', expected: false },\n    { input: '@example.com', expected: false },\n    { input: 'user@', expected: false },\n    { input: '', expected: false },\n  ])('returns $expected for \"$input\"', ({ input, expected }) => {\n    expect(validateEmail(input)).toBe(expected);\n  });\n});\n\ndescribe('formatCurrency', () => {\n  it.each`\n    amount    | currency | expected\n    ${1000}   | ${'USD'} | ${'$1,000.00'}\n    ${1000}   | ${'EUR'} | ${'\\u20AC1,000.00'}\n    ${0.5}    | ${'USD'} | ${'$0.50'}\n    ${-99.9}  | ${'USD'} | ${'-$99.90'}\n  `('formats $amount $currency as $expected', ({ amount, currency, expected }) => {\n    expect(formatCurrency(amount, currency)).toBe(expected);\n  });\n});\n\ndescribe('parseDate edge cases', () => {\n  const cases: [string, Date | null][] = [\n    ['2025-01-15', new Date('2025-01-15')],\n    ['not-a-date', null],\n    ['', null],\n  ];\n\n  it.each(cases)('parseDate(\"%s\") returns %s', (input, expected) => {\n    expect(parseDate(input)).toEqual(expected);\n  });\n});\n```\n\nThe tagged template literal syntax (`it.each\\`...\\``) is cleaner for tabular data. The object array syntax is better when values contain complex objects. Use descriptive test names with template variables (`$input`, `$expected`) so failure messages are immediately actionable.",
+    "tags": [
+      "vitest",
+      "parameterized-tests",
+      "test-each",
+      "data-driven-testing"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "community",
+    "title": "MSW network error and timeout simulation",
+    "body": "MSW can simulate network failures, timeouts, and slow responses to test error handling and loading states in your application.\n\n```typescript\nimport { http, HttpResponse, delay, passthrough } from 'msw';\nimport { server } from '@/mocks/server';\nimport { render, screen } from '@testing-library/react';\nimport { Dashboard } from '@/components/Dashboard';\n\ntest('shows retry button on network error', async () => {\n  server.use(\n    http.get('/api/stats', () => {\n      return HttpResponse.error(); // Simulates network failure (TypeError: Failed to fetch)\n    })\n  );\n\n  render(<Dashboard />);\n  const retryBtn = await screen.findByRole('button', { name: /retry/i });\n  expect(retryBtn).toBeInTheDocument();\n});\n\ntest('shows timeout message for slow responses', async () => {\n  server.use(\n    http.get('/api/stats', async () => {\n      await delay('infinite'); // Never resolves \u2014 simulates timeout\n      return HttpResponse.json({});\n    })\n  );\n\n  render(<Dashboard />);\n  // Component should show timeout UI after its internal timeout\n  await screen.findByText(/request timed out/i);\n});\n\ntest('shows loading state during slow response', async () => {\n  server.use(\n    http.get('/api/stats', async () => {\n      await delay(2000); // 2 second delay\n      return HttpResponse.json({ visitors: 100 });\n    })\n  );\n\n  render(<Dashboard />);\n  expect(screen.getByRole('progressbar')).toBeInTheDocument();\n\n  await screen.findByText('100 visitors');\n  expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();\n});\n\ntest('handles specific HTTP status codes', async () => {\n  server.use(\n    http.get('/api/stats', () => {\n      return HttpResponse.json(\n        { error: 'Rate limit exceeded' },\n        { status: 429, headers: { 'Retry-After': '60' } }\n      );\n    })\n  );\n\n  render(<Dashboard />);\n  await screen.findByText(/rate limit/i);\n});\n```\n\nUse `HttpResponse.error()` for network-level failures (no response at all). Use `HttpResponse.json(body, { status })` for HTTP error responses. The `delay('infinite')` helper is useful for testing component cleanup and abort behavior.",
+    "tags": [
+      "msw",
+      "error-handling",
+      "network-errors",
+      "timeout",
+      "loading-states"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Playwright locator strictness \u2014 multiple elements matching",
+    "body": "Playwright locators are strict by default \u2014 if a locator matches more than one element, the action throws an error instead of silently picking the first one. This catches ambiguous selectors early.\n\n```\nError: locator.click: Error: strict mode violation:\nlocator('button:has-text(\"Delete\")') resolved to 5 elements:\n  1) <button>Delete</button> at /html/body/.../li[1]\n  2) <button>Delete</button> at /html/body/.../li[2]\n  ...\n```\n\nFixes for strict mode violations:\n\n```typescript\n// BAD \u2014 matches every Delete button on the page\nawait page.locator('button:has-text(\"Delete\")').click();\n\n// FIX 1: Narrow scope with a parent locator\nconst firstItem = page.getByRole('listitem').first();\nawait firstItem.getByRole('button', { name: 'Delete' }).click();\n\n// FIX 2: Use nth() for positional selection\nawait page.getByRole('button', { name: 'Delete' }).nth(2).click();\n\n// FIX 3: Filter by containing text or other criteria\nawait page.getByRole('listitem')\n  .filter({ hasText: 'Buy groceries' })\n  .getByRole('button', { name: 'Delete' })\n  .click();\n\n// FIX 4: Use first()/last() when position is meaningful\nawait page.getByRole('button', { name: 'Delete' }).first().click();\n\n// Intentionally operate on all matches \u2014 use .all()\nconst buttons = page.getByRole('button', { name: 'Delete' });\nfor (const button of await buttons.all()) {\n  await button.click();\n}\n```\n\nStrict mode is a feature, not a bug \u2014 it prevents tests from accidentally interacting with the wrong element. Prefer `filter()` over `nth()` because it is resilient to list order changes. The `.all()` method returns an array for intentional multi-element operations.",
+    "tags": [
+      "playwright",
+      "locators",
+      "strict-mode",
+      "gotcha",
+      "selectors"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "community",
+    "title": "Vitest workspace for monorepo test configuration",
+    "body": "Vitest workspaces let you configure different test settings for different packages in a monorepo. Each project can have its own environment, setup files, and transform settings.\n\n```typescript\n// vitest.workspace.ts\nimport { defineWorkspace } from 'vitest/config';\n\nexport default defineWorkspace([\n  {\n    extends: './vitest.config.ts', // Shared base config\n    test: {\n      name: 'client',\n      root: './packages/client',\n      environment: 'jsdom',\n      setupFiles: ['./test/setup.ts'],\n      include: ['src/**/*.test.{ts,tsx}'],\n    },\n  },\n  {\n    extends: './vitest.config.ts',\n    test: {\n      name: 'server',\n      root: './packages/server',\n      environment: 'node',\n      include: ['src/**/*.test.ts'],\n    },\n  },\n  {\n    extends: './vitest.config.ts',\n    test: {\n      name: 'shared',\n      root: './packages/shared',\n      environment: 'node',\n      include: ['src/**/*.test.ts'],\n    },\n  },\n]);\n```\n\nRun specific projects with `vitest --project client`. The workspace runner executes all projects in parallel by default. Each project appears as a separate section in the test output with its name prefix. Use `typecheck.enabled: true` per project to run type checking alongside tests. Workspace configs can also reference glob patterns: `defineWorkspace(['packages/*/vitest.config.ts'])` to auto-discover project configs. This is cleaner for large monorepos where each package owns its test configuration.",
+    "tags": [
+      "vitest",
+      "workspace",
+      "monorepo",
+      "configuration",
+      "project-setup"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Testing Library \u2014 Unable to find role with accessible name",
+    "body": "This error occurs when `getByRole` cannot match the specified role and name combination. It is often caused by accessibility issues in the component under test.\n\n```\nTestingLibraryElementError: Unable to find an accessible element with the role \"button\"\nand name \"Submit Form\"\n\nHere are the accessible roles:\n\n  button:\n    Name \"\":\n    <button class=\"btn-primary\" />\n\n  textbox:\n    Name \"Email\":\n    <input type=\"email\" aria-label=\"Email\" />\n```\n\nThe error output shows which roles exist and their computed names. Common causes:\n\n```typescript\n// CAUSE 1: Button has no accessible name\n// BAD: <button><Icon /></button> \u2014 icon-only button has no text\n// FIX: Add aria-label\n// <button aria-label=\"Submit Form\"><Icon /></button>\nscreen.getByRole('button', { name: 'Submit Form' });\n\n// CAUSE 2: Name uses wrong case or partial match\n// FIX: Use regex with case-insensitive flag\nscreen.getByRole('button', { name: /submit form/i });\n\n// CAUSE 3: Element has wrong implicit role\n// <a> without href has no implicit role\n// FIX: Add href or use explicit role\n// <a href=\"/submit\" role=\"button\">Submit</a>\n\n// CAUSE 4: Element is hidden via CSS or aria-hidden\n// FIX: Check visibility or use { hidden: true }\nscreen.getByRole('button', { name: /submit/i, hidden: true });\n\n// Debug: Log the accessible tree\nscreen.debug(); // Logs DOM\nscreen.logTestingPlaygroundURL(); // Opens interactive playground\n```\n\nAlways use `screen.debug()` or the Testing Playground browser extension to inspect the rendered DOM. The error message itself lists available roles and names \u2014 scan it carefully before modifying your query. Prefer regex with `/i` flag over exact string matching for resilience to text changes.",
+    "tags": [
+      "testing-library",
+      "error",
+      "accessibility",
+      "getByRole",
+      "aria"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Playwright API testing without a browser",
+    "body": "Playwright's `request` context lets you test REST APIs directly without launching a browser. This is faster and ideal for backend endpoint testing.\n\n```typescript\nimport { test, expect } from '@playwright/test';\n\ntest.describe('Users API', () => {\n  let userId: string;\n\n  test('POST /api/users creates a user', async ({ request }) => {\n    const response = await request.post('/api/users', {\n      data: {\n        name: 'Alice',\n        email: 'alice@example.com',\n      },\n    });\n\n    expect(response.status()).toBe(201);\n    const body = await response.json();\n    expect(body).toMatchObject({\n      name: 'Alice',\n      email: 'alice@example.com',\n    });\n    userId = body.id;\n  });\n\n  test('GET /api/users/:id returns the user', async ({ request }) => {\n    const response = await request.get(`/api/users/${userId}`);\n    expect(response.ok()).toBeTruthy();\n\n    const user = await response.json();\n    expect(user.name).toBe('Alice');\n  });\n\n  test('DELETE /api/users/:id removes the user', async ({ request }) => {\n    const response = await request.delete(`/api/users/${userId}`);\n    expect(response.status()).toBe(204);\n\n    const getResponse = await request.get(`/api/users/${userId}`);\n    expect(getResponse.status()).toBe(404);\n  });\n\n  test('POST /api/users validates input', async ({ request }) => {\n    const response = await request.post('/api/users', {\n      data: { name: '' }, // Missing email\n    });\n    expect(response.status()).toBe(422);\n    const body = await response.json();\n    expect(body.errors).toContainEqual(\n      expect.objectContaining({ field: 'email' })\n    );\n  });\n});\n```\n\nConfigure the base URL in `playwright.config.ts` under `use: { baseURL: 'http://localhost:3000' }`. The `request` fixture handles cookies and headers automatically. Use `request.storageState()` to share authentication across tests.",
+    "tags": [
+      "playwright",
+      "api-testing",
+      "rest",
+      "request-context",
+      "backend-testing"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "community",
+    "title": "Testing React context providers with custom render wrapper",
+    "body": "Many components depend on context providers (theme, auth, router). A custom `render` function wraps the component with all necessary providers, avoiding boilerplate in every test.\n\n```typescript\n// test/utils.tsx\nimport { render, type RenderOptions } from '@testing-library/react';\nimport { QueryClient, QueryClientProvider } from '@tanstack/react-query';\nimport { ThemeProvider } from '@/providers/theme';\nimport { AuthContext, type AuthState } from '@/providers/auth';\nimport { MemoryRouter } from 'react-router-dom';\n\ntype CustomRenderOptions = RenderOptions & {\n  auth?: Partial<AuthState>;\n  route?: string;\n};\n\nconst defaultAuth: AuthState = {\n  user: { id: '1', name: 'Test User', role: 'user' },\n  isAuthenticated: true,\n  login: vi.fn(),\n  logout: vi.fn(),\n};\n\nexport function renderWithProviders(\n  ui: React.ReactElement,\n  options: CustomRenderOptions = {}\n) {\n  const { auth = {}, route = '/', ...renderOptions } = options;\n  const queryClient = new QueryClient({\n    defaultOptions: { queries: { retry: false } },\n  });\n\n  function Wrapper({ children }: { children: React.ReactNode }) {\n    return (\n      <QueryClientProvider client={queryClient}>\n        <AuthContext.Provider value={{ ...defaultAuth, ...auth }}>\n          <ThemeProvider>\n            <MemoryRouter initialEntries={[route]}>\n              {children}\n            </MemoryRouter>\n          </ThemeProvider>\n        </AuthContext.Provider>\n      </QueryClientProvider>\n    );\n  }\n\n  return { ...render(ui, { wrapper: Wrapper, ...renderOptions }), queryClient };\n}\n\n// Usage in tests\nimport { renderWithProviders } from '@/test/utils';\n\ntest('admin sees delete button', () => {\n  renderWithProviders(<UserProfile />, {\n    auth: { user: { id: '1', name: 'Admin', role: 'admin' }, isAuthenticated: true },\n  });\n  expect(screen.getByRole('button', { name: /delete/i })).toBeInTheDocument();\n});\n```\n\nReturn the `queryClient` so tests can pre-populate the cache with `queryClient.setQueryData()`. Create a fresh QueryClient per test to prevent cache leakage. Export `renderWithProviders` as the default render from your test utils module.",
+    "tags": [
+      "react-testing",
+      "context-providers",
+      "custom-render",
+      "testing-library"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "unverified",
+    "title": "Vitest --pool=forks vs --pool=threads memory isolation",
+    "body": "Vitest offers multiple worker pool strategies that affect test isolation, memory usage, and performance. Choosing the wrong one causes subtle bugs with shared state.\n\n```typescript\n// vitest.config.ts\nexport default defineConfig({\n  test: {\n    // 'threads' (default) \u2014 uses Worker threads\n    // 'forks' \u2014 uses child processes\n    // 'vmThreads' \u2014 uses VM context within threads\n    pool: 'forks',\n    poolOptions: {\n      forks: {\n        singleFork: false, // true = all tests in one process (fast, no isolation)\n      },\n    },\n  },\n});\n```\n\nWhen to use each pool:\n\n`threads` (default): Fastest for most test suites. Worker threads share memory with the main process, which means native addons and some Node.js APIs behave differently. Global state mutations can leak between tests if `isolate: true` is not set.\n\n`forks`: Uses separate child processes like Jest. Each process gets its own memory space, so native modules (bcrypt, sharp, better-sqlite3) that are not thread-safe work correctly. Slower startup but better isolation.\n\n`vmThreads`: Runs each test file in a separate VM context within a thread. Better isolation than `threads` without the startup cost of `forks`. Good middle ground.\n\nCommon symptoms of wrong pool choice: (1) Tests pass individually but fail together \u2014 try `pool: 'forks'`. (2) Native module segfaults \u2014 switch from `threads` to `forks`. (3) Tests are slow \u2014 switch from `forks` to `threads` and verify isolation is sufficient. (4) `process.env` mutations leaking \u2014 use `forks` or reset env in `beforeEach`.",
+    "tags": [
+      "vitest",
+      "pool",
+      "threads",
+      "forks",
+      "isolation",
+      "gotcha"
+    ]
+  },
+  {
+    "type": "tutorial",
+    "trust": "verified",
+    "title": "Playwright authentication state reuse across tests",
+    "body": "Playwright's `storageState` feature saves authentication cookies and localStorage after logging in once, then reuses that state across all tests \u2014 eliminating repeated login flows.\n\n```typescript\n// playwright.config.ts\nimport { defineConfig } from '@playwright/test';\n\nexport default defineConfig({\n  projects: [\n    {\n      name: 'setup',\n      testMatch: /.*\\.setup\\.ts/,\n    },\n    {\n      name: 'authenticated',\n      dependencies: ['setup'],\n      use: {\n        storageState: 'playwright/.auth/user.json',\n      },\n    },\n  ],\n});\n\n// tests/auth.setup.ts\nimport { test as setup, expect } from '@playwright/test';\n\nconst authFile = 'playwright/.auth/user.json';\n\nsetup('authenticate', async ({ page }) => {\n  await page.goto('/login');\n  await page.getByLabel('Email').fill('test@example.com');\n  await page.getByLabel('Password').fill('password123');\n  await page.getByRole('button', { name: 'Sign in' }).click();\n\n  // Wait for redirect after successful login\n  await page.waitForURL('/dashboard');\n  expect(page.url()).toContain('/dashboard');\n\n  // Save signed-in state\n  await page.context().storageState({ path: authFile });\n});\n\n// tests/dashboard.spec.ts \u2014 runs with saved auth state\nimport { test, expect } from '@playwright/test';\n\ntest('shows user profile', async ({ page }) => {\n  // No login needed \u2014 storageState from setup is already applied\n  await page.goto('/dashboard');\n  await expect(page.getByText('Welcome, test@example.com')).toBeVisible();\n});\n```\n\nAdd `playwright/.auth/` to `.gitignore`. The setup project runs first via `dependencies: ['setup']`. For multiple roles (admin, user), create separate setup files and storage states, then reference them in different projects. The auth state includes all cookies, localStorage, and sessionStorage.",
+    "tags": [
+      "playwright",
+      "authentication",
+      "storageState",
+      "e2e",
+      "test-setup"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "community",
+    "title": "Vitest spyOn for testing side effects without mocking",
+    "body": "Use `vi.spyOn` to observe function calls without replacing the implementation. This verifies side effects while keeping the real behavior intact.\n\n```typescript\nimport { describe, it, expect, vi, afterEach } from 'vitest';\nimport { logger } from '@/lib/logger';\nimport { processPayment } from '@/services/payment';\n\ndescribe('processPayment', () => {\n  afterEach(() => {\n    vi.restoreAllMocks();\n  });\n\n  it('logs successful payment', async () => {\n    // Spy on logger.info \u2014 keeps real implementation\n    const logSpy = vi.spyOn(logger, 'info');\n\n    await processPayment({ amount: 50, currency: 'USD' });\n\n    expect(logSpy).toHaveBeenCalledWith('Payment processed', {\n      amount: 50,\n      currency: 'USD',\n      status: 'success',\n    });\n  });\n\n  it('spyOn with mockImplementation for partial override', async () => {\n    // Override implementation while still tracking calls\n    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(\n      new Response(JSON.stringify({ status: 'ok' }), { status: 200 })\n    );\n\n    await processPayment({ amount: 25, currency: 'EUR' });\n\n    expect(fetchSpy).toHaveBeenCalledWith(\n      expect.stringContaining('/payments'),\n      expect.objectContaining({ method: 'POST' })\n    );\n  });\n\n  it('tracks call count and arguments', () => {\n    const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});\n\n    console.warn('first');\n    console.warn('second');\n\n    expect(consoleSpy).toHaveBeenCalledTimes(2);\n    expect(consoleSpy.mock.calls[0][0]).toBe('first');\n    expect(consoleSpy.mock.calls[1][0]).toBe('second');\n  });\n});\n```\n\nKey difference from `vi.fn()`: spies wrap a real function and can optionally override it. Call `vi.restoreAllMocks()` in `afterEach` to remove all spy wrappers and restore original implementations. Without restoration, spies leak across tests and may cause unexpected behavior.",
+    "tags": [
+      "vitest",
+      "spyOn",
+      "side-effects",
+      "mocking",
+      "testing-patterns"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "verified",
+    "title": "Vitest type testing with expectTypeOf",
+    "body": "Vitest includes `expectTypeOf` for compile-time type assertions. These tests verify that your TypeScript types are correct without running any code at runtime.\n\n```typescript\nimport { describe, it, expectTypeOf } from 'vitest';\nimport { createStore, type Store } from '@/lib/store';\nimport { formatResponse, type ApiResponse } from '@/utils/api';\n\ndescribe('type tests', () => {\n  it('createStore returns correctly typed Store', () => {\n    const store = createStore({ count: 0, name: 'test' });\n\n    expectTypeOf(store).toMatchTypeOf<Store<{ count: number; name: string }>>();\n    expectTypeOf(store.getState).toBeFunction();\n    expectTypeOf(store.getState()).toEqualTypeOf<{ count: number; name: string }>();\n\n    // Verify subscribe returns an unsubscribe function\n    expectTypeOf(store.subscribe).parameter(0).toEqualTypeOf<\n      (state: { count: number; name: string }) => void\n    >();\n    expectTypeOf(store.subscribe(() => {})).toEqualTypeOf<() => void>();\n  });\n\n  it('formatResponse preserves generic type parameter', () => {\n    type UserResponse = ApiResponse<{ id: string; name: string }>;\n\n    expectTypeOf<UserResponse>().toHaveProperty('data');\n    expectTypeOf<UserResponse['data']>().toEqualTypeOf<{ id: string; name: string }>();\n    expectTypeOf<UserResponse>().toHaveProperty('error');\n    expectTypeOf<UserResponse['error']>().toEqualTypeOf<string | null>();\n  });\n\n  it('rejects invalid input types', () => {\n    // @ts-expect-error \u2014 string is not assignable to number\n    expectTypeOf<string>().toEqualTypeOf<number>();\n  });\n});\n```\n\nType tests run during `vitest typecheck` (not regular `vitest run`). Enable in config with `typecheck: { enabled: true }`. Use `toEqualTypeOf` for exact type matching and `toMatchTypeOf` for structural compatibility (allows subtypes). These assertions are erased at runtime \u2014 they only produce TypeScript compiler errors when types mismatch.",
+    "tags": [
+      "vitest",
+      "type-testing",
+      "expectTypeOf",
+      "typescript",
+      "compile-time"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "unverified",
+    "title": "MSW 2.0 breaking changes from v1 \u2014 rest to http migration",
+    "body": "MSW 2.0 introduced significant API changes. The most common migration error is continuing to use v1 APIs which no longer exist.\n\n```typescript\n// MSW v1 (BROKEN in v2)\nimport { rest } from 'msw'; // 'rest' export removed\nconst handler = rest.get('/api/user', (req, res, ctx) => {\n  return res(ctx.status(200), ctx.json({ name: 'Alice' }));\n});\n\n// MSW v2 (CORRECT)\nimport { http, HttpResponse } from 'msw';\nconst handler = http.get('/api/user', () => {\n  return HttpResponse.json({ name: 'Alice' });\n});\n```\n\nKey migration changes: (1) `rest` is now `http` \u2014 `rest.get` becomes `http.get`. (2) Response is returned directly \u2014 no more `res(ctx.json(...))` chain. Use `HttpResponse.json()`, `HttpResponse.text()`, or `new HttpResponse()`. (3) Request body access is async: `const body = await request.json()` instead of `req.body`. (4) Path params are in the resolver argument: `({ params }) => { params.id }` instead of `req.params.id`. (5) `setupServer` import path: `msw/node` (unchanged). (6) `setupWorker` import path: `msw/browser` (was `msw`). (7) `server.printHandlers()` replaces `server.listHandlers()` for debugging.\n\nRun the codemod for automated migration: `npx msw@latest init` and follow the prompts. The codemod handles most transformations but manual review is needed for complex handler logic.",
+    "tags": [
+      "msw",
+      "migration",
+      "breaking-changes",
+      "gotcha",
+      "msw-v2"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Testing async error handling with rejects and toThrow",
+    "body": "Testing that async functions throw requires specific assertion patterns. Using the wrong pattern leads to tests that pass even when the error is not thrown.\n\n```typescript\nimport { describe, it, expect } from 'vitest';\nimport { fetchUser, validateInput } from '@/services/user';\n\ndescribe('async error handling', () => {\n  // CORRECT: Use rejects with async functions\n  it('rejects when user is not found', async () => {\n    await expect(fetchUser('nonexistent'))\n      .rejects.toThrow('User not found');\n  });\n\n  // CORRECT: Check error properties\n  it('rejects with specific error type', async () => {\n    await expect(fetchUser('nonexistent'))\n      .rejects.toThrowError(/not found/i);\n\n    await expect(fetchUser('nonexistent'))\n      .rejects.toBeInstanceOf(NotFoundError);\n\n    // Check error properties\n    await expect(fetchUser('nonexistent'))\n      .rejects.toMatchObject({\n        message: 'User not found',\n        statusCode: 404,\n      });\n  });\n\n  // DANGEROUS: This always passes \u2014 the assertion never executes\n  it('BROKEN test that always passes', async () => {\n    // BAD \u2014 missing await and missing expect.assertions\n    expect(fetchUser('nonexistent')).rejects.toThrow();\n    // The promise is not awaited, test ends before assertion runs\n  });\n\n  // Synchronous throws\n  it('throws on invalid input synchronously', () => {\n    expect(() => validateInput(null)).toThrow('Input required');\n    expect(() => validateInput('')).toThrow(ValidationError);\n  });\n\n  // Using try/catch when you need to inspect the error\n  it('includes context in error', async () => {\n    expect.assertions(2); // Ensures catch block runs\n    try {\n      await fetchUser('bad-id');\n    } catch (error) {\n      expect(error).toBeInstanceOf(NotFoundError);\n      expect(error.context).toEqual({ userId: 'bad-id' });\n    }\n  });\n});\n```\n\nAlways `await` the `expect(...).rejects` chain. Without `await`, the test completes before the promise resolves and the assertion is never checked. Use `expect.assertions(n)` in try/catch patterns to guarantee the catch block executes.",
+    "tags": [
+      "testing-patterns",
+      "async",
+      "error-handling",
+      "rejects",
+      "toThrow"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "unverified",
+    "title": "Vitest \u2014 ReferenceError: document is not defined",
+    "body": "This error occurs when running tests that reference browser APIs (DOM, `document`, `window`) in a Node.js test environment.\n\n```\nReferenceError: document is not defined\n  at createElement (src/utils/dom.ts:5:18)\n  at Object.<anonymous> (src/utils/dom.test.ts:8:12)\n```\n\nThe root cause is that the test file or its dependencies use DOM APIs, but Vitest defaults to a `node` environment which has no browser globals.\n\n```typescript\n// FIX 1: Set environment globally in vitest.config.ts\nexport default defineConfig({\n  test: {\n    environment: 'jsdom', // or 'happy-dom' for faster alternative\n  },\n});\n\n// FIX 2: Set environment per file with magic comment\n// @vitest-environment jsdom\nimport { describe, it, expect } from 'vitest';\n\ndescribe('DOM utilities', () => {\n  it('creates an element', () => {\n    const el = document.createElement('div');\n    expect(el.tagName).toBe('DIV');\n  });\n});\n\n// FIX 3: Set environment per file in config\nexport default defineConfig({\n  test: {\n    environmentMatchGlobs: [\n      ['src/components/**', 'jsdom'],\n      ['src/server/**', 'node'],\n    ],\n  },\n});\n```\n\nInstall the environment package: `npm install -D jsdom` or `npm install -D happy-dom`. The `happy-dom` alternative is 2-3x faster than jsdom but has slightly less complete DOM API coverage. Use `environmentMatchGlobs` in monorepos or mixed projects to apply the right environment per directory. Server-side code should always use `node` environment for accurate behavior.",
+    "tags": [
+      "vitest",
+      "error",
+      "jsdom",
+      "environment",
+      "dom"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "MSW request body and header assertions in tests",
+    "body": "MSW handlers can capture request details for assertions in your tests. This verifies that your application sends the correct headers, body, and query parameters to APIs.\n\n```typescript\nimport { http, HttpResponse } from 'msw';\nimport { server } from '@/mocks/server';\nimport { render, screen } from '@testing-library/react';\nimport userEvent from '@testing-library/user-event';\nimport { CreatePostForm } from '@/components/CreatePostForm';\n\ntest('sends correct payload with auth header', async () => {\n  let capturedRequest: { body: unknown; headers: Record<string, string> } | null = null;\n\n  server.use(\n    http.post('https://api.example.com/posts', async ({ request }) => {\n      capturedRequest = {\n        body: await request.json(),\n        headers: Object.fromEntries(request.headers.entries()),\n      };\n      return HttpResponse.json({ id: 'new-1' }, { status: 201 });\n    })\n  );\n\n  const user = userEvent.setup();\n  render(<CreatePostForm token=\"bearer-abc\" />);\n\n  await user.type(screen.getByLabelText('Title'), 'My Post');\n  await user.type(screen.getByLabelText('Content'), 'Post body here');\n  await user.click(screen.getByRole('button', { name: /publish/i }));\n\n  await screen.findByText(/published/i);\n\n  // Assert on captured request\n  expect(capturedRequest).not.toBeNull();\n  expect(capturedRequest!.body).toEqual({\n    title: 'My Post',\n    content: 'Post body here',\n  });\n  expect(capturedRequest!.headers['authorization']).toBe('Bearer bearer-abc');\n  expect(capturedRequest!.headers['content-type']).toContain('application/json');\n});\n```\n\nCapture requests inside the handler using closure variables. Assert after the UI confirms the operation completed (via `findByText`). This pattern works for verifying auth headers, content types, query parameters, and request body structure. For multiple requests, use an array to collect all captured payloads.",
+    "tags": [
+      "msw",
+      "request-assertions",
+      "headers",
+      "testing",
+      "api-mocking"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "community",
+    "title": "Playwright trace viewer for debugging failed CI tests",
+    "body": "Playwright Trace Viewer provides a complete timeline of your test execution \u2014 DOM snapshots, network requests, console logs, and action details. It is the most effective tool for debugging tests that fail in CI but pass locally.\n\n```typescript\n// playwright.config.ts\nimport { defineConfig } from '@playwright/test';\n\nexport default defineConfig({\n  use: {\n    // 'on-first-retry' captures traces only for failed tests on retry\n    trace: 'on-first-retry',\n    // Alternative: 'retain-on-failure' captures for all failures\n    // trace: 'retain-on-failure',\n  },\n  retries: process.env.CI ? 2 : 0,\n});\n```\n\nView traces locally after downloading CI artifacts:\n\n```bash\n# Open trace file in browser-based viewer\nnpx playwright show-trace trace.zip\n\n# Or use the online viewer\n# Upload trace.zip to trace.playwright.dev\n```\n\nThe trace viewer shows: (1) Timeline of all test actions with before/after DOM snapshots. (2) Network tab with request/response bodies, timing, and status codes. (3) Console tab with all `console.log`, warnings, and errors. (4) Source tab showing which line of test code each action corresponds to. (5) Call metadata including selector resolution and retry attempts.\n\nFor CI, upload trace artifacts:\n\n```yaml\n- uses: actions/upload-artifact@v4\n  if: failure()\n  with:\n    name: playwright-traces\n    path: test-results/\n    retention-days: 7\n```\n\nTraces add minimal overhead (< 5% slowdown) and are invaluable for diagnosing timing issues, selector mismatches, and unexpected network responses that only manifest in CI environments.",
+    "tags": [
+      "playwright",
+      "trace-viewer",
+      "debugging",
+      "ci",
+      "test-failures"
+    ]
+  }
+]

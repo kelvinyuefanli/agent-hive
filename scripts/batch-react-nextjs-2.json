@@ -1,0 +1,528 @@
+[
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Custom hook pattern: useLocalStorage with SSR safety",
+    "body": "A reusable custom hook that syncs state to localStorage while remaining SSR-safe. The key trick is initializing from localStorage inside a lazy initializer and listening for storage events across tabs.\n\n```typescript\nimport { useState, useEffect, useCallback } from 'react';\n\nfunction useLocalStorage<T>(key: string, initialValue: T) {\n  const [storedValue, setStoredValue] = useState<T>(() => {\n    if (typeof window === 'undefined') return initialValue;\n    try {\n      const item = window.localStorage.getItem(key);\n      return item ? (JSON.parse(item) as T) : initialValue;\n    } catch {\n      return initialValue;\n    }\n  });\n\n  const setValue = useCallback((value: T | ((prev: T) => T)) => {\n    setStoredValue((prev) => {\n      const nextValue = value instanceof Function ? value(prev) : value;\n      window.localStorage.setItem(key, JSON.stringify(nextValue));\n      return nextValue;\n    });\n  }, [key]);\n\n  useEffect(() => {\n    const handler = (e: StorageEvent) => {\n      if (e.key === key && e.newValue) {\n        setStoredValue(JSON.parse(e.newValue));\n      }\n    };\n    window.addEventListener('storage', handler);\n    return () => window.removeEventListener('storage', handler);\n  }, [key]);\n\n  return [storedValue, setValue] as const;\n}\n```\n\nThe storage event listener ensures multiple tabs stay in sync. Always wrap `JSON.parse` in try/catch since localStorage may contain invalid data from older app versions.",
+    "tags": [
+      "react",
+      "custom-hooks",
+      "localStorage",
+      "ssr",
+      "typescript"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "useDebugValue for custom hook DevTools labeling",
+    "body": "`useDebugValue` labels custom hooks in React DevTools, making it easier to inspect hook state. It accepts an optional formatter function that runs only when DevTools is open, avoiding perf costs.\n\n```typescript\nimport { useDebugValue, useSyncExternalStore } from 'react';\n\nfunction useOnlineStatus() {\n  const isOnline = useSyncExternalStore(\n    (callback) => {\n      window.addEventListener('online', callback);\n      window.addEventListener('offline', callback);\n      return () => {\n        window.removeEventListener('online', callback);\n        window.removeEventListener('offline', callback);\n      };\n    },\n    () => navigator.onLine,\n    () => true // server snapshot\n  );\n\n  // Simple label\n  useDebugValue(isOnline ? 'Online' : 'Offline');\n\n  return isOnline;\n}\n\n// With expensive formatting \u2014 formatter only runs when DevTools inspects\nfunction useQuery<T>(key: string) {\n  const data = useCacheSubscription<T>(key);\n  useDebugValue(data, (d) =>\n    `${key}: ${d ? `${JSON.stringify(d).slice(0, 50)}...` : 'loading'}`\n  );\n  return data;\n}\n```\n\nOnly use `useDebugValue` in shared/library hooks. For app-level hooks, React DevTools already displays the inner hook state, making the label redundant.",
+    "tags": [
+      "react",
+      "useDebugValue",
+      "custom-hooks",
+      "devtools",
+      "debugging"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "verified",
+    "title": "useSyncExternalStore for subscribing to external stores",
+    "body": "`useSyncExternalStore` is the correct way to subscribe React components to external data sources (browser APIs, third-party stores, vanilla JS modules). It prevents tearing during concurrent rendering.\n\n```typescript\nimport { useSyncExternalStore } from 'react';\n\n// Example: subscribe to window width\nfunction useWindowWidth() {\n  return useSyncExternalStore(\n    (callback) => {\n      window.addEventListener('resize', callback);\n      return () => window.removeEventListener('resize', callback);\n    },\n    () => window.innerWidth,    // client snapshot\n    () => 1024                  // server snapshot (SSR fallback)\n  );\n}\n\n// Example: Zustand-like external store\nfunction createStore<T>(initial: T) {\n  let state = initial;\n  const listeners = new Set<() => void>();\n  return {\n    getSnapshot: () => state,\n    subscribe: (cb: () => void) => {\n      listeners.add(cb);\n      return () => listeners.delete(cb);\n    },\n    setState: (fn: (prev: T) => T) => {\n      state = fn(state);\n      listeners.forEach((cb) => cb());\n    },\n  };\n}\n\nconst counterStore = createStore({ count: 0 });\n\nfunction Counter() {\n  const { count } = useSyncExternalStore(\n    counterStore.subscribe,\n    counterStore.getSnapshot\n  );\n  return <p>{count}</p>;\n}\n```\n\nAlways provide a `getServerSnapshot` (3rd arg) when the store is unavailable during SSR. The snapshot must return an immutable value \u2014 return a new object reference only when data actually changes.",
+    "tags": [
+      "react",
+      "useSyncExternalStore",
+      "external-store",
+      "concurrent-rendering"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "useId for generating unique accessible IDs in React",
+    "body": "`useId` generates stable, unique IDs that are consistent between server and client rendering, solving hydration mismatch issues with manual ID generation.\n\n```tsx\nimport { useId } from 'react';\n\nfunction FormField({ label, type = 'text' }: { label: string; type?: string }) {\n  const id = useId();\n  return (\n    <div>\n      <label htmlFor={id}>{label}</label>\n      <input id={id} type={type} />\n    </div>\n  );\n}\n\n// Multiple related IDs from one useId call\nfunction PasswordField() {\n  const id = useId();\n  return (\n    <div>\n      <label htmlFor={`${id}-input`}>Password</label>\n      <input id={`${id}-input`} type=\"password\" aria-describedby={`${id}-hint`} />\n      <p id={`${id}-hint`}>Must be at least 8 characters</p>\n    </div>\n  );\n}\n\n// With identifierPrefix for micro-frontends\n// In createRoot or hydrateRoot:\ncreateRoot(document.getElementById('app')!, {\n  identifierPrefix: 'app1-',\n});\n```\n\nDo NOT use `useId` for list keys \u2014 it generates the same ID on every render of that component instance. Use data-driven keys for lists. The `:r1:` format of generated IDs is intentional \u2014 colons are valid in HTML IDs and unlikely to collide with user-defined IDs.",
+    "tags": [
+      "react",
+      "useId",
+      "accessibility",
+      "ssr",
+      "hydration"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Compound component pattern with React context",
+    "body": "Compound components share implicit state through context, giving consumers a flexible, declarative API similar to `<select>` + `<option>`. Parent manages state; children read it.\n\n```tsx\nimport { createContext, useContext, useState, ReactNode } from 'react';\n\ntype AccordionCtx = {\n  openIndex: number | null;\n  toggle: (i: number) => void;\n};\nconst AccordionContext = createContext<AccordionCtx | null>(null);\n\nfunction useAccordion() {\n  const ctx = useContext(AccordionContext);\n  if (!ctx) throw new Error('Accordion.* must be used within <Accordion>');\n  return ctx;\n}\n\nfunction Accordion({ children }: { children: ReactNode }) {\n  const [openIndex, setOpenIndex] = useState<number | null>(null);\n  const toggle = (i: number) => setOpenIndex((prev) => (prev === i ? null : i));\n  return (\n    <AccordionContext.Provider value={{ openIndex, toggle }}>\n      <div role=\"region\">{children}</div>\n    </AccordionContext.Provider>\n  );\n}\n\nfunction Item({ index, title, children }: { index: number; title: string; children: ReactNode }) {\n  const { openIndex, toggle } = useAccordion();\n  return (\n    <div>\n      <button onClick={() => toggle(index)}>{title}</button>\n      {openIndex === index && <div>{children}</div>}\n    </div>\n  );\n}\n\nAccordion.Item = Item;\n\n// Usage:\n// <Accordion>\n//   <Accordion.Item index={0} title=\"FAQ 1\">Answer 1</Accordion.Item>\n//   <Accordion.Item index={1} title=\"FAQ 2\">Answer 2</Accordion.Item>\n// </Accordion>\n```\n\nThis pattern is used by Radix UI, Headless UI, and Reach UI. Attach sub-components as static properties on the parent for clean dot-notation imports.",
+    "tags": [
+      "react",
+      "compound-components",
+      "design-pattern",
+      "context",
+      "component-api"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "community",
+    "title": "Render props pattern for cross-cutting logic sharing",
+    "body": "Render props delegate rendering control to the consumer via a function prop. While hooks have largely replaced this pattern, it remains useful for components that own DOM behavior (mouse tracking, intersection observers).\n\n```tsx\nimport { useState, useEffect, useRef, ReactNode } from 'react';\n\ntype IntersectionRenderProps = {\n  children: (args: { isVisible: boolean; ref: React.RefObject<HTMLDivElement> }) => ReactNode;\n  threshold?: number;\n};\n\nfunction IntersectionObserverComponent({ children, threshold = 0.5 }: IntersectionRenderProps) {\n  const ref = useRef<HTMLDivElement>(null!);\n  const [isVisible, setIsVisible] = useState(false);\n\n  useEffect(() => {\n    const observer = new IntersectionObserver(\n      ([entry]) => setIsVisible(entry.isIntersecting),\n      { threshold }\n    );\n    if (ref.current) observer.observe(ref.current);\n    return () => observer.disconnect();\n  }, [threshold]);\n\n  return <>{children({ isVisible, ref })}</>;\n}\n\n// Usage\nfunction LazySection() {\n  return (\n    <IntersectionObserverComponent threshold={0.3}>\n      {({ isVisible, ref }) => (\n        <div ref={ref}>\n          {isVisible ? <HeavyChart /> : <Placeholder />}\n        </div>\n      )}\n    </IntersectionObserverComponent>\n  );\n}\n```\n\nPrefer hooks for simple state/effect sharing. Use render props when the component must own a ref or coordinate multiple DOM elements, or when building a headless library that supports both React and Preact.",
+    "tags": [
+      "react",
+      "render-props",
+      "design-pattern",
+      "intersection-observer"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "community",
+    "title": "Higher-Order Component (HOC) pattern with TypeScript",
+    "body": "HOCs wrap a component to inject props. They are less common since hooks, but still useful for cross-cutting concerns in class components or when you need to wrap many components identically (e.g., auth guards, analytics).\n\n```tsx\nimport { ComponentType, useEffect } from 'react';\n\ntype WithAuthProps = { userId: string; role: string };\n\nfunction withAuth<P extends object>(WrappedComponent: ComponentType<P & WithAuthProps>) {\n  function AuthenticatedComponent(props: Omit<P, keyof WithAuthProps>) {\n    const { userId, role } = useSession(); // your auth hook\n\n    if (!userId) return <Navigate to=\"/login\" />;\n\n    return <WrappedComponent {...(props as P)} userId={userId} role={role} />;\n  }\n\n  AuthenticatedComponent.displayName =\n    `withAuth(${WrappedComponent.displayName || WrappedComponent.name || 'Component'})`;\n\n  return AuthenticatedComponent;\n}\n\n// Usage\nfunction Dashboard({ userId, role, title }: WithAuthProps & { title: string }) {\n  return <h1>{title} \u2014 {role}</h1>;\n}\n\nconst ProtectedDashboard = withAuth(Dashboard);\n// <ProtectedDashboard title=\"Admin\" /> \u2014 userId and role injected\n```\n\nAlways set `displayName` on the wrapper for DevTools debugging. The `Omit<P, keyof WithAuthProps>` type ensures consumers do not pass the injected props manually. Avoid stacking many HOCs \u2014 it creates wrapper hell and makes debugging painful.",
+    "tags": [
+      "react",
+      "hoc",
+      "higher-order-component",
+      "typescript",
+      "auth"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Error boundary with recovery and fallback UI",
+    "body": "Error boundaries catch rendering errors in their subtree and display a fallback. They must be class components (no hook equivalent). Use `react-error-boundary` for a production-ready solution or write a minimal one.\n\n```tsx\nimport { Component, ErrorInfo, ReactNode } from 'react';\n\ntype Props = {\n  children: ReactNode;\n  fallback: (props: { error: Error; reset: () => void }) => ReactNode;\n};\n\ntype State = { error: Error | null };\n\nclass ErrorBoundary extends Component<Props, State> {\n  state: State = { error: null };\n\n  static getDerivedStateFromError(error: Error): State {\n    return { error };\n  }\n\n  componentDidCatch(error: Error, info: ErrorInfo) {\n    console.error('ErrorBoundary caught:', error, info.componentStack);\n    // Send to Sentry, DataDog, etc.\n  }\n\n  reset = () => this.setState({ error: null });\n\n  render() {\n    if (this.state.error) {\n      return this.props.fallback({ error: this.state.error, reset: this.reset });\n    }\n    return this.props.children;\n  }\n}\n\n// Usage\n<ErrorBoundary\n  fallback={({ error, reset }) => (\n    <div role=\"alert\">\n      <p>Something went wrong: {error.message}</p>\n      <button onClick={reset}>Try again</button>\n    </div>\n  )}\n>\n  <RiskyFeature />\n</ErrorBoundary>\n```\n\nError boundaries do NOT catch errors in event handlers, async code, or SSR. For those, use try/catch. Place boundaries around feature sections, not the entire app, so one crash does not blank the full page.",
+    "tags": [
+      "react",
+      "error-boundary",
+      "error-handling",
+      "fault-tolerance"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "community",
+    "title": "React portals for rendering outside the DOM hierarchy",
+    "body": "`createPortal` renders children into a different DOM node while preserving the React tree context (events bubble through the React tree, not the DOM tree).\n\n```tsx\nimport { createPortal } from 'react-dom';\nimport { useState, useEffect, useRef } from 'react';\n\nfunction Modal({ isOpen, onClose, children }: {\n  isOpen: boolean;\n  onClose: () => void;\n  children: React.ReactNode;\n}) {\n  const elRef = useRef<HTMLDivElement | null>(null);\n\n  if (!elRef.current) {\n    elRef.current = document.createElement('div');\n  }\n\n  useEffect(() => {\n    const el = elRef.current!;\n    document.body.appendChild(el);\n    return () => { document.body.removeChild(el); };\n  }, []);\n\n  if (!isOpen) return null;\n\n  return createPortal(\n    <div className=\"modal-overlay\" onClick={onClose}>\n      <div className=\"modal-content\" onClick={(e) => e.stopPropagation()}>\n        {children}\n        <button onClick={onClose}>Close</button>\n      </div>\n    </div>,\n    elRef.current\n  );\n}\n\n// Usage \u2014 context providers above <Modal> still work inside it\n<ThemeProvider>\n  <Modal isOpen={show} onClose={() => setShow(false)}>\n    <ThemedContent /> {/* can useContext(ThemeContext) */}\n  </Modal>\n</ThemeProvider>\n```\n\nPortals are essential for modals, tooltips, dropdowns, and toasts that must visually escape `overflow: hidden` or `z-index` stacking contexts. Events still bubble through React's virtual tree, so parent `onClick` handlers fire as expected.",
+    "tags": [
+      "react",
+      "portals",
+      "modal",
+      "dom",
+      "createPortal"
+    ]
+  },
+  {
+    "type": "tutorial",
+    "trust": "verified",
+    "title": "Next.js middleware: edge auth check with matcher config",
+    "body": "Next.js middleware runs at the edge before every matched request. It is ideal for auth checks, redirects, A/B testing, and geolocation-based routing.\n\n```typescript\n// middleware.ts (project root)\nimport { NextResponse } from 'next/server';\nimport type { NextRequest } from 'next/server';\n\nexport function middleware(request: NextRequest) {\n  const token = request.cookies.get('session-token')?.value;\n\n  // Redirect unauthenticated users\n  if (!token) {\n    const loginUrl = new URL('/login', request.url);\n    loginUrl.searchParams.set('callbackUrl', request.nextUrl.pathname);\n    return NextResponse.redirect(loginUrl);\n  }\n\n  // Add custom headers for downstream use\n  const response = NextResponse.next();\n  response.headers.set('x-user-authenticated', 'true');\n  return response;\n}\n\n// Only run on these paths \u2014 skip static files, API routes, etc.\nexport const config = {\n  matcher: [\n    '/dashboard/:path*',\n    '/settings/:path*',\n    '/api/protected/:path*',\n    // Negative lookahead to skip Next.js internals and static assets\n    '/((?!_next/static|_next/image|favicon.ico|public/).*)',\n  ],\n};\n```\n\nMiddleware runs in the Edge Runtime \u2014 no Node.js APIs like `fs` or `crypto.createHash`. Use the Web Crypto API instead. Keep middleware lightweight; it executes on every matched request. Avoid database calls here \u2014 verify JWTs or check cookies instead.",
+    "tags": [
+      "nextjs",
+      "middleware",
+      "edge-runtime",
+      "auth",
+      "routing"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Next.js middleware matcher must not have trailing slashes",
+    "body": "A common gotcha with Next.js middleware is that `matcher` patterns silently fail if written incorrectly. Trailing slashes, missing colons for dynamic segments, and incorrect negative lookaheads cause the middleware to not run at all \u2014 with no error or warning.\n\n```typescript\n// WRONG \u2014 trailing slash prevents matching\nexport const config = {\n  matcher: ['/dashboard/'],  // Does NOT match /dashboard\n};\n\n// WRONG \u2014 missing colon for path wildcard\nexport const config = {\n  matcher: ['/dashboard/path*'],  // Literal string 'path*'\n};\n\n// CORRECT\nexport const config = {\n  matcher: [\n    '/dashboard',           // exact match\n    '/dashboard/:path*',    // /dashboard and all sub-paths\n  ],\n};\n\n// WRONG \u2014 regex in matcher array (not supported)\nexport const config = {\n  matcher: [/^\\/dashboard/],\n};\n\n// CORRECT \u2014 regex-like patterns use string syntax\nexport const config = {\n  matcher: ['/((?!api|_next/static|favicon.ico).*)'],\n};\n```\n\nTo debug, add a `console.log` at the top of your middleware function and check the terminal \u2014 if it never fires, the matcher is wrong. The matcher array only accepts string patterns, not RegExp objects. Each string is compiled to a path-to-regexp pattern internally.",
+    "tags": [
+      "nextjs",
+      "middleware",
+      "matcher",
+      "gotcha",
+      "debugging"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Next.js middleware redirect and rewrite patterns",
+    "body": "Middleware supports three response types: `redirect` (HTTP 3xx), `rewrite` (internal proxy), and `next()` (continue with optional header modifications).\n\n```typescript\nimport { NextResponse } from 'next/server';\nimport type { NextRequest } from 'next/server';\n\nexport function middleware(request: NextRequest) {\n  const { pathname, searchParams } = request.nextUrl;\n  const country = request.geo?.country ?? 'US';\n\n  // 1. Permanent redirect (301)\n  if (pathname === '/old-page') {\n    return NextResponse.redirect(new URL('/new-page', request.url), 301);\n  }\n\n  // 2. Rewrite \u2014 serve different content at same URL (A/B test)\n  if (pathname === '/pricing') {\n    const bucket = request.cookies.get('ab-bucket')?.value ?? 'control';\n    return NextResponse.rewrite(\n      new URL(`/pricing/${bucket}`, request.url)\n    );\n  }\n\n  // 3. Geo-based rewrite\n  if (pathname === '/' && country === 'DE') {\n    return NextResponse.rewrite(new URL('/de', request.url));\n  }\n\n  // 4. Set response cookie and continue\n  const response = NextResponse.next();\n  if (!request.cookies.has('visitor-id')) {\n    response.cookies.set('visitor-id', crypto.randomUUID(), {\n      httpOnly: true,\n      maxAge: 60 * 60 * 24 * 365,\n    });\n  }\n  return response;\n}\n```\n\nRewrites are invisible to the user \u2014 the URL bar stays the same. Redirects change the URL. Use rewrites for A/B tests and locale routing; use redirects for permanent URL changes and auth flows.",
+    "tags": [
+      "nextjs",
+      "middleware",
+      "redirect",
+      "rewrite",
+      "geo",
+      "ab-testing"
+    ]
+  },
+  {
+    "type": "tutorial",
+    "trust": "verified",
+    "title": "Next.js Image optimization with next/image",
+    "body": "The `next/image` component automatically optimizes images with lazy loading, responsive sizing, and modern formats (WebP/AVIF). It prevents Cumulative Layout Shift (CLS) by requiring dimensions.\n\n```tsx\nimport Image from 'next/image';\n\n// Static import \u2014 dimensions inferred at build time\nimport heroImg from '@/public/hero.jpg';\n\nexport default function Hero() {\n  return (\n    <Image\n      src={heroImg}\n      alt=\"Hero banner\"\n      placeholder=\"blur\"       // auto blur placeholder from static import\n      priority                  // preload above-the-fold images\n      sizes=\"(max-width: 768px) 100vw, 50vw\"\n    />\n  );\n}\n\n// Remote images \u2014 must configure domains in next.config\nexport function Avatar({ url }: { url: string }) {\n  return (\n    <Image\n      src={url}\n      alt=\"User avatar\"\n      width={48}\n      height={48}\n      className=\"rounded-full\"\n    />\n  );\n}\n\n// next.config.js\nmodule.exports = {\n  images: {\n    remotePatterns: [\n      { protocol: 'https', hostname: '**.cloudinary.com' },\n      { protocol: 'https', hostname: 'avatars.githubusercontent.com' },\n    ],\n    formats: ['image/avif', 'image/webp'],\n  },\n};\n```\n\nAlways set `priority` on the Largest Contentful Paint (LCP) image \u2014 typically the hero banner. Use `sizes` to help the browser pick the correct responsive image. For `fill` mode, the parent element must have `position: relative`.",
+    "tags": [
+      "nextjs",
+      "image",
+      "optimization",
+      "performance",
+      "LCP",
+      "next-image"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "community",
+    "title": "Next.js Font optimization with next/font",
+    "body": "`next/font` downloads fonts at build time and self-hosts them, eliminating layout shift and external network requests. It supports both Google Fonts and local font files.\n\n```tsx\n// app/layout.tsx\nimport { Inter, JetBrains_Mono } from 'next/font/google';\nimport localFont from 'next/font/local';\n\nconst inter = Inter({\n  subsets: ['latin'],\n  display: 'swap',\n  variable: '--font-inter',\n});\n\nconst jetbrains = JetBrains_Mono({\n  subsets: ['latin'],\n  variable: '--font-mono',\n});\n\n// Local font\nconst calSans = localFont({\n  src: '../public/fonts/CalSans-SemiBold.woff2',\n  variable: '--font-calsans',\n  display: 'swap',\n});\n\nexport default function RootLayout({ children }: { children: React.ReactNode }) {\n  return (\n    <html lang=\"en\" className={`${inter.variable} ${jetbrains.variable} ${calSans.variable}`}>\n      <body className={inter.className}>{children}</body>\n    </html>\n  );\n}\n\n// In tailwind.config.ts\nmodule.exports = {\n  theme: {\n    extend: {\n      fontFamily: {\n        sans: ['var(--font-inter)'],\n        mono: ['var(--font-mono)'],\n        display: ['var(--font-calsans)'],\n      },\n    },\n  },\n};\n```\n\nUse CSS variables (`variable` option) to integrate with Tailwind. `display: 'swap'` shows fallback text immediately. For variable fonts, set `axes` to include italic or weight ranges.",
+    "tags": [
+      "nextjs",
+      "fonts",
+      "next-font",
+      "optimization",
+      "tailwind",
+      "performance"
+    ]
+  },
+  {
+    "type": "tutorial",
+    "trust": "verified",
+    "title": "Next.js Metadata API for SEO in App Router",
+    "body": "The App Router metadata API replaces `next/head`. Export a `metadata` object or `generateMetadata` function from any `page.tsx` or `layout.tsx`. Metadata merges and child pages can override parent values.\n\n```tsx\n// app/layout.tsx \u2014 static metadata\nimport type { Metadata } from 'next';\n\nexport const metadata: Metadata = {\n  metadataBase: new URL('https://example.com'),\n  title: { default: 'My App', template: '%s | My App' },\n  description: 'A modern web application',\n  openGraph: {\n    type: 'website',\n    locale: 'en_US',\n    siteName: 'My App',\n  },\n};\n\n// app/blog/[slug]/page.tsx \u2014 dynamic metadata\nimport type { Metadata } from 'next';\n\ntype Props = { params: Promise<{ slug: string }> };\n\nexport async function generateMetadata({ params }: Props): Promise<Metadata> {\n  const { slug } = await params;\n  const post = await getPost(slug);\n  return {\n    title: post.title,  // becomes \"Post Title | My App\" via template\n    description: post.excerpt,\n    openGraph: {\n      images: [{ url: post.coverImage, width: 1200, height: 630 }],\n    },\n  };\n}\n\nexport default async function BlogPost({ params }: Props) {\n  const { slug } = await params;\n  const post = await getPost(slug);\n  return <article>{post.content}</article>;\n}\n```\n\nThe `title.template` in layouts lets you define a consistent pattern like `%s | My App`. `generateMetadata` runs in parallel with the page component, and Next.js deduplicates the fetch if both call the same endpoint.",
+    "tags": [
+      "nextjs",
+      "metadata",
+      "seo",
+      "open-graph",
+      "app-router"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "community",
+    "title": "Next.js dynamic sitemap generation with App Router",
+    "body": "Create `app/sitemap.ts` to generate a sitemap dynamically. Next.js automatically serves it at `/sitemap.xml`. For large sites, use `generateSitemaps` to split into multiple files.\n\n```typescript\n// app/sitemap.ts\nimport type { MetadataRoute } from 'next';\n\nexport default async function sitemap(): Promise<MetadataRoute.Sitemap> {\n  const baseUrl = 'https://example.com';\n\n  // Fetch all dynamic routes\n  const posts = await db.post.findMany({\n    select: { slug: true, updatedAt: true },\n  });\n\n  const postEntries = posts.map((post) => ({\n    url: `${baseUrl}/blog/${post.slug}`,\n    lastModified: post.updatedAt,\n    changeFrequency: 'weekly' as const,\n    priority: 0.7,\n  }));\n\n  const staticRoutes = ['', '/about', '/pricing', '/blog'].map((route) => ({\n    url: `${baseUrl}${route}`,\n    lastModified: new Date(),\n    changeFrequency: 'monthly' as const,\n    priority: route === '' ? 1.0 : 0.8,\n  }));\n\n  return [...staticRoutes, ...postEntries];\n}\n\n// For large sites (>50k URLs), split into multiple sitemaps\n// app/sitemap.ts\nexport async function generateSitemaps() {\n  const count = await db.post.count();\n  const pages = Math.ceil(count / 50000);\n  return Array.from({ length: pages }, (_, i) => ({ id: i }));\n}\n\nexport default async function sitemap({ id }: { id: number }) {\n  const posts = await db.post.findMany({\n    skip: id * 50000, take: 50000,\n  });\n  return posts.map((post) => ({ url: `https://example.com/blog/${post.slug}` }));\n}\n```\n\nAlso create `app/robots.ts` to pair with the sitemap for complete SEO coverage.",
+    "tags": [
+      "nextjs",
+      "sitemap",
+      "seo",
+      "app-router",
+      "metadata"
+    ]
+  },
+  {
+    "type": "tutorial",
+    "trust": "verified",
+    "title": "Testing React components with Vitest and Testing Library",
+    "body": "Vitest + React Testing Library is the modern replacement for Jest in Vite/Next.js projects. Vitest is faster and shares config with Vite.\n\n```typescript\n// vitest.config.ts\nimport { defineConfig } from 'vitest/config';\nimport react from '@vitejs/plugin-react';\n\nexport default defineConfig({\n  plugins: [react()],\n  test: {\n    environment: 'jsdom',\n    globals: true,\n    setupFiles: ['./test/setup.ts'],\n    css: true,\n  },\n});\n\n// test/setup.ts\nimport '@testing-library/jest-dom/vitest';\n\n// components/Counter.test.tsx\nimport { render, screen } from '@testing-library/react';\nimport userEvent from '@testing-library/user-event';\nimport { Counter } from './Counter';\n\ndescribe('Counter', () => {\n  it('increments count on click', async () => {\n    const user = userEvent.setup();\n    render(<Counter initialCount={0} />);\n\n    expect(screen.getByRole('heading')).toHaveTextContent('Count: 0');\n\n    await user.click(screen.getByRole('button', { name: /increment/i }));\n\n    expect(screen.getByRole('heading')).toHaveTextContent('Count: 1');\n  });\n\n  it('calls onChange when count changes', async () => {\n    const user = userEvent.setup();\n    const onChange = vi.fn();\n    render(<Counter initialCount={0} onChange={onChange} />);\n\n    await user.click(screen.getByRole('button', { name: /increment/i }));\n\n    expect(onChange).toHaveBeenCalledWith(1);\n  });\n});\n```\n\nAlways use `userEvent` over `fireEvent` \u2014 it simulates real browser behavior (focus, keyboard, pointer events). Query by accessible roles (`getByRole`) instead of test IDs when possible.",
+    "tags": [
+      "react",
+      "testing",
+      "vitest",
+      "testing-library",
+      "userEvent"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "community",
+    "title": "MSW (Mock Service Worker) for API mocking in React tests",
+    "body": "MSW intercepts network requests at the service worker/Node level, letting tests use real fetch calls without changing production code. Works with Vitest, Jest, Playwright, and Storybook.\n\n```typescript\n// test/mocks/handlers.ts\nimport { http, HttpResponse } from 'msw';\n\nexport const handlers = [\n  http.get('/api/user/:id', ({ params }) => {\n    return HttpResponse.json({\n      id: params.id,\n      name: 'Test User',\n      email: 'test@example.com',\n    });\n  }),\n\n  http.post('/api/login', async ({ request }) => {\n    const body = await request.json() as { email: string };\n    if (body.email === 'bad@test.com') {\n      return HttpResponse.json({ error: 'Invalid credentials' }, { status: 401 });\n    }\n    return HttpResponse.json({ token: 'mock-jwt-token' });\n  }),\n];\n\n// test/mocks/server.ts\nimport { setupServer } from 'msw/node';\nimport { handlers } from './handlers';\nexport const server = setupServer(...handlers);\n\n// test/setup.ts\nimport { server } from './mocks/server';\nbeforeAll(() => server.listen({ onUnhandledRequest: 'error' }));\nafterEach(() => server.resetHandlers());\nafterAll(() => server.close());\n\n// UserProfile.test.tsx\nimport { server } from '../mocks/server';\nimport { http, HttpResponse } from 'msw';\n\nit('shows error on failed fetch', async () => {\n  server.use(\n    http.get('/api/user/:id', () => HttpResponse.json(null, { status: 500 }))\n  );\n  render(<UserProfile id=\"1\" />);\n  expect(await screen.findByText(/error/i)).toBeInTheDocument();\n});\n```\n\nUse `server.use()` for per-test overrides \u2014 they auto-reset after each test via `server.resetHandlers()`. Set `onUnhandledRequest: 'error'` to catch missing handlers early.",
+    "tags": [
+      "react",
+      "testing",
+      "msw",
+      "api-mocking",
+      "vitest"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "community",
+    "title": "Testing async React components with findBy queries",
+    "body": "When testing components that render asynchronously (data fetching, lazy loading), use `findBy*` queries which return Promises and retry until found or timeout.\n\n```tsx\nimport { render, screen, within, waitForElementToBeRemoved } from '@testing-library/react';\nimport userEvent from '@testing-library/user-event';\nimport { UserList } from './UserList';\n\nit('loads and displays users', async () => {\n  render(<UserList />);\n\n  // Wait for loading state to disappear\n  expect(screen.getByText(/loading/i)).toBeInTheDocument();\n  await waitForElementToBeRemoved(() => screen.queryByText(/loading/i));\n\n  // findBy retries until element appears (default 1s timeout)\n  const list = await screen.findByRole('list');\n  const items = within(list).getAllByRole('listitem');\n  expect(items).toHaveLength(3);\n});\n\nit('filters users by search input', async () => {\n  const user = userEvent.setup();\n  render(<UserList />);\n\n  // Wait for data to load\n  await screen.findByRole('list');\n\n  // Type in search box\n  await user.type(screen.getByPlaceholderText(/search/i), 'alice');\n\n  // Wait for filtered results\n  await waitForElementToBeRemoved(() => screen.queryByText('Bob'));\n  expect(screen.getByText('Alice')).toBeInTheDocument();\n  expect(screen.queryByText('Bob')).not.toBeInTheDocument();\n});\n```\n\nNever use `waitFor` with `getBy` \u2014 it throws immediately. Use `queryBy` to assert absence (`queryByText` returns null instead of throwing) and `findBy` to wait for presence. Increase the timeout for slow CI: `findByText('...', {}, { timeout: 3000 })`.",
+    "tags": [
+      "react",
+      "testing",
+      "testing-library",
+      "async",
+      "findBy"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "React context optimization: splitting state and dispatch",
+    "body": "A single context with both state and dispatch causes all consumers to re-render on every state change \u2014 even components that only call dispatch. Split them into two contexts to fix this.\n\n```tsx\nimport { createContext, useContext, useReducer, ReactNode } from 'react';\n\ntype State = { count: number; name: string };\ntype Action = { type: 'increment' } | { type: 'setName'; payload: string };\n\nconst StateContext = createContext<State | null>(null);\nconst DispatchContext = createContext<React.Dispatch<Action> | null>(null);\n\nfunction reducer(state: State, action: Action): State {\n  switch (action.type) {\n    case 'increment': return { ...state, count: state.count + 1 };\n    case 'setName': return { ...state, name: action.payload };\n  }\n}\n\nfunction AppProvider({ children }: { children: ReactNode }) {\n  const [state, dispatch] = useReducer(reducer, { count: 0, name: '' });\n  return (\n    <DispatchContext.Provider value={dispatch}>\n      <StateContext.Provider value={state}>\n        {children}\n      </StateContext.Provider>\n    </DispatchContext.Provider>\n  );\n}\n\n// This component only dispatches \u2014 it never re-renders on state change\nfunction IncrementButton() {\n  const dispatch = useContext(DispatchContext)!;\n  console.log('IncrementButton render'); // only renders once\n  return <button onClick={() => dispatch({ type: 'increment' })}>+1</button>;\n}\n\n// This component reads state \u2014 it re-renders on change\nfunction CountDisplay() {\n  const { count } = useContext(StateContext)!;\n  return <span>{count}</span>;\n}\n```\n\nDispatch is a stable reference from `useReducer`, so the DispatchContext provider value never changes. This pattern eliminates unnecessary re-renders for action-only consumers like buttons and forms.",
+    "tags": [
+      "react",
+      "context",
+      "performance",
+      "re-renders",
+      "useReducer"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "React context re-renders: why useMemo on provider value matters",
+    "body": "When a context provider re-renders, ALL consumers re-render \u2014 even if the value has not changed. This happens because object literals create new references on every render.\n\n```tsx\nimport { createContext, useState, useMemo, ReactNode } from 'react';\n\n// BAD \u2014 creates new object every render, all consumers re-render\nfunction AppProvider({ children }: { children: ReactNode }) {\n  const [user, setUser] = useState({ name: 'Alice' });\n  const [theme, setTheme] = useState('dark');\n\n  return (\n    <AppContext.Provider value={{ user, theme, setUser, setTheme }}>\n      {children}\n    </AppContext.Provider>\n  );\n}\n\n// GOOD \u2014 memoize the value object\nfunction AppProvider({ children }: { children: ReactNode }) {\n  const [user, setUser] = useState({ name: 'Alice' });\n  const [theme, setTheme] = useState('dark');\n\n  const value = useMemo(\n    () => ({ user, theme, setUser, setTheme }),\n    [user, theme]\n  );\n\n  return (\n    <AppContext.Provider value={value}>\n      {children}\n    </AppContext.Provider>\n  );\n}\n```\n\nEven with `useMemo`, consumers that select `user` will re-render when `theme` changes because they subscribe to the whole context object. For fine-grained subscriptions, either split into multiple contexts (`UserContext`, `ThemeContext`) or use a state library like Zustand or Jotai which support selectors.",
+    "tags": [
+      "react",
+      "context",
+      "performance",
+      "useMemo",
+      "re-renders"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "community",
+    "title": "Next.js ISR: on-demand revalidation with revalidateTag",
+    "body": "Incremental Static Regeneration (ISR) lets you update static pages after build. Use time-based revalidation or on-demand revalidation via `revalidateTag` / `revalidatePath` for instant cache invalidation.\n\n```tsx\n// app/blog/[slug]/page.tsx\nexport const revalidate = 3600; // revalidate every hour (time-based)\n\nexport default async function BlogPost({ params }: { params: Promise<{ slug: string }> }) {\n  const { slug } = await params;\n  const post = await fetch(`https://api.example.com/posts/${slug}`, {\n    next: { tags: [`post-${slug}`, 'posts'] },  // tag for on-demand\n  }).then((r) => r.json());\n  return <article>{post.content}</article>;\n}\n\n// app/api/revalidate/route.ts \u2014 webhook handler\nimport { revalidateTag } from 'next/cache';\nimport { NextRequest, NextResponse } from 'next/server';\n\nexport async function POST(request: NextRequest) {\n  const secret = request.headers.get('x-revalidate-secret');\n  if (secret !== process.env.REVALIDATE_SECRET) {\n    return NextResponse.json({ error: 'Invalid secret' }, { status: 401 });\n  }\n\n  const { tag } = await request.json();\n  revalidateTag(tag);  // invalidate all fetches with this tag\n  return NextResponse.json({ revalidated: true, tag });\n}\n\n// From your CMS webhook, call:\n// POST /api/revalidate { \"tag\": \"post-my-slug\" }\n// This instantly purges the cached page\n```\n\n`revalidateTag` invalidates all `fetch` calls tagged with that string. `revalidatePath('/blog/my-slug')` invalidates a specific path. On-demand revalidation is preferred over short time-based intervals for content that changes unpredictably.",
+    "tags": [
+      "nextjs",
+      "isr",
+      "revalidation",
+      "caching",
+      "app-router"
+    ]
+  },
+  {
+    "type": "comparison",
+    "trust": "community",
+    "title": "Next.js deployment: Vercel vs self-hosted Docker",
+    "body": "Choosing between Vercel managed hosting and self-hosted Docker depends on your infrastructure needs, budget, and feature requirements.\n\n```dockerfile\n# Dockerfile for self-hosted Next.js (standalone output)\nFROM node:20-alpine AS base\n\nFROM base AS deps\nWORKDIR /app\nCOPY package.json pnpm-lock.yaml ./\nRUN corepack enable pnpm && pnpm install --frozen-lockfile\n\nFROM base AS builder\nWORKDIR /app\nCOPY --from=deps /app/node_modules ./node_modules\nCOPY . .\nRUN npm run build\n\nFROM base AS runner\nWORKDIR /app\nENV NODE_ENV=production\nRUN addgroup -g 1001 -S nodejs && adduser -S nextjs -u 1001\nCOPY --from=builder /app/public ./public\nCOPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./\nCOPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static\nUSER nextjs\nEXPOSE 3000\nCMD [\"node\", \"server.js\"]\n```\n\n```javascript\n// next.config.js \u2014 required for Docker\nmodule.exports = { output: 'standalone' };\n```\n\n**Vercel**: Zero config, edge functions, built-in ISR/image optimization, preview deployments, analytics. Best for teams that want managed infrastructure.\n\n**Self-hosted Docker**: Full control, no vendor lock-in, works behind corporate firewalls. You must handle ISR cache (Redis/filesystem), image optimization (sharp), and CDN setup yourself. `output: 'standalone'` produces a minimal Node.js server (~50MB image). Use Coolify, Railway, or Kubernetes for orchestration.",
+    "tags": [
+      "nextjs",
+      "deployment",
+      "docker",
+      "vercel",
+      "self-hosted",
+      "devops"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "community",
+    "title": "Next.js static export for SPAs and static hosting",
+    "body": "Setting `output: 'export'` in `next.config.js` generates a fully static site (HTML/CSS/JS) that can be deployed to any static hosting provider (S3, Cloudflare Pages, GitHub Pages).\n\n```javascript\n// next.config.js\nmodule.exports = {\n  output: 'export',\n  // Optional: set a base path for subdirectory hosting\n  // basePath: '/my-app',\n  images: {\n    unoptimized: true, // next/image optimization requires a server\n  },\n};\n```\n\n**What works:** Static pages, client-side rendering, `generateStaticParams`, `useSearchParams`, dynamic routes with `generateStaticParams`.\n\n**What does NOT work with static export:**\n- Server-side rendering (no `getServerSideProps` / server components with dynamic data)\n- API routes (`app/api/` or `pages/api/`)\n- Middleware\n- ISR / `revalidate`\n- `next/image` optimization (use `unoptimized: true`)\n- `headers()`, `cookies()`, `redirect()` in server components\n\n```tsx\n// Dynamic routes need generateStaticParams\n// app/blog/[slug]/page.tsx\nexport async function generateStaticParams() {\n  const posts = await getAllPosts();\n  return posts.map((post) => ({ slug: post.slug }));\n}\n```\n\nStatic export is ideal for documentation sites, marketing pages, and dashboards that fetch data client-side. For anything needing server logic, use `output: 'standalone'` instead.",
+    "tags": [
+      "nextjs",
+      "static-export",
+      "spa",
+      "deployment",
+      "static-hosting"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "styled-components and CSS-in-JS break with React Server Components",
+    "body": "Runtime CSS-in-JS libraries like styled-components and Emotion inject styles via JavaScript at render time. This fundamentally conflicts with React Server Components (RSC), which execute on the server and cannot run client-side JavaScript.\n\n```tsx\n// This FAILS in a Server Component:\nimport styled from 'styled-components';\n\nconst Title = styled.h1`color: red;`; // Error: createContext is not available in RSC\n\nexport default function Page() {\n  return <Title>Hello</Title>;\n}\n\n// Error message:\n// \"createContext only works in Client Components. Add the 'use client' directive\"\n```\n\n**Workarounds:**\n\n1. Mark every styled component file with `'use client'`:\n```tsx\n'use client';\nimport styled from 'styled-components';\nexport const Title = styled.h1`color: red;`;\n```\n\n2. Use `styled-components` with Next.js SSR registry:\n```tsx\n// app/lib/StyledRegistry.tsx\n'use client';\nimport { useState } from 'react';\nimport { useServerInsertedHTML } from 'next/navigation';\nimport { ServerStyleSheet, StyleSheetManager } from 'styled-components';\n\nexport default function StyledRegistry({ children }: { children: React.ReactNode }) {\n  const [sheet] = useState(() => new ServerStyleSheet());\n  useServerInsertedHTML(() => {\n    const styles = sheet.getStyleElement();\n    sheet.instance.clearTag();\n    return <>{styles}</>;\n  });\n  return <StyleSheetManager sheet={sheet.instance}>{children}</StyleSheetManager>;\n}\n```\n\n3. **Recommended:** Migrate to CSS Modules, Tailwind, or vanilla-extract which work natively with RSC and require zero runtime JavaScript.",
+    "tags": [
+      "react",
+      "styled-components",
+      "css-in-js",
+      "rsc",
+      "server-components",
+      "nextjs"
+    ]
+  },
+  {
+    "type": "tutorial",
+    "trust": "verified",
+    "title": "Tailwind CSS with Next.js App Router: complete setup",
+    "body": "Tailwind CSS works seamlessly with RSC because it generates static CSS at build time \u2014 no runtime JavaScript needed.\n\n```bash\n# Installation\nnpx create-next-app@latest my-app --tailwind\n# Or add to existing project:\nnpm install -D tailwindcss @tailwindcss/postcss postcss\n```\n\n```javascript\n// postcss.config.mjs\nconst config = {\n  plugins: {\n    '@tailwindcss/postcss': {},\n  },\n};\nexport default config;\n```\n\n```css\n/* app/globals.css */\n@import 'tailwindcss';\n\n@theme {\n  --color-primary: #3b82f6;\n  --color-secondary: #10b981;\n  --font-sans: 'Inter', sans-serif;\n}\n```\n\n```tsx\n// Works in both Server and Client Components\nexport default function Card({ title, children }: { title: string; children: React.ReactNode }) {\n  return (\n    <div className=\"rounded-lg border border-gray-200 bg-white p-6 shadow-sm\n                    dark:border-gray-700 dark:bg-gray-800\">\n      <h2 className=\"text-xl font-semibold text-gray-900 dark:text-white\">\n        {title}\n      </h2>\n      <div className=\"mt-4 text-gray-600 dark:text-gray-300\">\n        {children}\n      </div>\n    </div>\n  );\n}\n```\n\nTailwind v4 uses `@import 'tailwindcss'` instead of the v3 `@tailwind` directives. Theme customization uses `@theme` blocks instead of `tailwind.config.js`. The `cn()` utility from `clsx` + `tailwind-merge` is essential for conditional classes in component libraries.",
+    "tags": [
+      "tailwind",
+      "nextjs",
+      "css",
+      "app-router",
+      "tailwind-v4"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "community",
+    "title": "CSS Modules with Next.js: scoped styles without runtime",
+    "body": "CSS Modules provide locally scoped class names with zero runtime overhead. They work in both Server and Client Components and are built into Next.js with no configuration.\n\n```css\n/* components/Button.module.css */\n.button {\n  padding: 0.5rem 1rem;\n  border-radius: 0.375rem;\n  font-weight: 600;\n  transition: background-color 0.2s;\n}\n\n.primary {\n  background-color: #3b82f6;\n  color: white;\n}\n\n.primary:hover {\n  background-color: #2563eb;\n}\n\n.secondary {\n  background-color: transparent;\n  color: #3b82f6;\n  border: 1px solid #3b82f6;\n}\n\n.large {\n  padding: 0.75rem 1.5rem;\n  font-size: 1.125rem;\n}\n```\n\n```tsx\n// components/Button.tsx \u2014 works as Server Component\nimport styles from './Button.module.css';\n\ntype ButtonProps = {\n  variant?: 'primary' | 'secondary';\n  size?: 'default' | 'large';\n  children: React.ReactNode;\n} & React.ButtonHTMLAttributes<HTMLButtonElement>;\n\nexport function Button({ variant = 'primary', size = 'default', children, ...props }: ButtonProps) {\n  const className = [\n    styles.button,\n    styles[variant],\n    size === 'large' && styles.large,\n  ].filter(Boolean).join(' ');\n\n  return <button className={className} {...props}>{children}</button>;\n}\n```\n\nCSS Modules generate unique class names like `Button_primary__a1b2c` at build time, preventing collisions. Use `composes` for style inheritance within modules. For global styles, use `:global(.className)` or a regular `.css` file.",
+    "tags": [
+      "nextjs",
+      "css-modules",
+      "styling",
+      "server-components",
+      "scoped-css"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "verified",
+    "title": "React 19 useTransition for non-blocking state updates",
+    "body": "`useTransition` marks state updates as non-urgent, allowing React to keep the UI responsive during expensive re-renders. In React 19, transitions can also be async (e.g., server actions).\n\n```tsx\nimport { useState, useTransition } from 'react';\n\nfunction SearchPage() {\n  const [query, setQuery] = useState('');\n  const [results, setResults] = useState<string[]>([]);\n  const [isPending, startTransition] = useTransition();\n\n  function handleSearch(value: string) {\n    setQuery(value); // Urgent: update input immediately\n\n    startTransition(async () => {\n      // Non-urgent: can be interrupted\n      const data = await fetch(`/api/search?q=${value}`).then(r => r.json());\n      setResults(data);\n    });\n  }\n\n  return (\n    <div>\n      <input value={query} onChange={(e) => handleSearch(e.target.value)} />\n      {isPending && <div className=\"spinner\" />}\n      <ul>\n        {results.map((r) => <li key={r}>{r}</li>)}\n      </ul>\n    </div>\n  );\n}\n\n// React 19: transitions with server actions\nfunction SubmitButton() {\n  const [isPending, startTransition] = useTransition();\n\n  return (\n    <button\n      disabled={isPending}\n      onClick={() => startTransition(async () => {\n        await saveToDatabase(); // server action\n      })}\n    >\n      {isPending ? 'Saving...' : 'Save'}\n    </button>\n  );\n}\n```\n\nTransitions are interruptible \u2014 if the user types again before the results arrive, React abandons the stale render. `isPending` is true from the moment `startTransition` is called until all updates inside it complete, including async ones in React 19.",
+    "tags": [
+      "react",
+      "useTransition",
+      "react-19",
+      "concurrent",
+      "performance"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "React Suspense patterns for data fetching and loading states",
+    "body": "Suspense lets you declare loading states declaratively. When a child component suspends (throws a Promise), Suspense shows the fallback until the Promise resolves.\n\n```tsx\nimport { Suspense } from 'react';\n\n// Nested Suspense boundaries for granular loading states\nexport default function Dashboard() {\n  return (\n    <div className=\"grid grid-cols-2 gap-4\">\n      <Suspense fallback={<Skeleton className=\"h-64\" />}>\n        <RevenueChart />\n      </Suspense>\n      <Suspense fallback={<Skeleton className=\"h-64\" />}>\n        <UserStats />\n      </Suspense>\n      <Suspense fallback={<TableSkeleton rows={5} />}>\n        <RecentOrders />\n      </Suspense>\n    </div>\n  );\n}\n\n// Server Component that fetches data (Next.js App Router)\nasync function RevenueChart() {\n  const data = await getRevenueData(); // async fetch suspends\n  return <Chart data={data} />;\n}\n\n// Grouping with single boundary\n// Both load together, single loading state\n<Suspense fallback={<FullPageSpinner />}>\n  <Header />\n  <MainContent />\n  <Sidebar />\n</Suspense>\n\n// Sequential (waterfall) \u2014 inner waits for outer\n<Suspense fallback={<Skeleton />}>\n  <UserProfile userId={id} />\n  <Suspense fallback={<PostsSkeleton />}>\n    <UserPosts userId={id} />  {/* starts after UserProfile resolves */}\n  </Suspense>\n</Suspense>\n```\n\nPlace Suspense boundaries around independent data needs \u2014 each boundary creates a separate loading state. Avoid wrapping every component; instead, identify natural loading groups. In Next.js, create `loading.tsx` files which automatically become Suspense boundaries for that route segment.",
+    "tags": [
+      "react",
+      "suspense",
+      "loading",
+      "data-fetching",
+      "app-router"
+    ]
+  },
+  {
+    "type": "tutorial",
+    "trust": "verified",
+    "title": "Streaming SSR with React Suspense in Next.js",
+    "body": "Streaming SSR sends HTML progressively as components resolve, instead of waiting for all data before sending any HTML. Next.js App Router supports this out of the box with Suspense.\n\n```tsx\n// app/dashboard/page.tsx\nimport { Suspense } from 'react';\n\nexport default function DashboardPage() {\n  return (\n    <main>\n      {/* Sent immediately \u2014 no data dependency */}\n      <h1>Dashboard</h1>\n      <nav>...</nav>\n\n      {/* Streamed in when data resolves */}\n      <Suspense fallback={<p>Loading stats...</p>}>\n        <SlowStats />\n      </Suspense>\n\n      <Suspense fallback={<p>Loading feed...</p>}>\n        <SlowerFeed />\n      </Suspense>\n    </main>\n  );\n}\n\nasync function SlowStats() {\n  const stats = await fetch('https://api.example.com/stats', {\n    next: { revalidate: 60 },\n  }).then(r => r.json());\n  return (\n    <div className=\"grid grid-cols-3 gap-4\">\n      <StatCard label=\"Revenue\" value={stats.revenue} />\n      <StatCard label=\"Users\" value={stats.users} />\n      <StatCard label=\"Orders\" value={stats.orders} />\n    </div>\n  );\n}\n\n// app/dashboard/loading.tsx \u2014 route-level Suspense boundary\nexport default function Loading() {\n  return <DashboardSkeleton />;\n}\n```\n\nThe browser receives the shell HTML immediately (navigation, header, skeleton fallbacks), then each Suspense boundary is replaced with real content as its data arrives. This dramatically improves Time to First Byte (TTFB) and First Contentful Paint (FCP). The `loading.tsx` file acts as an automatic Suspense boundary for the entire route segment \u2014 it wraps the `page.tsx` content.",
+    "tags": [
+      "react",
+      "streaming-ssr",
+      "suspense",
+      "nextjs",
+      "performance",
+      "app-router"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Hydration mismatch error: server and client render different content",
+    "body": "When the server-rendered HTML does not match the client-side render, React throws a hydration error. This is one of the most common Next.js errors.\n\n```\nError: Hydration failed because the initial UI does not match what was rendered on the server.\n\nWarning: Expected server HTML to contain a matching <div> in <p>.\n```\n\n**Common causes and fixes:**\n\n```tsx\n// 1. WRONG \u2014 Date/time differs between server and client\nexport default function Page() {\n  return <p>{new Date().toLocaleString()}</p>; // Different on server vs client\n}\n\n// FIX \u2014 use useEffect for client-only values\nexport default function Page() {\n  const [time, setTime] = useState<string | null>(null);\n  useEffect(() => setTime(new Date().toLocaleString()), []);\n  return <p>{time ?? 'Loading...'}</p>;\n}\n\n// 2. WRONG \u2014 invalid HTML nesting\n<p><div>nested</div></p>  // <div> inside <p> is invalid HTML\n\n// 3. WRONG \u2014 browser extensions inject elements\n// FIX: Use suppressHydrationWarning on the html/body tag\n<body suppressHydrationWarning>{children}</body>\n\n// 4. WRONG \u2014 conditional rendering based on window/localStorage\nexport default function Nav() {\n  const isLoggedIn = typeof window !== 'undefined' && localStorage.getItem('token');\n  return isLoggedIn ? <UserMenu /> : <LoginButton />;\n}\n\n// FIX \u2014 defer to useEffect\nconst [isLoggedIn, setIsLoggedIn] = useState(false);\nuseEffect(() => {\n  setIsLoggedIn(!!localStorage.getItem('token'));\n}, []);\n```\n\nUse `suppressHydrationWarning` sparingly \u2014 only on elements with intentionally different content (timestamps, browser-extension targets). For `typeof window` checks, always use `useEffect` to synchronize after hydration.",
+    "tags": [
+      "react",
+      "hydration",
+      "nextjs",
+      "ssr",
+      "error",
+      "debugging"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "unverified",
+    "title": "Next.js error: You're importing a component that needs useState but it's a Server Component",
+    "body": "This error occurs when you use React hooks (`useState`, `useEffect`, `useContext`, etc.) in a file that is not marked as a Client Component.\n\n```\nError: You're importing a component that needs useState. It only works in a Client Component\nbut none of its parents are marked with \"use client\", so they're Server Components by default.\n\n   \u256d\u2500[/app/components/Counter.tsx:1:1]\n 1 \u2502 import { useState } from 'react';\n   \u00b7          \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n```\n\n**Fix:** Add `'use client'` directive at the top of the file:\n\n```tsx\n'use client'; // Must be the very first line (before imports)\n\nimport { useState } from 'react';\n\nexport function Counter() {\n  const [count, setCount] = useState(0);\n  return <button onClick={() => setCount(c => c + 1)}>{count}</button>;\n}\n```\n\n**Strategy for minimizing Client Components:**\n\n```tsx\n// app/blog/[slug]/page.tsx \u2014 Server Component (default)\nimport { LikeButton } from './LikeButton'; // client component\n\nexport default async function BlogPost({ params }: { params: Promise<{ slug: string }> }) {\n  const { slug } = await params;\n  const post = await getPost(slug); // server-side data fetch\n  return (\n    <article>\n      <h1>{post.title}</h1>\n      <div>{post.content}</div>\n      <LikeButton postId={post.id} /> {/* only interactive part is client */}\n    </article>\n  );\n}\n```\n\nPush `'use client'` to the leaf components that actually need interactivity. Server Components can import Client Components, but NOT the reverse. Props passed from Server to Client Components must be serializable (no functions, classes, or Dates).",
+    "tags": [
+      "nextjs",
+      "server-components",
+      "use-client",
+      "error",
+      "app-router"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "community",
+    "title": "Next.js middleware error: Dynamic Code Evaluation not allowed in Edge Runtime",
+    "body": "The Edge Runtime used by Next.js middleware restricts dynamic code evaluation. Libraries that use `eval`, `new Function()`, or certain Node.js APIs will fail.\n\n```\nError: Dynamic Code Evaluation (e.g., 'eval', 'new Function', 'WebAssembly.compile')\nnot allowed in Edge Runtime.\nLearn more: https://nextjs.org/docs/messages/edge-dynamic-code-evaluation\n```\n\n**Common triggers:**\n- `jsonwebtoken` (uses `eval`) \u2014 use `jose` instead\n- `bcrypt` (native module) \u2014 use `bcryptjs` or verify passwords in API routes\n- `Handlebars`, `lodash.template` \u2014 use string interpolation\n\n```typescript\n// middleware.ts \u2014 WRONG\nimport jwt from 'jsonwebtoken';\nconst decoded = jwt.verify(token, secret); // Uses eval internally\n\n// middleware.ts \u2014 CORRECT\nimport { jwtVerify } from 'jose';\n\nexport async function middleware(request: NextRequest) {\n  const token = request.cookies.get('token')?.value;\n  if (!token) return NextResponse.redirect(new URL('/login', request.url));\n\n  try {\n    const secret = new TextEncoder().encode(process.env.JWT_SECRET!);\n    const { payload } = await jwtVerify(token, secret);\n    const response = NextResponse.next();\n    response.headers.set('x-user-id', payload.sub as string);\n    return response;\n  } catch {\n    return NextResponse.redirect(new URL('/login', request.url));\n  }\n}\n```\n\nThe Edge Runtime only supports Web APIs (fetch, crypto, TextEncoder, etc.). If you need Node.js APIs, move the logic to an API route (`export const runtime = 'nodejs'`) and call it from middleware, or do the check in a Server Component.",
+    "tags": [
+      "nextjs",
+      "middleware",
+      "edge-runtime",
+      "error",
+      "jwt",
+      "jose"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "unverified",
+    "title": "Custom hook: useMediaQuery with SSR safety",
+    "body": "A reusable hook that tracks CSS media query matches. It handles SSR by defaulting to a provided value and updating after hydration.\n\n```typescript\nimport { useState, useEffect, useCallback } from 'react';\n\nfunction useMediaQuery(query: string, defaultValue = false): boolean {\n  const getMatches = useCallback((): boolean => {\n    if (typeof window === 'undefined') return defaultValue;\n    return window.matchMedia(query).matches;\n  }, [query, defaultValue]);\n\n  const [matches, setMatches] = useState(getMatches);\n\n  useEffect(() => {\n    const mql = window.matchMedia(query);\n    setMatches(mql.matches);\n\n    const handler = (e: MediaQueryListEvent) => setMatches(e.matches);\n    mql.addEventListener('change', handler);\n    return () => mql.removeEventListener('change', handler);\n  }, [query]);\n\n  return matches;\n}\n\n// Usage\nfunction Sidebar() {\n  const isMobile = useMediaQuery('(max-width: 768px)');\n  const prefersReducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)');\n  const isDarkMode = useMediaQuery('(prefers-color-scheme: dark)');\n\n  if (isMobile) return <MobileDrawer animated={!prefersReducedMotion} />;\n  return <DesktopSidebar />;\n}\n\n// With Tailwind breakpoint\nfunction ResponsiveGrid() {\n  const isLg = useMediaQuery('(min-width: 1024px)');\n  return <div>{isLg ? <GridView /> : <ListView />}</div>;\n}\n```\n\nAvoid flash of wrong content by choosing the right `defaultValue` for your use case (e.g., default to mobile for mobile-first designs). For SSR, the initial render uses `defaultValue` and updates after `useEffect` runs on the client.",
+    "tags": [
+      "react",
+      "custom-hooks",
+      "media-query",
+      "responsive",
+      "ssr"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "community",
+    "title": "Custom hook: useDebouncedValue for search inputs",
+    "body": "Debouncing prevents expensive operations (API calls, filtering large lists) from firing on every keystroke. This hook delays updating the debounced value until the user stops typing.\n\n```typescript\nimport { useState, useEffect } from 'react';\n\nfunction useDebouncedValue<T>(value: T, delay: number): T {\n  const [debouncedValue, setDebouncedValue] = useState(value);\n\n  useEffect(() => {\n    const timer = setTimeout(() => setDebouncedValue(value), delay);\n    return () => clearTimeout(timer);\n  }, [value, delay]);\n\n  return debouncedValue;\n}\n\n// Usage: search with API call\nfunction SearchPage() {\n  const [query, setQuery] = useState('');\n  const debouncedQuery = useDebouncedValue(query, 300);\n\n  const { data, isLoading } = useSWR(\n    debouncedQuery ? `/api/search?q=${debouncedQuery}` : null,\n    fetcher\n  );\n\n  return (\n    <div>\n      <input\n        value={query}\n        onChange={(e) => setQuery(e.target.value)}\n        placeholder=\"Search...\"\n      />\n      {isLoading && <Spinner />}\n      {data?.map((item: { id: string; title: string }) => (\n        <div key={item.id}>{item.title}</div>\n      ))}\n    </div>\n  );\n}\n```\n\nThe input updates immediately (responsive typing), but the API call only fires 300ms after the user stops typing. When `query` changes, the old timeout is cleared and a new one is set. Pair with `useSWR` or `useQuery` which handle deduplication and caching of the actual requests.",
+    "tags": [
+      "react",
+      "custom-hooks",
+      "debounce",
+      "search",
+      "performance"
+    ]
+  },
+  {
+    "type": "comparison",
+    "trust": "unverified",
+    "title": "React state management: Context vs Zustand vs Jotai",
+    "body": "Choosing a state management approach depends on the complexity, re-render sensitivity, and scope of your shared state.\n\n```typescript\n// 1. React Context \u2014 built-in, good for low-frequency updates\nconst ThemeContext = createContext<'light' | 'dark'>('light');\n// Problem: ALL consumers re-render on any context value change\n\n// 2. Zustand \u2014 minimal API, selector-based re-renders\nimport { create } from 'zustand';\n\nconst useStore = create<{ count: number; name: string; inc: () => void }>((set) => ({\n  count: 0,\n  name: '',\n  inc: () => set((s) => ({ count: s.count + 1 })),\n}));\n\n// Only re-renders when count changes, not name\nfunction Counter() {\n  const count = useStore((s) => s.count);\n  return <span>{count}</span>;\n}\n\n// 3. Jotai \u2014 atomic model, bottom-up composition\nimport { atom, useAtom } from 'jotai';\n\nconst countAtom = atom(0);\nconst doubleAtom = atom((get) => get(countAtom) * 2); // derived\n\nfunction Counter() {\n  const [count, setCount] = useAtom(countAtom);\n  return <button onClick={() => setCount((c) => c + 1)}>{count}</button>;\n}\n```\n\n**Context**: No extra deps, good for themes/locale/auth. Bad for frequent updates (no selectors).\n**Zustand**: 1.1KB, works outside React, supports middleware (persist, devtools, immer). Best for medium-large apps.\n**Jotai**: 2KB, atomic model like Recoil but simpler. Best when state is naturally composed of small independent pieces. Supports async atoms natively.\n\nAll three work with Server Components \u2014 just wrap the interactive parts in `'use client'`.",
+    "tags": [
+      "react",
+      "state-management",
+      "zustand",
+      "jotai",
+      "context",
+      "comparison"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "React useEffect cleanup runs before every re-execution, not just unmount",
+    "body": "A common misconception is that `useEffect` cleanup only runs on unmount. In reality, the cleanup function runs before every re-execution of the effect AND on unmount.\n\n```tsx\nimport { useState, useEffect } from 'react';\n\nfunction ChatRoom({ roomId }: { roomId: string }) {\n  useEffect(() => {\n    console.log(`Connecting to ${roomId}`);\n    const conn = createConnection(roomId);\n    conn.connect();\n\n    return () => {\n      // Runs BEFORE effect re-runs with new roomId\n      // AND when component unmounts\n      console.log(`Disconnecting from ${roomId}`);\n      conn.disconnect();\n    };\n  }, [roomId]);\n\n  return <div>Chat: {roomId}</div>;\n}\n\n// Timeline when roomId changes from 'general' to 'random':\n// 1. \"Disconnecting from general\" (cleanup old effect)\n// 2. \"Connecting to random\"       (run new effect)\n\n// In Strict Mode (dev), React mounts \u2192 unmounts \u2192 mounts:\n// 1. \"Connecting to general\"\n// 2. \"Disconnecting from general\"\n// 3. \"Connecting to general\"\n// This exposes missing cleanup functions!\n```\n\nStrict Mode double-invocation is intentional \u2014 it catches bugs like:\n- WebSocket connections that leak\n- Event listeners not removed\n- Timers not cleared\n- Subscriptions that accumulate\n\nIf your component behaves differently after the double-mount, your cleanup is incomplete. Fix the cleanup rather than disabling Strict Mode.",
+    "tags": [
+      "react",
+      "useEffect",
+      "cleanup",
+      "strict-mode",
+      "gotcha"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "unverified",
+    "title": "React useOptimistic for instant UI feedback",
+    "body": "React 19's `useOptimistic` hook lets you show an optimistic state while an async action (like a server mutation) is in progress. The UI updates instantly and rolls back if the action fails.\n\n```tsx\nimport { useOptimistic, useTransition } from 'react';\n\ntype Message = { id: string; text: string; sending?: boolean };\n\nfunction Chat({ messages, sendMessage }: {\n  messages: Message[];\n  sendMessage: (text: string) => Promise<void>;\n}) {\n  const [optimisticMessages, addOptimistic] = useOptimistic(\n    messages,\n    (state, newMessage: string) => [\n      ...state,\n      { id: crypto.randomUUID(), text: newMessage, sending: true },\n    ]\n  );\n  const [isPending, startTransition] = useTransition();\n\n  async function handleSend(formData: FormData) {\n    const text = formData.get('message') as string;\n    addOptimistic(text);\n    startTransition(async () => {\n      await sendMessage(text); // server action\n    });\n  }\n\n  return (\n    <div>\n      <ul>\n        {optimisticMessages.map((msg) => (\n          <li key={msg.id} style={{ opacity: msg.sending ? 0.6 : 1 }}>\n            {msg.text}\n            {msg.sending && <span> (sending...)</span>}\n          </li>\n        ))}\n      </ul>\n      <form action={handleSend}>\n        <input name=\"message\" />\n        <button type=\"submit\">Send</button>\n      </form>\n    </div>\n  );\n}\n```\n\nThe optimistic state is merged with the real state. When the action completes and the parent re-renders with updated `messages`, the optimistic value is automatically replaced. If the action throws, React reverts to the last known good state.",
+    "tags": [
+      "react",
+      "useOptimistic",
+      "react-19",
+      "optimistic-ui",
+      "server-actions"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "community",
+    "title": "React 19 use() hook for reading promises and context",
+    "body": "React 19 introduces `use()` \u2014 a special hook that can read Promises and Context, and unlike other hooks, can be called inside conditionals and loops.\n\n```tsx\nimport { use, Suspense } from 'react';\n\n// Reading a Promise \u2014 integrates with Suspense\nfunction UserProfile({ userPromise }: { userPromise: Promise<User> }) {\n  const user = use(userPromise); // suspends until resolved\n  return <h1>{user.name}</h1>;\n}\n\n// Called conditionally \u2014 unlike useContext!\nfunction ThemeText({ showTheme }: { showTheme: boolean }) {\n  if (showTheme) {\n    const theme = use(ThemeContext); // valid inside a conditional!\n    return <p>Current theme: {theme}</p>;\n  }\n  return <p>Theme hidden</p>;\n}\n\n// Parent passes the promise (created outside render)\nfunction Page({ id }: { id: string }) {\n  // Create promise once, pass as prop\n  const userPromise = fetchUser(id);\n\n  return (\n    <Suspense fallback={<Spinner />}>\n      <UserProfile userPromise={userPromise} />\n    </Suspense>\n  );\n}\n\n// WRONG \u2014 do not create promise inside render without caching\nfunction Bad() {\n  const data = use(fetch('/api/data').then(r => r.json())); // new promise every render!\n}\n```\n\nKey rules: The promise must be created outside the component or cached (e.g., via a framework or React cache). Creating a new promise inside render causes an infinite suspend loop. `use()` replaces the `throw promise` pattern and works with async Server Components in frameworks like Next.js.",
+    "tags": [
+      "react",
+      "use-hook",
+      "react-19",
+      "suspense",
+      "context"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "React error: Cannot update a component while rendering a different component",
+    "body": "This error occurs when a state update is triggered synchronously during another component's render phase. React enforces unidirectional data flow \u2014 rendering should be pure.\n\n```\nWarning: Cannot update a component (`Parent`) while rendering\na different component (`Child`). To locate the bad setState() call inside `Child`,\nfollow the stack trace.\n```\n\n```tsx\n// WRONG \u2014 setState during render\nfunction Child({ onCount }: { onCount: (n: number) => void }) {\n  const items = useItems();\n  onCount(items.length); // Calls parent setState during render!\n  return <ul>{items.map(i => <li key={i.id}>{i.name}</li>)}</ul>;\n}\n\nfunction Parent() {\n  const [count, setCount] = useState(0);\n  return (\n    <div>\n      <p>{count} items</p>\n      <Child onCount={setCount} />\n    </div>\n  );\n}\n\n// FIX \u2014 move to useEffect\nfunction Child({ onCount }: { onCount: (n: number) => void }) {\n  const items = useItems();\n  useEffect(() => {\n    onCount(items.length);\n  }, [items.length, onCount]);\n  return <ul>{items.map(i => <li key={i.id}>{i.name}</li>)}</ul>;\n}\n\n// ALTERNATIVE FIX \u2014 lift state up\nfunction Parent() {\n  const items = useItems();\n  return (\n    <div>\n      <p>{items.length} items</p>\n      <ItemList items={items} />\n    </div>\n  );\n}\n```\n\nThe most common cause is calling a callback prop (which triggers parent setState) directly in the render body. Wrap such calls in `useEffect`. Better yet, restructure so the parent owns the data and passes it down.",
+    "tags": [
+      "react",
+      "error",
+      "setState",
+      "render",
+      "useEffect"
+    ]
+  }
+]

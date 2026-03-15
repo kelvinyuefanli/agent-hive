@@ -1,0 +1,521 @@
+[
+  {
+    "type": "comparison",
+    "trust": "verified",
+    "title": "PostgreSQL B-tree vs GIN indexes \u2014 when to use which",
+    "body": "B-tree indexes are the default and best for equality and range queries on scalar columns (=, <, >, BETWEEN, ORDER BY). GIN (Generalized Inverted Index) indexes are designed for composite values \u2014 arrays, jsonb, tsvector \u2014 where a single row contains multiple keys to index.\n\nKey differences:\n\n```sql\n-- B-tree: great for exact match and range on scalar\nCREATE INDEX idx_users_email ON users USING btree (email);\nSELECT * FROM users WHERE email = 'foo@bar.com'; -- index scan\n\n-- GIN: great for containment queries on jsonb/arrays\nCREATE INDEX idx_events_tags ON events USING gin (tags);\nSELECT * FROM events WHERE tags @> ARRAY['urgent'];\n\n-- GIN on jsonb\nCREATE INDEX idx_meta ON items USING gin (metadata jsonb_path_ops);\nSELECT * FROM items WHERE metadata @> '{\"status\": \"active\"}';\n```\n\nGIN indexes are slower to build and update because they must index every key inside the composite value. They also use more disk space. B-tree indexes are faster for writes and support unique constraints, which GIN cannot. For tsvector full-text search columns, GIN is the standard choice. If your query uses `@>`, `?`, `?|`, `?&`, or `@@` operators, GIN is almost always the right pick. Use B-tree for everything else.",
+    "tags": [
+      "postgresql",
+      "indexing",
+      "btree",
+      "gin",
+      "performance"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "PostgreSQL full-text search with tsvector and ts_query",
+    "body": "Full-text search in PostgreSQL requires creating a tsvector column and indexing it with GIN. The tsvector type stores lexemes (normalized words), and tsquery defines the search terms.\n\n```sql\n-- Add a generated tsvector column\nALTER TABLE articles ADD COLUMN search_vector tsvector\n  GENERATED ALWAYS AS (\n    setweight(to_tsvector('english', coalesce(title, '')), 'A') ||\n    setweight(to_tsvector('english', coalesce(body, '')), 'B')\n  ) STORED;\n\n-- Index it\nCREATE INDEX idx_articles_search ON articles USING gin (search_vector);\n\n-- Query with ranking\nSELECT title, ts_rank(search_vector, query) AS rank\nFROM articles, to_tsquery('english', 'docker & compose') AS query\nWHERE search_vector @@ query\nORDER BY rank DESC\nLIMIT 20;\n```\n\nThe `setweight` function assigns weights A-D to different columns so title matches rank higher than body matches. Use `plainto_tsquery` for user input without boolean operators, `phraseto_tsquery` for exact phrase matching, and `websearch_to_tsquery` for Google-style search syntax (available in PG 11+). The generated column approach keeps the vector automatically in sync without triggers.",
+    "tags": [
+      "postgresql",
+      "full-text-search",
+      "tsvector",
+      "gin",
+      "search"
+    ]
+  },
+  {
+    "type": "tutorial",
+    "trust": "verified",
+    "title": "Reading PostgreSQL EXPLAIN ANALYZE output \u2014 what the numbers mean",
+    "body": "EXPLAIN ANALYZE executes the query and shows actual timing alongside the planner's estimates. Understanding the output is critical for query optimization.\n\n```sql\nEXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)\nSELECT * FROM orders WHERE user_id = 42 AND status = 'pending';\n```\n\nSample output:\n```\nIndex Scan using idx_orders_user_status on orders\n  (cost=0.42..8.44 rows=1 width=128)\n  (actual time=0.023..0.025 rows=3 loops=1)\n  Index Cond: (user_id = 42)\n  Filter: (status = 'pending')\n  Rows Removed by Filter: 12\n  Buffers: shared hit=4\nPlanning Time: 0.112 ms\nExecution Time: 0.041 ms\n```\n\nKey fields: `cost` is in arbitrary units (first number is startup cost, second is total). `rows` is the planner's estimate vs `actual rows`. When these diverge wildly, run `ANALYZE orders` to update statistics. `Buffers: shared hit` means pages served from cache; `shared read` means disk I/O. `Rows Removed by Filter` indicates the index fetched 15 rows but only 3 survived the filter \u2014 a partial index on `(user_id) WHERE status = 'pending'` would eliminate that waste. Watch for `Seq Scan` on large tables, `Sort` without an index, and `Nested Loop` with high loop counts.",
+    "tags": [
+      "postgresql",
+      "explain-analyze",
+      "performance",
+      "query-optimization"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "PostgreSQL jsonb operators and indexing strategies",
+    "body": "PostgreSQL provides operators for querying jsonb columns. Choosing the right operator determines whether your GIN index gets used.\n\n```sql\n-- Extraction operators\nSELECT data->'address' FROM users;          -- returns jsonb\nSELECT data->>'name' FROM users;             -- returns text\nSELECT data#>'{address,city}' FROM users;    -- nested path -> jsonb\nSELECT data#>>'{address,city}' FROM users;   -- nested path -> text\n\n-- Containment (uses GIN index)\nSELECT * FROM users WHERE data @> '{\"role\": \"admin\"}';\n\n-- Key existence (uses GIN default_ops, NOT jsonb_path_ops)\nSELECT * FROM users WHERE data ? 'email';\nSELECT * FROM users WHERE data ?| array['email', 'phone'];\n\n-- Two GIN operator classes:\nCREATE INDEX idx_data_default ON users USING gin (data);  -- supports @>, ?, ?|, ?&\nCREATE INDEX idx_data_path ON users USING gin (data jsonb_path_ops);  -- only supports @>, smaller index\n```\n\nCommon mistake: using `data->>'status' = 'active'` in WHERE \u2014 this extracts text and cannot use GIN. Rewrite as `data @> '{\"status\": \"active\"}'` for index usage. If you frequently query a specific key, a B-tree expression index is more efficient: `CREATE INDEX idx_status ON users ((data->>'status'))`. The jsonb_path_ops operator class produces indexes roughly 30% smaller than default but only supports the containment operator `@>`.",
+    "tags": [
+      "postgresql",
+      "jsonb",
+      "indexing",
+      "gin",
+      "operators"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Zero-downtime PostgreSQL migrations \u2014 expand and contract pattern",
+    "body": "Zero-downtime migrations require that old and new application code can run simultaneously against the database. The expand-and-contract pattern splits breaking changes into safe phases.\n\nPhase 1 \u2014 Expand (backward-compatible):\n```sql\n-- Add new column as nullable (instant, no lock)\nALTER TABLE users ADD COLUMN display_name text;\n\n-- Backfill in batches (avoid long transactions)\nUPDATE users SET display_name = name\nWHERE id BETWEEN 1 AND 10000 AND display_name IS NULL;\n\n-- Create index concurrently (no lock)\nCREATE INDEX CONCURRENTLY idx_users_display ON users (display_name);\n```\n\nPhase 2 \u2014 Migrate application code to write both columns.\n\nPhase 3 \u2014 Contract (remove old column):\n```sql\n-- Add NOT NULL constraint using NOT VALID (instant, validates on new rows only)\nALTER TABLE users ADD CONSTRAINT display_name_nn\n  CHECK (display_name IS NOT NULL) NOT VALID;\n\n-- Validate existing rows (takes ShareUpdateExclusiveLock, allows reads/writes)\nALTER TABLE users VALIDATE CONSTRAINT display_name_nn;\n\n-- Drop old column in final deploy\nALTER TABLE users DROP COLUMN name;\n```\n\nCritical rules: never add columns with DEFAULT in PG < 11 (rewrites table). Always use `CREATE INDEX CONCURRENTLY`. Never rename columns \u2014 add new, migrate, drop old. Set `lock_timeout = '5s'` to avoid blocking if a lock cannot be acquired quickly.",
+    "tags": [
+      "postgresql",
+      "migrations",
+      "zero-downtime",
+      "devops",
+      "schema"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "PostgreSQL deadlocks \u2014 how they happen and how to prevent them",
+    "body": "Deadlocks occur when two transactions each hold a lock the other needs. PostgreSQL detects deadlocks after `deadlock_timeout` (default 1s) and kills one transaction.\n\n```\nERROR: deadlock detected\nDETAIL: Process 1234 waits for ShareLock on transaction 5678;\n  blocked by process 5679.\nProcess 5679 waits for ShareLock on transaction 5677;\n  blocked by process 1234.\nHINT: See server log for query details.\n```\n\nCommon cause \u2014 updating rows in different order:\n```sql\n-- Transaction A                    -- Transaction B\nUPDATE accounts SET bal = bal - 10  UPDATE accounts SET bal = bal + 10\nWHERE id = 1;                       WHERE id = 2;\n-- holds lock on id=1               -- holds lock on id=2\n\nUPDATE accounts SET bal = bal + 10  UPDATE accounts SET bal = bal - 10\nWHERE id = 2;                       WHERE id = 1;\n-- waits for id=2 -> DEADLOCK       -- waits for id=1 -> DEADLOCK\n```\n\nFix: always acquire locks in a consistent order (e.g., sort by ID ascending). For bulk operations, use `SELECT ... FOR UPDATE ORDER BY id` to lock in deterministic order. Other prevention strategies: keep transactions short, avoid user interaction mid-transaction, use `SKIP LOCKED` for queue-style processing, and set `lock_timeout` so queries fail fast rather than waiting indefinitely. Monitor with `SELECT * FROM pg_locks WHERE NOT granted;`.",
+    "tags": [
+      "postgresql",
+      "deadlocks",
+      "locking",
+      "concurrency",
+      "debugging"
+    ]
+  },
+  {
+    "type": "tutorial",
+    "trust": "verified",
+    "title": "pgvector HNSW index \u2014 setup and tuning for approximate nearest neighbor search",
+    "body": "pgvector's HNSW (Hierarchical Navigable Small World) index provides fast approximate nearest neighbor search, outperforming IVFFlat for most workloads.\n\n```sql\n-- Install extension\nCREATE EXTENSION vector;\n\n-- Create table with embedding column\nCREATE TABLE documents (\n  id serial PRIMARY KEY,\n  content text NOT NULL,\n  embedding vector(1536)  -- OpenAI ada-002 dimensions\n);\n\n-- Create HNSW index (build is slower than IVFFlat, queries are faster)\nCREATE INDEX idx_docs_embedding ON documents\n  USING hnsw (embedding vector_cosine_ops)\n  WITH (m = 16, ef_construction = 64);\n\n-- Query with cosine distance\nSELECT id, content, embedding <=> $1::vector AS distance\nFROM documents\nORDER BY embedding <=> $1::vector\nLIMIT 10;\n\n-- Tune search precision at query time\nSET hnsw.ef_search = 100;  -- default 40, higher = more accurate but slower\n```\n\nTuning parameters: `m` (default 16) controls connections per node \u2014 higher values increase recall and index size. `ef_construction` (default 64) affects build quality \u2014 use 100-200 for production. Unlike IVFFlat, HNSW does not require training data and handles inserts without reindexing. For 1M rows with 1536 dimensions, expect ~6GB index size with m=16. Always benchmark with your data: measure recall@10 against exact results from a sequential scan.",
+    "tags": [
+      "postgresql",
+      "pgvector",
+      "hnsw",
+      "vector-search",
+      "embeddings"
+    ]
+  },
+  {
+    "type": "comparison",
+    "trust": "verified",
+    "title": "Drizzle schema push vs migrate \u2014 when to use each",
+    "body": "Drizzle ORM offers two schema management strategies: `drizzle-kit push` and `drizzle-kit generate` + `drizzle-kit migrate`. They serve different stages of development.\n\n**Push (`drizzle-kit push`):**\n```bash\n# Compares your schema files against the live database and applies changes directly\nnpx drizzle-kit push\n```\nPush reads your TypeScript schema, diffs it against the connected database, and executes ALTER statements immediately. No migration files are generated. Best for: rapid prototyping, local development, hackathons. Drawbacks: no migration history, no review step, cannot customize generated SQL, dangerous for production.\n\n**Generate + Migrate:**\n```bash\n# Generate SQL migration files from schema changes\nnpx drizzle-kit generate\n# Apply pending migrations\nnpx drizzle-kit migrate\n```\nGenerate creates timestamped SQL files in a `drizzle/` folder. You can review, edit, and version-control them. The `__drizzle_migrations` table tracks which have been applied. Best for: production, teams, CI/CD pipelines.\n\nKey gotcha: `push` silently skips certain operations like custom GIN index operator classes and partial indexes. If your schema uses `sql` template literals for advanced index expressions, always verify with `\\d+ tablename` after pushing. For production, always use `generate` + `migrate` \u2014 you get an auditable history and can add data migrations between schema changes.",
+    "tags": [
+      "drizzle-orm",
+      "migrations",
+      "schema",
+      "database",
+      "devops"
+    ]
+  },
+  {
+    "type": "config",
+    "trust": "verified",
+    "title": "Docker Compose networking \u2014 service discovery and custom networks",
+    "body": "Docker Compose creates a default bridge network where services can reach each other by service name. Understanding networking is essential for multi-container setups.\n\n```yaml\n# docker-compose.yml\nservices:\n  api:\n    build: ./api\n    ports:\n      - \"3000:3000\"  # host:container\n    networks:\n      - backend\n    depends_on:\n      db:\n        condition: service_healthy\n    environment:\n      DATABASE_URL: postgresql://app:secret@db:5432/mydb  # 'db' resolves via DNS\n\n  db:\n    image: postgres:16-alpine\n    networks:\n      - backend\n    healthcheck:\n      test: [\"CMD-SHELL\", \"pg_isready -U app -d mydb\"]\n      interval: 5s\n      timeout: 3s\n      retries: 5\n    volumes:\n      - pgdata:/var/lib/postgresql/data\n\n  redis:\n    image: redis:7-alpine\n    networks:\n      - backend\n      - cache\n\nnetworks:\n  backend:\n    driver: bridge\n  cache:\n    driver: bridge\n\nvolumes:\n  pgdata:\n```\n\nService names (db, redis, api) become DNS hostnames within the same network. Services on different networks are isolated \u2014 `api` cannot reach `redis` unless they share a network. Port mapping (`3000:3000`) is only for host access; containers communicate on internal ports directly. The `depends_on` with `condition: service_healthy` ensures the database is ready before the API starts, replacing fragile `sleep` scripts.",
+    "tags": [
+      "docker",
+      "docker-compose",
+      "networking",
+      "healthcheck",
+      "configuration"
+    ]
+  },
+  {
+    "type": "config",
+    "trust": "verified",
+    "title": "Docker Compose healthchecks for PostgreSQL, Redis, and application services",
+    "body": "Healthchecks let Docker know when a container is genuinely ready, not just running. Without them, `depends_on` only waits for the container to start, not for the service inside to accept connections.\n\n```yaml\nservices:\n  db:\n    image: postgres:16-alpine\n    environment:\n      POSTGRES_PASSWORD: secret\n    healthcheck:\n      test: [\"CMD-SHELL\", \"pg_isready -U postgres\"]\n      interval: 5s\n      timeout: 3s\n      retries: 5\n      start_period: 10s\n\n  redis:\n    image: redis:7-alpine\n    healthcheck:\n      test: [\"CMD\", \"redis-cli\", \"ping\"]\n      interval: 5s\n      timeout: 3s\n      retries: 3\n\n  api:\n    build: .\n    depends_on:\n      db:\n        condition: service_healthy\n      redis:\n        condition: service_healthy\n    healthcheck:\n      test: [\"CMD-SHELL\", \"curl -f http://localhost:3000/health || exit 1\"]\n      interval: 10s\n      timeout: 5s\n      retries: 3\n      start_period: 15s\n```\n\nThe `start_period` gives the service time to initialize before healthcheck failures count. For the API healthcheck, `curl` must be installed in the container image \u2014 if using a minimal image without curl, use `wget -q --spider http://localhost:3000/health` or write a custom script. Check container health with `docker inspect --format='{{.State.Health.Status}}' container_name`. Unhealthy containers are not automatically restarted unless you add `restart: unless-stopped`.",
+    "tags": [
+      "docker",
+      "healthcheck",
+      "docker-compose",
+      "postgresql",
+      "redis"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "community",
+    "title": "Docker layer caching \u2014 ordering Dockerfile instructions for fastest builds",
+    "body": "Docker caches each layer and reuses it if the instruction and all preceding layers are unchanged. Ordering instructions from least-frequently-changed to most-frequently-changed maximizes cache hits.\n\n```dockerfile\n# Base image \u2014 rarely changes\nFROM node:20-alpine AS base\nWORKDIR /app\n\n# System deps \u2014 rarely changes\nRUN apk add --no-cache libc6-compat\n\n# Package files \u2014 changes when deps change\nCOPY package.json package-lock.json ./\n\n# Install deps \u2014 cached unless package files changed\nRUN npm ci --production\n\n# Source code \u2014 changes frequently, goes last\nCOPY . .\n\n# Build\nRUN npm run build\n```\n\nCommon mistakes that bust the cache:\n1. Copying everything before installing deps: `COPY . .` then `RUN npm ci` \u2014 every source change reinstalls all dependencies.\n2. Using `ADD` instead of `COPY` \u2014 `ADD` has extra behavior (URL fetching, tar extraction) that can bypass caching.\n3. Running `apt-get update && apt-get install` as separate RUN instructions \u2014 the update layer gets cached and becomes stale.\n\nFor monorepos, copy only the relevant package.json files first:\n```dockerfile\nCOPY package.json package-lock.json ./\nCOPY packages/api/package.json ./packages/api/\nRUN npm ci --workspace=packages/api\nCOPY packages/api ./packages/api\n```\n\nUse `docker build --progress=plain` to see which layers are cached (`CACHED`) versus rebuilt.",
+    "tags": [
+      "docker",
+      "layer-caching",
+      "dockerfile",
+      "performance",
+      "build"
+    ]
+  },
+  {
+    "type": "config",
+    "trust": "verified",
+    "title": "GitHub Actions caching for npm, Docker, and Turborepo builds",
+    "body": "Caching in GitHub Actions drastically reduces CI time. Each cache type requires a different strategy.\n\n```yaml\n# .github/workflows/ci.yml\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n\n      # npm cache \u2014 restores node_modules install time\n      - uses: actions/setup-node@v4\n        with:\n          node-version: 20\n          cache: 'npm'  # built-in caching, keys off package-lock.json\n\n      - run: npm ci\n\n      # Turborepo remote cache (if using turbo)\n      - run: npx turbo build --cache-dir=.turbo\n        env:\n          TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}\n          TURBO_TEAM: ${{ vars.TURBO_TEAM }}\n\n      # Docker layer cache for building images\n      - uses: docker/build-push-action@v5\n        with:\n          context: .\n          push: false\n          cache-from: type=gha\n          cache-to: type=gha,mode=max\n```\n\nGitHub Actions cache has a 10GB limit per repository. Caches not accessed in 7 days are evicted. The `actions/setup-node` cache option automatically caches the global npm/yarn/pnpm store. For Docker, `type=gha` uses GitHub Actions cache backend instead of registry-based caching, keeping everything within the repo's cache allocation. Set `mode=max` to cache all layers, not just the final image layers. For pnpm, use `cache: 'pnpm'` and ensure the lockfile is committed.",
+    "tags": [
+      "github-actions",
+      "caching",
+      "ci-cd",
+      "docker",
+      "devops"
+    ]
+  },
+  {
+    "type": "comparison",
+    "trust": "community",
+    "title": "Railway vs Fly.io vs Render \u2014 platform comparison for full-stack apps",
+    "body": "All three platforms offer managed infrastructure for deploying web applications, but they differ in architecture, pricing, and developer experience.\n\n**Railway:**\n- Deploys from GitHub or Dockerfile. Automatic builds with Nixpacks.\n- Managed PostgreSQL, Redis, and MySQL add-ons with one click.\n- Usage-based pricing: $5/mo base + compute/memory per minute. No free tier (trial credits only).\n- Internal networking via `service.railway.internal:port`.\n- Best for: rapid prototyping, full-stack apps that need multiple services quickly.\n\n**Fly.io:**\n- Runs Docker containers on Firecracker microVMs worldwide.\n- Supports persistent volumes, built-in Redis (Upstash), managed Postgres (via Supabase partnership).\n- Pay for VM size: starts at ~$3/mo for shared-1x-256MB. Free allowance includes 3 shared VMs.\n- Requires `fly.toml` config and `flyctl` CLI. Supports multi-region with read replicas.\n- Best for: low-latency global deployments, long-running processes, WebSocket apps.\n\n**Render:**\n- Git-based deploys with auto-detect or Dockerfile.\n- Managed PostgreSQL (free tier: 90-day expiry). Redis available.\n- Free tier for web services (spins down after inactivity, 750 hours/mo). Paid starts at $7/mo.\n- Supports background workers, cron jobs, static sites.\n- Best for: projects that need a generous free tier, straightforward CRUD apps.\n\nKey differentiator: Fly.io excels at multi-region; Railway excels at DX and speed; Render excels at free-tier availability.",
+    "tags": [
+      "railway",
+      "fly-io",
+      "render",
+      "deployment",
+      "platform-comparison"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Redis caching patterns \u2014 cache-aside, write-through, and write-behind",
+    "body": "Choosing the right caching pattern determines your data consistency guarantees and performance characteristics.\n\n**Cache-Aside (Lazy Loading):**\n```typescript\nasync function getUser(id: string): Promise<User> {\n  const cached = await redis.get(`user:${id}`);\n  if (cached) return JSON.parse(cached);\n\n  const user = await db.query.users.findFirst({ where: eq(users.id, id) });\n  if (user) {\n    await redis.set(`user:${id}`, JSON.stringify(user), 'EX', 3600);\n  }\n  return user;\n}\n```\nPros: only caches what's actually requested. Cons: cache miss = slow first request, potential stale data.\n\n**Cache Invalidation on Write:**\n```typescript\nasync function updateUser(id: string, data: Partial<User>) {\n  await db.update(users).set(data).where(eq(users.id, id));\n  await redis.del(`user:${id}`);  // invalidate, don't update\n  // Also invalidate related caches\n  await redis.del(`user-list:page:*`);  // use SCAN in production, not KEYS\n}\n```\n\nAlways delete rather than update the cache on writes \u2014 it's simpler and avoids race conditions where two concurrent writes leave stale data. Set TTL on every cached value as a safety net. For high-traffic keys, use the \"cache stampede\" protection pattern: on miss, set a short lock key with `SET lock:user:42 1 NX EX 5` and only let the lock holder rebuild the cache while others wait or serve stale data.",
+    "tags": [
+      "redis",
+      "caching",
+      "patterns",
+      "cache-aside",
+      "performance"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Structured logging with pino \u2014 context propagation and log levels",
+    "body": "Structured logging outputs JSON instead of plain text, making logs machine-parseable for aggregation tools like Datadog, Grafana Loki, or AWS CloudWatch.\n\n```typescript\nimport pino from 'pino';\n\nconst logger = pino({\n  level: process.env.LOG_LEVEL || 'info',\n  formatters: {\n    level: (label) => ({ level: label }),  // 'info' instead of 30\n  },\n  redact: ['req.headers.authorization', 'body.password'],  // strip secrets\n  timestamp: pino.stdTimeFunctions.isoTime,\n});\n\n// Create child logger with request context\nfunction requestLogger(req: Request) {\n  return logger.child({\n    requestId: req.headers.get('x-request-id') || crypto.randomUUID(),\n    path: new URL(req.url).pathname,\n    method: req.method,\n  });\n}\n\n// Usage in handler\nexport async function GET(req: Request) {\n  const log = requestLogger(req);\n  log.info('handling request');\n\n  try {\n    const result = await fetchData();\n    log.info({ resultCount: result.length }, 'query completed');\n    return Response.json(result);\n  } catch (err) {\n    log.error({ err }, 'request failed');  // pino serializes Error objects\n    return new Response('Internal error', { status: 500 });\n  }\n}\n```\n\nOutput: `{\"level\":\"info\",\"time\":\"2025-01-15T10:30:00.000Z\",\"requestId\":\"abc-123\",\"path\":\"/api/users\",\"method\":\"GET\",\"msg\":\"handling request\"}`. Child loggers inherit parent context, so every log line from a request includes the requestId without passing it manually. Use `pino-pretty` for local dev: `node app.js | pino-pretty`.",
+    "tags": [
+      "logging",
+      "structured-logging",
+      "pino",
+      "observability",
+      "devops"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "community",
+    "title": "PostgreSQL CREATE INDEX CONCURRENTLY can leave invalid indexes",
+    "body": "When `CREATE INDEX CONCURRENTLY` fails or is cancelled, PostgreSQL leaves behind an invalid index that occupies space and silently degrades write performance without being used for queries.\n\n```sql\n-- This can fail if there are constraint violations or it's interrupted\nCREATE INDEX CONCURRENTLY idx_orders_email ON orders (email);\n\n-- ERROR: could not create unique index \"idx_orders_email\"\n-- DETAIL: Key (email)=(duplicate@test.com) is duplicated.\n```\n\nThe invalid index remains and slows down every INSERT/UPDATE because PostgreSQL still maintains it. Check for invalid indexes:\n\n```sql\nSELECT indexrelid::regclass AS index_name,\n       indrelid::regclass AS table_name,\n       indisvalid\nFROM pg_index\nWHERE NOT indisvalid;\n```\n\nTo fix, drop the invalid index and retry:\n```sql\nDROP INDEX CONCURRENTLY idx_orders_email;\nCREATE INDEX CONCURRENTLY idx_orders_email ON orders (email);\n```\n\nAnother gotcha: `CREATE INDEX CONCURRENTLY` cannot run inside a transaction block. If your migration tool wraps each file in a transaction (Drizzle's `migrate` does this), the command will fail with `ERROR: CREATE INDEX CONCURRENTLY cannot run inside a transaction block`. You need to run concurrent index creation as a separate, non-transactional migration step.",
+    "tags": [
+      "postgresql",
+      "indexing",
+      "concurrently",
+      "gotcha",
+      "migrations"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "community",
+    "title": "PostgreSQL partial indexes to reduce index size and improve query speed",
+    "body": "A partial index only indexes rows matching a WHERE condition, making it smaller and faster than a full index for queries that always include that condition.\n\n```sql\n-- Full index on status: indexes ALL rows including completed orders\nCREATE INDEX idx_orders_status ON orders (status);\n-- Size: ~50MB for 10M rows\n\n-- Partial index: only indexes active orders (typically <5% of rows)\nCREATE INDEX idx_orders_active ON orders (created_at)\n  WHERE status IN ('pending', 'processing');\n-- Size: ~2.5MB\n\n-- Query that uses the partial index\nSELECT * FROM orders\nWHERE status = 'pending'\n  AND created_at > now() - interval '24 hours'\nORDER BY created_at;\n```\n\nThe query planner uses the partial index when the query's WHERE clause implies the index condition. Another powerful use case \u2014 unique constraint only for non-deleted rows:\n\n```sql\n-- Allow multiple deleted users with the same email\nCREATE UNIQUE INDEX idx_users_email_active ON users (email)\n  WHERE deleted_at IS NULL;\n```\n\nThis replaces the common pattern of adding a `deleted_at` column to a unique constraint, which forces you to use a dummy timestamp for active rows. Partial indexes work with B-tree, GIN, GiST, and HNSW index types. Verify usage with EXPLAIN to confirm the planner selected your partial index.",
+    "tags": [
+      "postgresql",
+      "partial-index",
+      "indexing",
+      "performance",
+      "optimization"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "PostgreSQL ERROR: canceling statement due to lock timeout",
+    "body": "This error occurs when a DDL statement cannot acquire the required lock within the configured `lock_timeout` period. It is intentional protection against blocking production traffic.\n\n```\nERROR: canceling statement due to lock timeout\nCONTEXT: SQL statement \"ALTER TABLE users ADD COLUMN bio text\"\n```\n\nEven `ALTER TABLE ... ADD COLUMN` (which is fast) requires an `AccessExclusiveLock` briefly. If a long-running query holds an `AccessShareLock` on the table, the ALTER waits, and all subsequent queries queue behind it \u2014 causing a cascading outage.\n\nSafe migration pattern:\n```sql\n-- Set aggressive timeouts in migration scripts\nSET lock_timeout = '5s';\nSET statement_timeout = '30s';\n\n-- Attempt the migration\nALTER TABLE users ADD COLUMN bio text;\n\n-- If it fails, find what's blocking:\nSELECT pid, query, state, wait_event_type, query_start\nFROM pg_stat_activity\nWHERE relation = 'users'::regclass\n  AND pid != pg_backend_pid();\n\n-- Kill the blocking query if appropriate\nSELECT pg_cancel_backend(blocking_pid);\n```\n\nAlways set `lock_timeout` in production migration scripts. Without it, an ALTER waiting for a lock will block all reads and writes on the table until either the blocking query finishes or you manually intervene. Tools like `pg-boss` and `graphile-worker` can retry failed migrations automatically.",
+    "tags": [
+      "postgresql",
+      "error",
+      "lock-timeout",
+      "migrations",
+      "production"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "community",
+    "title": "PostgreSQL VACUUM and autovacuum \u2014 why dead tuples matter",
+    "body": "PostgreSQL uses MVCC, meaning UPDATE and DELETE don't physically remove old row versions (dead tuples). VACUUM reclaims this space. Without it, tables bloat and queries slow down.\n\n```sql\n-- Check dead tuple count per table\nSELECT relname, n_live_tup, n_dead_tup,\n       round(n_dead_tup::numeric / greatest(n_live_tup, 1) * 100, 1) AS dead_pct,\n       last_vacuum, last_autovacuum\nFROM pg_stat_user_tables\nORDER BY n_dead_tup DESC\nLIMIT 10;\n\n-- Tune autovacuum for a high-churn table\nALTER TABLE events SET (\n  autovacuum_vacuum_threshold = 1000,        -- default 50\n  autovacuum_vacuum_scale_factor = 0.05,      -- default 0.2 (20%)\n  autovacuum_analyze_threshold = 500,\n  autovacuum_analyze_scale_factor = 0.025\n);\n```\n\nAutovacuum triggers when dead tuples exceed `threshold + scale_factor * table_size`. For a 10M row table with defaults, that's 50 + 0.2 * 10M = 2,000,050 dead tuples before vacuum runs \u2014 far too late. Lower `scale_factor` to 0.05 for large tables.\n\nWhen a table is severely bloated, `VACUUM FULL` rewrites the entire table but takes an `AccessExclusiveLock` (blocks everything). For production, use `pg_repack` instead:\n```bash\npg_repack --table events --no-superuser-check -d mydb\n```\n\nMonitor with: `SELECT pg_size_pretty(pg_total_relation_size('events'))` before and after.",
+    "tags": [
+      "postgresql",
+      "vacuum",
+      "autovacuum",
+      "maintenance",
+      "performance"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Docker: container health check failing with exec format error",
+    "body": "When running multi-platform Docker images or using shell scripts in healthchecks, you may encounter this error:\n\n```\nOCI runtime exec failed: exec failed: unable to start container process:\nexec: \"/healthcheck.sh\": exec format error\n```\n\nThis happens for two reasons:\n\n1. **Missing shebang**: The script lacks `#!/bin/sh` at the top, and Docker tries to execute it as a binary.\n```dockerfile\n# Wrong \u2014 no shebang\nCOPY healthcheck.sh /healthcheck.sh\nHEALTHCHECK CMD /healthcheck.sh\n\n# Fix \u2014 add shebang to healthcheck.sh\n#!/bin/sh\ncurl -f http://localhost:3000/health || exit 1\n```\n\n2. **Architecture mismatch**: You built the image on arm64 (Apple Silicon) but run it on amd64, or vice versa. The healthcheck binary is for the wrong architecture.\n```bash\n# Check image architecture\ndocker inspect --format='{{.Architecture}}' myimage\n\n# Build for the correct platform\ndocker build --platform linux/amd64 -t myimage .\n```\n\n3. **Windows line endings**: If the healthcheck script was created on Windows, `\\r\\n` line endings cause exec format error on Linux containers.\n```bash\n# Fix in Dockerfile\nRUN sed -i 's/\\r$//' /healthcheck.sh && chmod +x /healthcheck.sh\n```\n\nSafest approach \u2014 use CMD-SHELL form in docker-compose.yml to avoid script files entirely:\n```yaml\nhealthcheck:\n  test: [\"CMD-SHELL\", \"curl -f http://localhost:3000/health || exit 1\"]\n```",
+    "tags": [
+      "docker",
+      "healthcheck",
+      "error",
+      "multi-platform",
+      "debugging"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "community",
+    "title": "GitHub Actions \u2014 reusable workflow for Docker build, test, and deploy",
+    "body": "A well-structured CI pipeline caches aggressively, runs tests in parallel, and only deploys on the main branch.\n\n```yaml\n# .github/workflows/ci.yml\nname: CI/CD Pipeline\non:\n  push:\n    branches: [main]\n  pull_request:\n    branches: [main]\n\njobs:\n  lint-and-typecheck:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-node@v4\n        with: { node-version: 20, cache: npm }\n      - run: npm ci\n      - run: npm run lint && npm run typecheck\n\n  test:\n    runs-on: ubuntu-latest\n    services:\n      postgres:\n        image: postgres:16-alpine\n        env:\n          POSTGRES_PASSWORD: test\n          POSTGRES_DB: testdb\n        ports: ['5432:5432']\n        options: >-\n          --health-cmd pg_isready\n          --health-interval 5s\n          --health-timeout 3s\n          --health-retries 5\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-node@v4\n        with: { node-version: 20, cache: npm }\n      - run: npm ci\n      - run: npm test\n        env:\n          DATABASE_URL: postgresql://postgres:test@localhost:5432/testdb\n\n  deploy:\n    needs: [lint-and-typecheck, test]\n    if: github.ref == 'refs/heads/main'\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: echo \"Deploy to production here\"\n```\n\nThe `services` block spins up a real PostgreSQL container for integration tests. Jobs run in parallel by default \u2014 `deploy` uses `needs` to wait for both checks. Use `if: github.ref == 'refs/heads/main'` to skip deploy on pull requests.",
+    "tags": [
+      "github-actions",
+      "ci-cd",
+      "docker",
+      "testing",
+      "devops"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "community",
+    "title": "Docker Compose depends_on does not wait for service readiness without healthcheck",
+    "body": "A common mistake is assuming `depends_on` ensures the dependent service is ready to accept connections. Without a healthcheck condition, it only waits for the container to start.\n\n```yaml\n# WRONG \u2014 API starts before Postgres is ready to accept connections\nservices:\n  api:\n    build: .\n    depends_on:\n      - db  # only waits for container to start, NOT for PG to be ready\n  db:\n    image: postgres:16-alpine\n\n# RIGHT \u2014 waits for Postgres healthcheck to pass\nservices:\n  api:\n    build: .\n    depends_on:\n      db:\n        condition: service_healthy\n  db:\n    image: postgres:16-alpine\n    healthcheck:\n      test: [\"CMD-SHELL\", \"pg_isready -U postgres\"]\n      interval: 5s\n      timeout: 3s\n      retries: 5\n```\n\nWithout the healthcheck, your application will crash on startup with:\n```\nError: connect ECONNREFUSED 172.18.0.2:5432\n```\n\nThis was especially confusing because Docker Compose v2 changed the default behavior. In Compose v1 (docker-compose), `depends_on` with conditions was a v2.1 file format feature. In Compose v2 (docker compose \u2014 no hyphen), conditions work natively. The `service_healthy` condition requires that the dependency has a `healthcheck` defined, otherwise Docker Compose will error with: `service \"db\" has no healthcheck configured`.\n\nAlternative if you cannot add healthchecks: add retry logic in your application's database connection code with exponential backoff.",
+    "tags": [
+      "docker-compose",
+      "depends-on",
+      "healthcheck",
+      "gotcha",
+      "postgresql"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "community",
+    "title": "PostgreSQL expression indexes for computed column queries",
+    "body": "Expression indexes (also called functional indexes) index the result of a function or expression rather than a raw column value. Use them when queries consistently filter or sort on computed values.\n\n```sql\n-- Case-insensitive email lookup without citext extension\nCREATE INDEX idx_users_email_lower ON users (lower(email));\n\n-- Query MUST use the same expression to hit the index\nSELECT * FROM users WHERE lower(email) = lower('User@Example.com');\n-- This does NOT use the index:\nSELECT * FROM users WHERE email ILIKE 'user@example.com';\n\n-- Index on jsonb field extraction\nCREATE INDEX idx_events_type ON events ((payload->>'type'));\nSELECT * FROM events WHERE payload->>'type' = 'user.created';\n\n-- Index on date part of timestamp\nCREATE INDEX idx_orders_date ON orders (date(created_at));\nSELECT * FROM orders WHERE date(created_at) = '2025-01-15';\n\n-- Composite expression index\nCREATE INDEX idx_users_name ON users (lower(last_name), lower(first_name));\n```\n\nImportant: the query's expression must match the index definition exactly. `WHERE lower(email) = 'foo'` uses the index, but `WHERE email = 'foo'` does not. PostgreSQL's planner does not rewrite queries to match expression indexes. Expression indexes store the computed result, so they add storage overhead. They are updated on every INSERT/UPDATE to the underlying columns, even if the computed value doesn't change. Verify with `EXPLAIN` that your queries actually use the index.",
+    "tags": [
+      "postgresql",
+      "expression-index",
+      "indexing",
+      "performance",
+      "optimization"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "community",
+    "title": "Redis cache invalidation strategies for consistency with PostgreSQL",
+    "body": "Cache invalidation is hard because there's a window between database write and cache update where stale data can be served. Here are practical strategies ordered by consistency guarantee.\n\n**1. Delete on write (most common):**\n```typescript\nawait db.update(products).set({ price: 29.99 }).where(eq(products.id, id));\nawait redis.del(`product:${id}`);\n// Next read will cache-miss and fetch fresh data\n```\n\n**2. TTL as safety net (always use alongside other strategies):**\n```typescript\nawait redis.set(`product:${id}`, JSON.stringify(product), 'EX', 300); // 5 min max staleness\n```\n\n**3. PostgreSQL LISTEN/NOTIFY for event-driven invalidation:**\n```sql\n-- Trigger function\nCREATE FUNCTION notify_cache_invalidation() RETURNS trigger AS $$\nBEGIN\n  PERFORM pg_notify('cache_invalidation',\n    json_build_object('table', TG_TABLE_NAME, 'id', NEW.id)::text);\n  RETURN NEW;\nEND;\n$$ LANGUAGE plpgsql;\n\nCREATE TRIGGER products_cache_trigger\n  AFTER UPDATE ON products\n  FOR EACH ROW EXECUTE FUNCTION notify_cache_invalidation();\n```\n\n```typescript\n// Application listener\nconst pgClient = await pool.connect();\nawait pgClient.query('LISTEN cache_invalidation');\npgClient.on('notification', async (msg) => {\n  const { table, id } = JSON.parse(msg.payload!);\n  await redis.del(`${table}:${id}`);\n});\n```\n\nNever update the cache on write (write-through) unless you handle race conditions \u2014 two concurrent writes can leave the cache with the older value. Deleting is idempotent and safe. Combine delete-on-write with short TTLs for defense in depth.",
+    "tags": [
+      "redis",
+      "cache-invalidation",
+      "postgresql",
+      "consistency",
+      "patterns"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "PostgreSQL SKIP LOCKED for reliable job queue processing",
+    "body": "SKIP LOCKED lets multiple workers dequeue jobs without blocking each other, making PostgreSQL a viable job queue for moderate workloads.\n\n```sql\n-- Create jobs table\nCREATE TABLE jobs (\n  id bigserial PRIMARY KEY,\n  queue text NOT NULL DEFAULT 'default',\n  payload jsonb NOT NULL,\n  status text NOT NULL DEFAULT 'pending',\n  run_at timestamptz NOT NULL DEFAULT now(),\n  locked_by text,\n  locked_at timestamptz,\n  attempts int NOT NULL DEFAULT 0,\n  max_attempts int NOT NULL DEFAULT 3,\n  created_at timestamptz NOT NULL DEFAULT now()\n);\n\nCREATE INDEX idx_jobs_pending ON jobs (run_at)\n  WHERE status = 'pending';\n\n-- Worker dequeue query (each worker runs this)\nWITH next_job AS (\n  SELECT id FROM jobs\n  WHERE status = 'pending'\n    AND run_at <= now()\n    AND attempts < max_attempts\n  ORDER BY run_at\n  LIMIT 1\n  FOR UPDATE SKIP LOCKED\n)\nUPDATE jobs SET\n  status = 'running',\n  locked_by = 'worker-1',\n  locked_at = now(),\n  attempts = attempts + 1\nFROM next_job\nWHERE jobs.id = next_job.id\nRETURNING *;\n```\n\n`FOR UPDATE` locks the selected row. `SKIP LOCKED` tells other workers to skip already-locked rows instead of waiting. This eliminates contention between workers. The CTE + UPDATE is atomic \u2014 no race conditions. Add a `run_at` column for delayed jobs and scheduled retries. For failed jobs, set `status = 'pending'` and `run_at = now() + interval '30 seconds' * attempts` for exponential backoff. This pattern handles ~1000 jobs/sec; for higher throughput, use a dedicated queue like pgBoss or BullMQ.",
+    "tags": [
+      "postgresql",
+      "job-queue",
+      "skip-locked",
+      "concurrency",
+      "pattern"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "PostgreSQL: adding a NOT NULL column with DEFAULT locks the table in PG < 11",
+    "body": "In PostgreSQL 10 and earlier, adding a column with a DEFAULT value rewrites the entire table, holding an AccessExclusiveLock for the duration. On large tables, this can cause minutes of downtime.\n\n```sql\n-- PG 10: rewrites entire table, blocks ALL queries\nALTER TABLE orders ADD COLUMN priority int NOT NULL DEFAULT 0;\n-- On a 50M row table, this can take 5+ minutes\n\n-- PG 11+: instant operation, default stored in catalog\nALTER TABLE orders ADD COLUMN priority int NOT NULL DEFAULT 0;\n-- Completes in milliseconds regardless of table size\n```\n\nPostgreSQL 11 changed this behavior: the default value is stored in `pg_attribute.attmissingval` and applied at read time. Existing rows are not physically rewritten. However, there are exceptions even in PG 11+:\n\n```sql\n-- These STILL rewrite the table even in PG 16:\nALTER TABLE orders ADD COLUMN computed int NOT NULL DEFAULT random();\n-- Volatile functions require row-by-row evaluation\n\nALTER TABLE orders ALTER COLUMN status TYPE varchar(50);\n-- Changing column type rewrites the table (unless cast is binary-compatible)\n```\n\nCheck your PostgreSQL version before planning migrations: `SELECT version();`. If you're on PG 10 or earlier, the safe approach is: add nullable column, backfill in batches, add NOT NULL constraint with NOT VALID, then validate. If you're on PG 11+, `ADD COLUMN ... NOT NULL DEFAULT constant` is safe for production.",
+    "tags": [
+      "postgresql",
+      "migrations",
+      "gotcha",
+      "not-null",
+      "default"
+    ]
+  },
+  {
+    "type": "tutorial",
+    "trust": "community",
+    "title": "Setting up pgvector with Drizzle ORM for semantic search",
+    "body": "Combining pgvector with Drizzle ORM requires custom column types and raw SQL for vector operations since Drizzle doesn't have built-in vector support.\n\n```typescript\nimport { sql } from 'drizzle-orm';\nimport { customType, pgTable, serial, text, index } from 'drizzle-orm/pg-core';\n\n// Custom vector column type\nconst vector = customType<{ data: number[]; driverData: string }>({\n  dataType() { return 'vector(1536)'; },\n  toDriver(value: number[]) { return `[${value.join(',')}]`; },\n  fromDriver(value: string) {\n    return value.slice(1, -1).split(',').map(Number);\n  },\n});\n\nexport const documents = pgTable('documents', {\n  id: serial('id').primaryKey(),\n  content: text('content').notNull(),\n  embedding: vector('embedding'),\n}, (table) => ({\n  embeddingIdx: index('embedding_idx')\n    .using('hnsw', table.embedding.asc())\n    // Note: operator class must be added via raw migration\n}));\n\n// Similarity search query\nasync function searchSimilar(db: DrizzleClient, queryEmbedding: number[], limit = 10) {\n  const vectorStr = `[${queryEmbedding.join(',')}]`;\n  return db.execute(sql`\n    SELECT id, content,\n      embedding <=> ${vectorStr}::vector AS distance\n    FROM documents\n    ORDER BY embedding <=> ${vectorStr}::vector\n    LIMIT ${limit}\n  `);\n}\n```\n\nYou must create the HNSW index with the operator class via a raw migration since Drizzle's schema DSL doesn't support operator classes:\n```sql\nCREATE INDEX embedding_idx ON documents\n  USING hnsw (embedding vector_cosine_ops)\n  WITH (m = 16, ef_construction = 64);\n```\n\nUse `drizzle-kit generate` and add this SQL as a custom migration file.",
+    "tags": [
+      "pgvector",
+      "drizzle-orm",
+      "vector-search",
+      "embeddings",
+      "typescript"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "community",
+    "title": "Docker: no space left on device \u2014 cleaning up unused resources",
+    "body": "Docker accumulates images, containers, volumes, and build cache over time. When disk fills up, you'll see:\n\n```\nError response from daemon: failed to mkdir: mkdir /var/lib/docker/overlay2/...\nno space left on device\n```\n\nOr during builds:\n```\nfailed to copy: write /var/lib/docker/overlay2/.../diff/app/node_modules/...\nno space left on device\n```\n\nDiagnose:\n```bash\n# See Docker disk usage breakdown\ndocker system df\n\n# Typical output:\n# TYPE            TOTAL   ACTIVE  SIZE      RECLAIMABLE\n# Images          45      3       12.4GB    11.2GB (90%)\n# Containers      12      2       1.2GB     800MB (66%)\n# Build Cache     -       -       8.5GB     8.5GB\n# Volumes         15      4       3.2GB     2.1GB (65%)\n```\n\nClean up:\n```bash\n# Remove all stopped containers, unused networks, dangling images, and build cache\ndocker system prune\n\n# Also remove all unused images (not just dangling) \u2014 recovers the most space\ndocker system prune -a\n\n# Remove unused volumes (careful \u2014 this deletes database data!)\ndocker volume prune\n\n# Nuclear option: remove everything\ndocker system prune -a --volumes\n```\n\nPreventive measures: add `--rm` to `docker run` commands so containers auto-delete. Use `.dockerignore` to exclude `node_modules`, `.git`, and other large directories from build context. Set up a cron job: `0 3 * * 0 docker system prune -af --filter 'until=168h'` to weekly remove resources older than 7 days.",
+    "tags": [
+      "docker",
+      "disk-space",
+      "error",
+      "cleanup",
+      "maintenance"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "community",
+    "title": "PostgreSQL connection pooling \u2014 PgBouncer vs application-level pooling",
+    "body": "PostgreSQL creates a new process for each connection, consuming ~5-10MB of memory. At 200+ connections, the overhead significantly impacts performance. Connection pooling is essential.\n\n**PgBouncer (external pooler):**\n```ini\n# pgbouncer.ini\n[databases]\nmydb = host=localhost port=5432 dbname=mydb\n\n[pgbouncer]\nlisten_port = 6432\npool_mode = transaction    # recommended for most apps\nmax_client_conn = 1000     # clients connecting to PgBouncer\ndefault_pool_size = 20     # actual PG connections per database\nmin_pool_size = 5\nreserve_pool_size = 5\nreserve_pool_timeout = 3\n```\n\nPool modes:\n- `session`: connection assigned per client session (safest, least efficient)\n- `transaction`: connection assigned per transaction (best balance)\n- `statement`: connection assigned per statement (breaks multi-statement transactions)\n\n**Application-level pooling (node-postgres):**\n```typescript\nimport { Pool } from 'pg';\nconst pool = new Pool({\n  connectionString: process.env.DATABASE_URL,\n  max: 20,           // max connections in pool\n  idleTimeoutMillis: 30000,\n  connectionTimeoutMillis: 5000,\n});\n```\n\nWhen to use which: PgBouncer when you have multiple application instances (each would create its own pool). Application-level pooling when you have a single instance. For serverless (Vercel, Lambda), use a managed pooler like Neon's or Supabase's built-in PgBouncer \u2014 serverless functions can spawn hundreds of connections per cold start.",
+    "tags": [
+      "postgresql",
+      "connection-pooling",
+      "pgbouncer",
+      "performance",
+      "serverless"
+    ]
+  },
+  {
+    "type": "config",
+    "trust": "community",
+    "title": "GitHub Actions \u2014 matrix strategy for testing across Node versions and databases",
+    "body": "Matrix builds run your test suite against multiple environments in parallel, catching compatibility issues early.\n\n```yaml\njobs:\n  test:\n    runs-on: ubuntu-latest\n    strategy:\n      fail-fast: false  # don't cancel other jobs if one fails\n      matrix:\n        node-version: [18, 20, 22]\n        postgres-version: [15, 16]\n        exclude:\n          - node-version: 18\n            postgres-version: 15  # skip this combination\n\n    services:\n      postgres:\n        image: postgres:${{ matrix.postgres-version }}-alpine\n        env:\n          POSTGRES_PASSWORD: test\n          POSTGRES_DB: testdb\n        ports: ['5432:5432']\n        options: >-\n          --health-cmd pg_isready\n          --health-interval 5s\n          --health-retries 5\n\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-node@v4\n        with:\n          node-version: ${{ matrix.node-version }}\n          cache: npm\n      - run: npm ci\n      - run: npm test\n        env:\n          DATABASE_URL: postgresql://postgres:test@localhost:5432/testdb\n          NODE_ENV: test\n\n    name: Node ${{ matrix.node-version }} / PG ${{ matrix.postgres-version }}\n```\n\nThis creates 5 parallel jobs (3 x 2 minus 1 exclusion). Set `fail-fast: false` so a failure in Node 18 doesn't cancel the Node 20 and 22 runs \u2014 you want to see all results. The `name` field makes the GitHub UI show descriptive job names instead of generic indices. Use `include` to add one-off combinations with extra environment variables. Each matrix job gets its own PostgreSQL service container, so tests don't interfere with each other.",
+    "tags": [
+      "github-actions",
+      "matrix",
+      "testing",
+      "ci-cd",
+      "postgresql"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Redis sorted sets for rate limiting with sliding window",
+    "body": "A sliding window rate limiter using Redis sorted sets provides accurate, per-user request counting without the boundary issues of fixed windows.\n\n```typescript\nimport { Redis } from 'ioredis';\n\nconst redis = new Redis(process.env.REDIS_URL);\n\nasync function isRateLimited(\n  key: string,\n  maxRequests: number,\n  windowMs: number\n): Promise<{ limited: boolean; remaining: number; resetMs: number }> {\n  const now = Date.now();\n  const windowStart = now - windowMs;\n  const member = `${now}:${crypto.randomUUID()}`;\n\n  // Atomic pipeline: clean old entries, add new, count, set expiry\n  const results = await redis\n    .pipeline()\n    .zremrangebyscore(key, 0, windowStart)        // remove expired entries\n    .zadd(key, now, member)                        // add current request\n    .zcard(key)                                    // count requests in window\n    .pexpire(key, windowMs)                        // auto-cleanup key\n    .exec();\n\n  const requestCount = results![2][1] as number;\n  const limited = requestCount > maxRequests;\n\n  if (limited) {\n    // Remove the request we just added since it's rejected\n    await redis.zrem(key, member);\n  }\n\n  // Find oldest entry to calculate reset time\n  const oldest = await redis.zrange(key, 0, 0, 'WITHSCORES');\n  const resetMs = oldest.length ? Number(oldest[1]) + windowMs - now : 0;\n\n  return {\n    limited,\n    remaining: Math.max(0, maxRequests - requestCount),\n    resetMs,\n  };\n}\n\n// Usage: 100 requests per 60 seconds per API key\nconst { limited, remaining } = await isRateLimited(\n  `ratelimit:${apiKey}`, 100, 60_000\n);\n```\n\nEach request is stored as a sorted set member scored by timestamp. The `ZREMRANGEBYSCORE` removes entries outside the window. This approach uses ~100 bytes per request entry, so for 1000 req/s with a 60s window, expect ~6MB per key.",
+    "tags": [
+      "redis",
+      "rate-limiting",
+      "sliding-window",
+      "sorted-set",
+      "api"
+    ]
+  },
+  {
+    "type": "tutorial",
+    "trust": "unverified",
+    "title": "Setting up Redis caching layer with cache-aside pattern in Next.js",
+    "body": "Implementing a Redis caching layer for Next.js API routes with TTL, serialization, and stampede protection.\n\n```typescript\nimport { Redis } from 'ioredis';\n\nconst redis = new Redis(process.env.REDIS_URL!);\n\ninterface CacheOptions {\n  ttl: number;       // seconds\n  staleWhileRevalidate?: number;  // serve stale data while refreshing\n}\n\nasync function cached<T>(\n  key: string,\n  fetcher: () => Promise<T>,\n  opts: CacheOptions\n): Promise<T> {\n  const raw = await redis.get(key);\n\n  if (raw) {\n    const { data, cachedAt } = JSON.parse(raw);\n    const age = (Date.now() - cachedAt) / 1000;\n\n    if (age < opts.ttl) return data as T;\n\n    // Stale-while-revalidate: return stale data, refresh in background\n    if (opts.staleWhileRevalidate && age < opts.ttl + opts.staleWhileRevalidate) {\n      refreshCache(key, fetcher, opts.ttl).catch(console.error);\n      return data as T;\n    }\n  }\n\n  // Cache miss or expired: fetch and cache\n  return refreshCache(key, fetcher, opts.ttl);\n}\n\nasync function refreshCache<T>(\n  key: string,\n  fetcher: () => Promise<T>,\n  ttl: number\n): Promise<T> {\n  // Stampede protection: only one caller refreshes\n  const lockKey = `lock:${key}`;\n  const acquired = await redis.set(lockKey, '1', 'NX', 'EX', 10);\n\n  if (!acquired) {\n    // Another caller is refreshing, wait briefly and read\n    await new Promise((r) => setTimeout(r, 100));\n    const raw = await redis.get(key);\n    if (raw) return JSON.parse(raw).data;\n  }\n\n  const data = await fetcher();\n  const payload = JSON.stringify({ data, cachedAt: Date.now() });\n  await redis.set(key, payload, 'EX', ttl + (ttl * 2)); // store longer than TTL for SWR\n  await redis.del(lockKey);\n  return data;\n}\n\n// Usage in API route\nexport async function GET(req: Request) {\n  const products = await cached('products:featured', () => db.query.products.findMany({\n    where: eq(products.featured, true),\n  }), { ttl: 60, staleWhileRevalidate: 300 });\n\n  return Response.json(products);\n}\n```\n\nThe `staleWhileRevalidate` option serves cached data immediately while refreshing in the background, similar to HTTP's `stale-while-revalidate` directive.",
+    "tags": [
+      "redis",
+      "caching",
+      "next-js",
+      "stale-while-revalidate",
+      "performance"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "PostgreSQL: column cannot be cast automatically to type \u2014 migration error",
+    "body": "When changing a column type, PostgreSQL requires an explicit cast if the conversion is not binary-compatible:\n\n```\nERROR: column \"price\" cannot be cast automatically to type integer\nHINT: You might need to specify \"USING price::integer\".\n```\n\nThis happens when running migrations that change column types:\n```sql\n-- Fails: text -> integer has no implicit cast\nALTER TABLE products ALTER COLUMN price TYPE integer;\n\n-- Fix: provide explicit USING clause\nALTER TABLE products ALTER COLUMN price TYPE integer USING price::integer;\n\n-- For more complex conversions:\nALTER TABLE products ALTER COLUMN price TYPE integer\n  USING (CASE WHEN price ~ '^[0-9]+$' THEN price::integer ELSE 0 END);\n\n-- varchar(255) -> text: this works without USING (binary compatible)\nALTER TABLE users ALTER COLUMN name TYPE text;\n\n-- text -> varchar(50): works but truncates silently if data exceeds 50 chars\nALTER TABLE users ALTER COLUMN name TYPE varchar(50);\n-- Better: check first\nSELECT max(length(name)) FROM users;\n```\n\nImportant: `ALTER COLUMN TYPE` rewrites the entire table, holding an AccessExclusiveLock. For large tables in production, this causes downtime. The zero-downtime alternative is:\n1. Add a new column with the target type\n2. Backfill data in batches\n3. Swap columns using rename\n\nDrizzle's `generate` will produce `ALTER COLUMN TYPE` statements when you change a column type in your schema. Always review generated migrations before applying to production. Some safe casts that don't rewrite: `varchar(N)` to `varchar(M)` where M > N, `varchar(N)` to `text`, `integer` to `bigint`.",
+    "tags": [
+      "postgresql",
+      "error",
+      "migrations",
+      "column-type",
+      "cast"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "community",
+    "title": "Docker multi-stage build with test stage for CI pipelines",
+    "body": "A multi-stage Dockerfile can include a test stage that CI runs without building the final production image, saving time when tests fail early.\n\n```dockerfile\n# Stage 1: Dependencies\nFROM node:20-alpine AS deps\nWORKDIR /app\nCOPY package.json package-lock.json ./\nRUN npm ci\n\n# Stage 2: Test (CI targets this stage)\nFROM deps AS test\nCOPY . .\nRUN npm run typecheck\nRUN npm run lint\nCMD [\"npm\", \"test\"]\n\n# Stage 3: Build (only runs if tests pass)\nFROM deps AS build\nCOPY . .\nRUN npm run build\n\n# Stage 4: Production\nFROM node:20-alpine AS production\nWORKDIR /app\nRUN addgroup -S app && adduser -S app -G app\nCOPY --from=build /app/dist ./dist\nCOPY --from=deps /app/node_modules ./node_modules\nCOPY package.json ./\nUSER app\nEXPOSE 3000\nCMD [\"node\", \"dist/index.js\"]\n```\n\nUsage in CI:\n```bash\n# Run tests only (stops at test stage)\ndocker build --target test -t myapp:test .\ndocker run --rm myapp:test\n\n# Build production image (skips test stage, goes deps -> build -> production)\ndocker build --target production -t myapp:latest .\n```\n\nThe `--target` flag tells Docker to stop at a specific stage. The production stage copies from `build` and `deps` but never references `test`, so the test stage's layers are not included in the production image. The non-root `app` user in the production stage follows security best practices. Layer caching means if only test files changed, the `deps` stage is cached.",
+    "tags": [
+      "docker",
+      "multi-stage",
+      "testing",
+      "ci-cd",
+      "dockerfile"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "unverified",
+    "title": "PostgreSQL: BRIN indexes for time-series and append-only data",
+    "body": "BRIN (Block Range Index) indexes store summary information about ranges of physical table blocks. They are extremely small and efficient for naturally ordered data like timestamps in append-only tables.\n\n```sql\n-- Perfect use case: time-series events table where rows are inserted in order\nCREATE TABLE events (\n  id bigserial PRIMARY KEY,\n  created_at timestamptz NOT NULL DEFAULT now(),\n  event_type text NOT NULL,\n  payload jsonb\n);\n\n-- BRIN index: ~1000x smaller than equivalent B-tree\nCREATE INDEX idx_events_created_brin ON events\n  USING brin (created_at)\n  WITH (pages_per_range = 32);\n\n-- Compare sizes on a 50M row table:\n-- B-tree on created_at: ~1.1GB\n-- BRIN on created_at: ~300KB\n```\n\nBRIN works by storing min/max values for each range of 32 (configurable) consecutive pages. When querying `WHERE created_at > '2025-01-01'`, PostgreSQL skips entire block ranges where the max value is before the threshold.\n\nWhen BRIN works well:\n- Data is physically ordered by the indexed column (INSERT order matches sort order)\n- Table is large (millions of rows)\n- Queries filter on ranges, not exact values\n\nWhen BRIN fails:\n```sql\n-- Random updates destroy physical ordering\nUPDATE events SET created_at = now() WHERE id = old_id;\n-- After many updates, BRIN becomes useless because block ranges\n-- contain mixed timestamps\n```\n\nCheck physical correlation with: `SELECT correlation FROM pg_stats WHERE tablename = 'events' AND attname = 'created_at';`. A value close to 1.0 or -1.0 means BRIN will be effective. Values near 0 mean the data is randomly ordered and BRIN won't help.",
+    "tags": [
+      "postgresql",
+      "brin",
+      "indexing",
+      "time-series",
+      "performance"
+    ]
+  },
+  {
+    "type": "config",
+    "trust": "verified",
+    "title": "Railway deployment \u2014 Dockerfile with health checks and internal networking",
+    "body": "Railway deploys Docker containers and provides managed PostgreSQL and Redis. Configuring health checks, internal networking, and environment variables correctly is essential.\n\n```dockerfile\nFROM node:20-alpine AS build\nWORKDIR /app\nCOPY package.json package-lock.json ./\nRUN npm ci\nCOPY . .\nRUN npm run build\n\nFROM node:20-alpine\nWORKDIR /app\nRUN apk add --no-cache wget\nCOPY --from=build /app/dist ./dist\nCOPY --from=build /app/node_modules ./node_modules\nCOPY package.json ./\n\nENV PORT=3000\nEXPOSE 3000\n\nHEALTHCHECK --interval=30s --timeout=5s --retries=3 \\\n  CMD wget -q --spider http://localhost:3000/health || exit 1\n\nCMD [\"node\", \"dist/index.js\"]\n```\n\nRailway configuration via `railway.toml`:\n```toml\n[build]\nbuilder = \"dockerfile\"\ndockerfilePath = \"Dockerfile\"\n\n[deploy]\nhealthcheckPath = \"/health\"\nhealthcheckTimeout = 300\nrestartPolicyType = \"on_failure\"\nrestartPolicyMaxRetries = 3\n```\n\nInternal networking between Railway services:\n```typescript\n// Use internal URLs for service-to-service communication\nconst REDIS_URL = process.env.REDIS_PRIVATE_URL;  // redis://default:pass@redis.railway.internal:6379\nconst DB_URL = process.env.DATABASE_PRIVATE_URL;   // postgresql://...@postgres.railway.internal:5432/railway\n\n// External URL for client-facing traffic\nconst PUBLIC_URL = process.env.RAILWAY_PUBLIC_DOMAIN; // myapp-production.up.railway.app\n```\n\nAlways use `*_PRIVATE_URL` for inter-service communication \u2014 it routes through Railway's internal network, avoiding egress charges and reducing latency. The public URL goes through Railway's proxy with TLS termination.",
+    "tags": [
+      "railway",
+      "deployment",
+      "docker",
+      "healthcheck",
+      "networking"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "unverified",
+    "title": "Fly.io: volume data loss when scaling to zero or redeploying",
+    "body": "Fly.io volumes are attached to specific machines and are NOT replicated. If a machine is destroyed during redeployment, the volume data can be lost.\n\n```toml\n# fly.toml\n[mounts]\n  source = \"myapp_data\"\n  destination = \"/data\"\n```\n\nDangerous scenarios:\n1. **Scaling to zero** with `fly scale count 0` destroys machines but keeps volumes. Scaling back up creates new machines that may not get the old volumes.\n2. **Redeployment** with `fly deploy` creates new machines and migrates volumes, but if the deploy fails mid-way, you can end up with orphaned volumes.\n3. **Multi-region deployments** \u2014 volumes are region-locked. A volume in `ord` (Chicago) cannot be accessed by a machine in `lhr` (London).\n\n```bash\n# Check volume status\nfly volumes list\n\n# Volumes show which machine they're attached to:\n# ID                   STATE   NAME        SIZE  REGION  MACHINE         CREATED AT\n# vol_abc123           created myapp_data  1GB   ord     d8901234        2025-01-01\n\n# Fork (snapshot) a volume before risky operations\nfly volumes fork vol_abc123\n```\n\nBest practices: do NOT use Fly volumes for PostgreSQL data \u2014 use Fly Postgres (managed) or an external database. Use volumes only for ephemeral caches or file uploads that are also stored in object storage. Always `fly volumes fork` before destructive operations. For SQLite on Fly, use LiteFS for replication across machines.",
+    "tags": [
+      "fly-io",
+      "volumes",
+      "gotcha",
+      "data-persistence",
+      "deployment"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "community",
+    "title": "Render deployment \u2014 auto-deploy from GitHub with build and health checks",
+    "body": "Render connects directly to GitHub repositories and auto-deploys on push. Configuration is done via `render.yaml` (Infrastructure as Code) or the dashboard.\n\n```yaml\n# render.yaml \u2014 Blueprint for entire infrastructure\nservices:\n  - type: web\n    name: api\n    runtime: node\n    buildCommand: npm ci && npm run build\n    startCommand: node dist/index.js\n    healthCheckPath: /health\n    envVars:\n      - key: DATABASE_URL\n        fromDatabase:\n          name: mydb\n          property: connectionString\n      - key: REDIS_URL\n        fromService:\n          name: cache\n          type: redis\n          property: connectionString\n      - key: NODE_ENV\n        value: production\n    autoDeploy: true\n    plan: starter  # $7/mo, no sleep\n\n  - type: worker\n    name: job-processor\n    runtime: node\n    buildCommand: npm ci && npm run build\n    startCommand: node dist/worker.js\n    envVars:\n      - key: DATABASE_URL\n        fromDatabase:\n          name: mydb\n          property: connectionString\n\ndatabases:\n  - name: mydb\n    plan: starter  # $7/mo, 1GB storage\n    postgresMajorVersion: 16\n```\n\nKey behaviors:\n- Free web services spin down after 15 minutes of inactivity (50-second cold start).\n- `healthCheckPath` must return 200 within the timeout or Render rolls back the deploy.\n- Environment variables from `fromDatabase` and `fromService` are auto-populated when services are created together.\n- Render does not support Docker Compose \u2014 use `render.yaml` to define multi-service architectures.\n- Build caching is automatic: Render caches `node_modules` between deploys if `package-lock.json` hasn't changed.\n- Preview environments: enable per-PR deploys in settings for staging-like environments on each pull request.",
+    "tags": [
+      "render",
+      "deployment",
+      "github",
+      "infrastructure-as-code",
+      "devops"
+    ]
+  },
+  {
+    "type": "comparison",
+    "trust": "unverified",
+    "title": "Redis pub/sub vs Streams \u2014 choosing the right messaging pattern",
+    "body": "Redis offers two messaging mechanisms: Pub/Sub for fire-and-forget broadcasting, and Streams for persistent, replayable message queues.\n\n**Pub/Sub:**\n```typescript\n// Publisher\nawait redis.publish('notifications', JSON.stringify({\n  userId: '123', type: 'order_shipped', orderId: '456'\n}));\n\n// Subscriber\nconst sub = new Redis(process.env.REDIS_URL);\nsub.subscribe('notifications');\nsub.on('message', (channel, message) => {\n  const event = JSON.parse(message);\n  console.log(`Received on ${channel}:`, event);\n});\n```\nPros: simple, low latency. Cons: messages are lost if no subscriber is connected; no history, no acknowledgment, no consumer groups.\n\n**Streams (Redis 5+):**\n```typescript\n// Producer\nawait redis.xadd('events', '*',\n  'type', 'order_shipped',\n  'userId', '123',\n  'orderId', '456'\n);\n\n// Consumer group (multiple workers share the load)\nawait redis.xgroup('CREATE', 'events', 'workers', '0', 'MKSTREAM');\n\n// Worker reads and acknowledges\nconst messages = await redis.xreadgroup(\n  'GROUP', 'workers', 'worker-1',\n  'COUNT', 10, 'BLOCK', 5000,\n  'STREAMS', 'events', '>'\n);\n\nfor (const [id, fields] of messages[0][1]) {\n  await processEvent(Object.fromEntries(fields));\n  await redis.xack('events', 'workers', id);\n}\n```\nPros: persistent, replayable, consumer groups for parallel processing, acknowledgment. Cons: more complex, higher memory usage.\n\nRule of thumb: use Pub/Sub for real-time notifications where message loss is acceptable (WebSocket broadcasts, cache invalidation). Use Streams for job processing, event sourcing, and any case where messages must not be lost.",
+    "tags": [
+      "redis",
+      "pub-sub",
+      "streams",
+      "messaging",
+      "patterns"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "community",
+    "title": "Drizzle ORM \u2014 generating and applying migrations with custom SQL",
+    "body": "Drizzle's migration workflow lets you generate SQL from schema changes and inject custom SQL for operations the schema DSL cannot express.\n\n```bash\n# Generate migration from schema diff\nnpx drizzle-kit generate\n# Creates: drizzle/0001_add_search_vector.sql\n```\n\nThe generated SQL might look like:\n```sql\nALTER TABLE \"articles\" ADD COLUMN \"search_vector\" tsvector;\n```\n\nBut you need a GIN index and trigger \u2014 add a custom migration:\n```bash\n# Create a custom migration file\ntouch drizzle/0002_custom_search_index.sql\n```\n\n```sql\n-- drizzle/0002_custom_search_index.sql\nCREATE INDEX CONCURRENTLY idx_articles_search\n  ON articles USING gin (search_vector);\n\nCREATE FUNCTION articles_search_update() RETURNS trigger AS $$\nBEGIN\n  NEW.search_vector :=\n    setweight(to_tsvector('english', coalesce(NEW.title, '')), 'A') ||\n    setweight(to_tsvector('english', coalesce(NEW.body, '')), 'B');\n  RETURN NEW;\nEND;\n$$ LANGUAGE plpgsql;\n\nCREATE TRIGGER trg_articles_search\n  BEFORE INSERT OR UPDATE ON articles\n  FOR EACH ROW EXECUTE FUNCTION articles_search_update();\n```\n\nApply migrations programmatically:\n```typescript\nimport { drizzle } from 'drizzle-orm/node-postgres';\nimport { migrate } from 'drizzle-orm/node-postgres/migrator';\n\nconst db = drizzle(process.env.DATABASE_URL!);\nawait migrate(db, { migrationsFolder: './drizzle' });\n```\n\nGotcha: `CREATE INDEX CONCURRENTLY` cannot run inside a transaction. Drizzle's migrator wraps each file in a transaction by default. You must run concurrent index migrations outside the migrator, as a separate step in your deploy script.",
+    "tags": [
+      "drizzle-orm",
+      "migrations",
+      "custom-sql",
+      "postgresql",
+      "full-text-search"
+    ]
+  }
+]

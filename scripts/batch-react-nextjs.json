@@ -1,0 +1,535 @@
+[
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "React 19 Server Components \u2014 data fetching without client-side state",
+    "body": "Server Components in React 19 run only on the server and can directly access databases, file systems, and APIs without exposing credentials to the client. They cannot use hooks like useState or useEffect.\n\n```tsx\n// app/users/page.tsx \u2014 this is a Server Component by default\nimport { db } from '@/lib/db';\n\nexport default async function UsersPage() {\n  const users = await db.query.users.findMany({\n    orderBy: (users, { desc }) => [desc(users.createdAt)],\n    limit: 50,\n  });\n\n  return (\n    <ul>\n      {users.map((user) => (\n        <li key={user.id}>{user.name} \u2014 {user.email}</li>\n      ))}\n    </ul>\n  );\n}\n```\n\nKey rules: Server Components are the default in Next.js App Router. They cannot contain event handlers, browser APIs, or React hooks. To add interactivity, extract a Client Component with `'use client'` and pass server-fetched data as props. Server Components can import Client Components, but not the reverse.",
+    "tags": [
+      "react",
+      "react-19",
+      "server-components",
+      "next.js",
+      "data-fetching"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "React 19 useOptimistic \u2014 instant UI updates before server confirms",
+    "body": "The `useOptimistic` hook lets you show an optimistic state while an async action (like a Server Action) is pending. It reverts automatically if the action fails.\n\n```tsx\n'use client';\nimport { useOptimistic } from 'react';\nimport { addTodo } from '@/app/actions';\n\nexport function TodoList({ todos }: { todos: Todo[] }) {\n  const [optimisticTodos, addOptimisticTodo] = useOptimistic(\n    todos,\n    (state, newTodo: Todo) => [...state, newTodo]\n  );\n\n  async function handleAdd(formData: FormData) {\n    const title = formData.get('title') as string;\n    addOptimisticTodo({ id: crypto.randomUUID(), title, completed: false });\n    await addTodo(formData);\n  }\n\n  return (\n    <form action={handleAdd}>\n      <input name=\"title\" required />\n      <button type=\"submit\">Add</button>\n      <ul>\n        {optimisticTodos.map((t) => (\n          <li key={t.id}>{t.title}</li>\n        ))}\n      </ul>\n    </form>\n  );\n}\n```\n\nThe second argument to `useOptimistic` is a reducer that merges the optimistic value into the current state. When the action completes and the parent re-renders with new `todos`, the optimistic state is replaced.",
+    "tags": [
+      "react",
+      "react-19",
+      "useOptimistic",
+      "optimistic-ui",
+      "forms"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "React 19 useFormStatus \u2014 show loading state in form submit buttons",
+    "body": "The `useFormStatus` hook reads the status of a parent `<form>`. It must be called from a component rendered inside the form, not from the component that renders the form itself.\n\n```tsx\n'use client';\nimport { useFormStatus } from 'react-dom';\n\nfunction SubmitButton() {\n  const { pending, data, method, action } = useFormStatus();\n  return (\n    <button type=\"submit\" disabled={pending}>\n      {pending ? 'Saving...' : 'Save'}\n    </button>\n  );\n}\n\n// Usage:\nexport function MyForm({ saveAction }: { saveAction: (fd: FormData) => Promise<void> }) {\n  return (\n    <form action={saveAction}>\n      <input name=\"name\" required />\n      <SubmitButton />\n    </form>\n  );\n}\n```\n\nCommon mistake: calling `useFormStatus()` in the same component that renders `<form>`. It will always return `{ pending: false }` in that case because the hook looks for a parent form in the React tree, not a sibling. Always extract the submit button into its own component.",
+    "tags": [
+      "react",
+      "react-19",
+      "useFormStatus",
+      "forms",
+      "loading-state"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "React 19 useActionState \u2014 form actions with state and validation",
+    "body": "The `useActionState` hook (renamed from `useFormState` in React 19) wraps a Server Action to provide previous state, enabling progressive enhancement and validation errors.\n\n```tsx\n'use client';\nimport { useActionState } from 'react';\nimport { createUser } from '@/app/actions';\n\ntype State = { error?: string; success?: boolean };\n\nexport function SignupForm() {\n  const [state, formAction, isPending] = useActionState(\n    createUser,\n    { error: undefined, success: false }\n  );\n\n  return (\n    <form action={formAction}>\n      <input name=\"email\" type=\"email\" required />\n      <input name=\"password\" type=\"password\" required />\n      {state.error && <p className=\"text-red-500\">{state.error}</p>}\n      {state.success && <p className=\"text-green-500\">Account created!</p>}\n      <button disabled={isPending}>\n        {isPending ? 'Creating...' : 'Sign Up'}\n      </button>\n    </form>\n  );\n}\n```\n\nThe Server Action must accept `(prevState: State, formData: FormData) => Promise<State>` as its signature. The third return value `isPending` was added in React 19 \u2014 it replaces the need for a separate `useFormStatus` in many cases.",
+    "tags": [
+      "react",
+      "react-19",
+      "useActionState",
+      "forms",
+      "validation",
+      "server-actions"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "React 19 Server Actions \u2014 defining and using in Next.js",
+    "body": "Server Actions are async functions that run on the server. They are defined with `'use server'` either at the top of a file or inline in a function body.\n\n```tsx\n// app/actions.ts\n'use server';\n\nimport { db } from '@/lib/db';\nimport { revalidatePath } from 'next/cache';\nimport { z } from 'zod';\n\nconst schema = z.object({\n  title: z.string().min(1).max(200),\n});\n\nexport async function createPost(prevState: any, formData: FormData) {\n  const parsed = schema.safeParse({\n    title: formData.get('title'),\n  });\n\n  if (!parsed.success) {\n    return { error: parsed.error.flatten().fieldErrors };\n  }\n\n  await db.insert(posts).values({ title: parsed.data.title });\n  revalidatePath('/posts');\n  return { success: true };\n}\n```\n\nServer Actions can be passed to `<form action={...}>`, called from event handlers, or invoked from `useActionState`. They support file uploads via `FormData`, can call `redirect()`, and can revalidate cached data. Always validate inputs \u2014 Server Actions are public HTTP endpoints under the hood.",
+    "tags": [
+      "react",
+      "next.js",
+      "server-actions",
+      "forms",
+      "validation",
+      "revalidation"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "community",
+    "title": "Next.js App Router layouts \u2014 nested layout composition",
+    "body": "Layouts in the App Router wrap child pages and persist across navigations. They receive a `children` prop and do not re-render when navigating between sibling routes.\n\n```tsx\n// app/dashboard/layout.tsx\nimport { Sidebar } from '@/components/sidebar';\nimport { getUser } from '@/lib/auth';\nimport { redirect } from 'next/navigation';\n\nexport default async function DashboardLayout({\n  children,\n}: {\n  children: React.ReactNode;\n}) {\n  const user = await getUser();\n  if (!user) redirect('/login');\n\n  return (\n    <div className=\"flex min-h-screen\">\n      <Sidebar user={user} />\n      <main className=\"flex-1 p-6\">{children}</main>\n    </div>\n  );\n}\n```\n\nKey behavior: Layouts are Server Components by default. They do NOT re-render on navigation \u2014 React preserves their state. This means you cannot use `searchParams` or `pathname` in layouts (use `useSearchParams()` in a Client Component child instead). Each route segment can have its own layout, and they nest automatically. The root layout (`app/layout.tsx`) must contain `<html>` and `<body>` tags.",
+    "tags": [
+      "next.js",
+      "app-router",
+      "layouts",
+      "navigation",
+      "server-components"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "community",
+    "title": "Next.js App Router loading.tsx \u2014 instant loading states with Suspense",
+    "body": "A `loading.tsx` file in any route segment automatically wraps the page in a React Suspense boundary, showing a fallback while the page's async data loads.\n\n```tsx\n// app/dashboard/loading.tsx\nexport default function DashboardLoading() {\n  return (\n    <div className=\"animate-pulse space-y-4 p-6\">\n      <div className=\"h-8 w-48 rounded bg-gray-200\" />\n      <div className=\"grid grid-cols-3 gap-4\">\n        {Array.from({ length: 6 }).map((_, i) => (\n          <div key={i} className=\"h-32 rounded bg-gray-200\" />\n        ))}\n      </div>\n    </div>\n  );\n}\n```\n\nThis is equivalent to wrapping your page with `<Suspense fallback={<DashboardLoading />}>`. The loading state shows instantly on navigation while the Server Component fetches data. For more granular control, use `<Suspense>` boundaries directly inside your page to stream in sections independently. The loading file applies to `page.tsx` in the same segment and all nested child segments unless they define their own `loading.tsx`.",
+    "tags": [
+      "next.js",
+      "app-router",
+      "loading",
+      "suspense",
+      "skeleton-ui"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Next.js App Router error.tsx \u2014 error boundaries for route segments",
+    "body": "An `error.tsx` file creates a React error boundary that catches errors in its route segment and all child segments, preventing the entire app from crashing.\n\n```tsx\n'use client'; // Error boundaries must be Client Components\n\nimport { useEffect } from 'react';\n\nexport default function DashboardError({\n  error,\n  reset,\n}: {\n  error: Error & { digest?: string };\n  reset: () => void;\n}) {\n  useEffect(() => {\n    console.error('Dashboard error:', error);\n    // Send to error tracking service\n  }, [error]);\n\n  return (\n    <div className=\"rounded-lg border border-red-200 bg-red-50 p-6\">\n      <h2 className=\"text-lg font-semibold text-red-800\">Something went wrong</h2>\n      <p className=\"mt-2 text-red-600\">{error.message}</p>\n      <button\n        onClick={reset}\n        className=\"mt-4 rounded bg-red-600 px-4 py-2 text-white\"\n      >\n        Try again\n      </button>\n    </div>\n  );\n}\n```\n\nThe `reset` function re-renders the error boundary's children without a full page reload. The `digest` property is a hash generated by Next.js for server-side errors \u2014 the actual error message is not sent to the client in production. `error.tsx` does NOT catch errors in `layout.tsx` of the same segment \u2014 use `global-error.tsx` for the root layout.",
+    "tags": [
+      "next.js",
+      "app-router",
+      "error-boundary",
+      "error-handling",
+      "resilience"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "community",
+    "title": "Next.js parallel routes \u2014 rendering multiple pages simultaneously",
+    "body": "Parallel routes let you render multiple pages in the same layout simultaneously using named slots. Slots are defined with the `@folder` convention.\n\n```\napp/dashboard/\n  layout.tsx\n  page.tsx\n  @analytics/page.tsx\n  @analytics/loading.tsx\n  @team/page.tsx\n  @team/default.tsx\n```\n\n```tsx\n// app/dashboard/layout.tsx\nexport default function DashboardLayout({\n  children,\n  analytics,\n  team,\n}: {\n  children: React.ReactNode;\n  analytics: React.ReactNode;\n  team: React.ReactNode;\n}) {\n  return (\n    <div>\n      <div>{children}</div>\n      <div className=\"grid grid-cols-2 gap-4\">\n        <div>{analytics}</div>\n        <div>{team}</div>\n      </div>\n    </div>\n  );\n}\n```\n\nEach slot can have its own `loading.tsx`, `error.tsx`, and nested routes. A `default.tsx` file is required for slots that may not match the current URL \u2014 it defines the fallback content. Parallel routes are useful for dashboards, modals, and conditional rendering based on auth state. Each slot streams independently.",
+    "tags": [
+      "next.js",
+      "app-router",
+      "parallel-routes",
+      "slots",
+      "dashboard"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "community",
+    "title": "Next.js route groups \u2014 organizing routes without affecting URL paths",
+    "body": "Route groups use the `(folderName)` convention to organize routes without adding the folder name to the URL path. This is useful for separating concerns like auth vs. marketing.\n\n```\napp/\n  (marketing)/\n    layout.tsx         # Marketing-specific layout\n    page.tsx           # URL: /\n    about/page.tsx     # URL: /about\n    pricing/page.tsx   # URL: /pricing\n  (dashboard)/\n    layout.tsx         # Dashboard layout with sidebar\n    dashboard/page.tsx # URL: /dashboard\n    settings/page.tsx  # URL: /settings\n  (auth)/\n    layout.tsx         # Minimal auth layout\n    login/page.tsx     # URL: /login\n    signup/page.tsx    # URL: /signup\n```\n\nEach route group can have its own `layout.tsx`, which means you can have completely different layouts for different sections without nesting. Important: if two route groups both try to define a `page.tsx` at the same level, Next.js will throw a build error because the URL would be ambiguous. Route groups can also be used to opt specific segments into or out of layouts.",
+    "tags": [
+      "next.js",
+      "app-router",
+      "route-groups",
+      "organization",
+      "layouts"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Next.js revalidatePath and revalidateTag \u2014 on-demand cache invalidation",
+    "body": "Next.js provides two functions for invalidating cached data after mutations: `revalidatePath` for route-based and `revalidateTag` for tag-based invalidation.\n\n```tsx\n// app/actions.ts\n'use server';\n\nimport { revalidatePath, revalidateTag } from 'next/cache';\n\nexport async function updatePost(id: string, formData: FormData) {\n  await db.update(posts).set({ title: formData.get('title') as string }).where(eq(posts.id, id));\n\n  // Option 1: Revalidate a specific path\n  revalidatePath('/posts');\n  revalidatePath(`/posts/${id}`);\n\n  // Option 2: Revalidate by tag (more granular)\n  revalidateTag('posts');\n  revalidateTag(`post-${id}`);\n}\n\n// Using tags with fetch:\nasync function getPost(id: string) {\n  const res = await fetch(`https://api.example.com/posts/${id}`, {\n    next: { tags: [`post-${id}`, 'posts'] },\n  });\n  return res.json();\n}\n```\n\n`revalidatePath('/')` revalidates everything. `revalidatePath('/posts', 'layout')` revalidates the layout and all pages below it. Tags are more surgical \u2014 they only invalidate fetches that were tagged with that specific string. Prefer tags over paths for fine-grained control. Both functions only mark data as stale; the actual re-fetch happens on the next request.",
+    "tags": [
+      "next.js",
+      "caching",
+      "revalidatePath",
+      "revalidateTag",
+      "server-actions"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Next.js fetch cache behavior \u2014 cached by default in Server Components",
+    "body": "In Next.js App Router, `fetch()` in Server Components is cached by default. This catches many developers off guard when they expect fresh data on every request.\n\n```tsx\n// This response is cached indefinitely by default (static rendering)\nconst data = await fetch('https://api.example.com/data');\n\n// To opt out of caching entirely:\nconst data = await fetch('https://api.example.com/data', {\n  cache: 'no-store',\n});\n\n// To revalidate every 60 seconds (ISR-style):\nconst data = await fetch('https://api.example.com/data', {\n  next: { revalidate: 60 },\n});\n\n// To tag for on-demand revalidation:\nconst data = await fetch('https://api.example.com/data', {\n  next: { tags: ['my-data'] },\n});\n```\n\nNote: In Next.js 15, the default changed \u2014 `fetch` is no longer cached by default (you must opt in with `cache: 'force-cache'`). If you are on Next.js 14, add `cache: 'no-store'` or `export const dynamic = 'force-dynamic'` to get fresh data. For non-fetch data sources (like direct DB queries), use `unstable_cache` or the `connection()` function to control caching behavior.",
+    "tags": [
+      "next.js",
+      "caching",
+      "fetch",
+      "static-rendering",
+      "ISR"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Next.js hydration mismatch \u2014 Text content does not match server-rendered HTML",
+    "body": "Error message: `Error: Text content does not match server-rendered HTML. Warning: Text content did not match. Server: \"...\" Client: \"...\"`\n\nThis occurs when the HTML generated on the server differs from what React renders on the client during hydration.\n\n```tsx\n// BAD \u2014 causes hydration mismatch\nexport default function Page() {\n  return <p>Current time: {new Date().toLocaleTimeString()}</p>; // Different on server vs client\n}\n\n// BAD \u2014 nesting <div> inside <p>\nexport default function Page() {\n  return <p><div>Invalid HTML nesting</div></p>;\n}\n\n// FIX 1 \u2014 use useEffect for client-only values\n'use client';\nimport { useState, useEffect } from 'react';\n\nexport function Clock() {\n  const [time, setTime] = useState<string | null>(null);\n  useEffect(() => {\n    setTime(new Date().toLocaleTimeString());\n  }, []);\n  return <p>Current time: {time ?? 'Loading...'}</p>;\n}\n\n// FIX 2 \u2014 suppress hydration warning when intentional\n<time suppressHydrationWarning>{new Date().toISOString()}</time>\n```\n\nCommon causes: using `Date.now()`, `Math.random()`, browser-only APIs like `window.innerWidth`, different locales between server and client, and browser extensions modifying the DOM. Invalid HTML nesting (e.g., `<div>` inside `<p>`) also causes this.",
+    "tags": [
+      "react",
+      "next.js",
+      "hydration",
+      "error",
+      "SSR",
+      "debugging"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Next.js 'use client' boundary errors \u2014 importing server-only code in Client Components",
+    "body": "Error message: `You're importing a component that needs server-only. That only works in a Server Component but one of its parents is marked with \"use client\", so it's a Client Component.`\n\nThis happens when a Client Component (or its dependency tree) imports code that can only run on the server.\n\n```tsx\n// lib/db.ts\nimport 'server-only'; // Marks this module as server-only\nimport { drizzle } from 'drizzle-orm/neon-http';\nexport const db = drizzle(process.env.DATABASE_URL!);\n\n// components/UserList.tsx\n'use client';\nimport { db } from '@/lib/db'; // ERROR! Can't import server-only in client\n\n// FIX: Pass data as props from a Server Component\n// app/users/page.tsx (Server Component)\nimport { db } from '@/lib/db';\nimport { UserList } from '@/components/UserList';\n\nexport default async function UsersPage() {\n  const users = await db.query.users.findMany();\n  return <UserList users={users} />;\n}\n\n// components/UserList.tsx\n'use client';\nexport function UserList({ users }: { users: User[] }) {\n  // Now uses serializable props, no server imports\n  return <ul>{users.map(u => <li key={u.id}>{u.name}</li>)}</ul>;\n}\n```\n\nThe `'use client'` directive creates a boundary. Everything imported into that file becomes part of the client bundle. Use the `server-only` package to get clear error messages instead of subtle runtime failures.",
+    "tags": [
+      "next.js",
+      "use-client",
+      "server-components",
+      "error",
+      "boundaries"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "community",
+    "title": "Next.js metadata API type error \u2014 generateMetadata must be async",
+    "body": "Error message: `Type '() => { title: string; }' is not assignable to type '(props: ...) => Promise<Metadata> | Metadata'.`\n\nThe metadata API in Next.js App Router has specific type requirements that can cause confusing TypeScript errors.\n\n```tsx\nimport type { Metadata } from 'next';\n\n// Static metadata \u2014 use export const\nexport const metadata: Metadata = {\n  title: 'My Page',\n  description: 'Page description',\n};\n\n// Dynamic metadata \u2014 export an async function\nexport async function generateMetadata({\n  params,\n}: {\n  params: Promise<{ slug: string }>;\n}): Promise<Metadata> {\n  const { slug } = await params; // In Next.js 15, params is a Promise\n  const post = await getPost(slug);\n\n  return {\n    title: post.title,\n    description: post.excerpt,\n    openGraph: {\n      title: post.title,\n      images: [post.coverImage],\n    },\n  };\n}\n```\n\nCommon mistakes: (1) Exporting both `metadata` and `generateMetadata` in the same file \u2014 only one is allowed. (2) In Next.js 15, `params` and `searchParams` are now Promises \u2014 you must `await` them. (3) Using `generateMetadata` in a `'use client'` file \u2014 metadata generation only works in Server Components. (4) Forgetting to type the return as `Promise<Metadata>`.",
+    "tags": [
+      "next.js",
+      "metadata",
+      "SEO",
+      "typescript",
+      "error",
+      "app-router"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "community",
+    "title": "React.memo \u2014 preventing unnecessary re-renders of expensive components",
+    "body": "`React.memo` wraps a component so it only re-renders when its props change (shallow comparison). Essential for expensive list items and charts.\n\n```tsx\nimport { memo } from 'react';\n\ninterface DataRowProps {\n  id: string;\n  name: string;\n  value: number;\n  onUpdate: (id: string, value: number) => void;\n}\n\nexport const DataRow = memo(function DataRow({ id, name, value, onUpdate }: DataRowProps) {\n  console.log(`Rendering DataRow ${id}`);\n  return (\n    <tr>\n      <td>{name}</td>\n      <td>{value}</td>\n      <td>\n        <button onClick={() => onUpdate(id, value + 1)}>+1</button>\n      </td>\n    </tr>\n  );\n});\n\n// With custom comparison:\nexport const ExpensiveChart = memo(\n  function ExpensiveChart({ data, config }: ChartProps) {\n    return <canvas ref={renderChart(data, config)} />;\n  },\n  (prevProps, nextProps) => {\n    return prevProps.data.length === nextProps.data.length\n      && prevProps.config.type === nextProps.config.type;\n  }\n);\n```\n\nImportant: `React.memo` only prevents re-renders from parent updates. If the component uses `useContext`, it will still re-render when the context value changes. Also, if you pass a new function or object reference as a prop on every render, memo is useless \u2014 combine with `useCallback`/`useMemo`.",
+    "tags": [
+      "react",
+      "performance",
+      "React.memo",
+      "memoization",
+      "re-renders"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "useMemo and useCallback \u2014 stabilizing references to prevent child re-renders",
+    "body": "Use `useMemo` to memoize computed values and `useCallback` to memoize functions, preventing unnecessary re-renders of `memo`-wrapped children.\n\n```tsx\n'use client';\nimport { useMemo, useCallback, useState } from 'react';\nimport { DataTable } from './DataTable'; // wrapped in React.memo\n\nexport function Dashboard({ items }: { items: Item[] }) {\n  const [search, setSearch] = useState('');\n  const [sortKey, setSortKey] = useState<'name' | 'date'>('name');\n\n  // useMemo: recompute only when items, search, or sortKey change\n  const filteredItems = useMemo(() => {\n    const filtered = items.filter((item) =>\n      item.name.toLowerCase().includes(search.toLowerCase())\n    );\n    return filtered.sort((a, b) => a[sortKey].localeCompare(b[sortKey]));\n  }, [items, search, sortKey]);\n\n  // useCallback: stable function reference\n  const handleDelete = useCallback(async (id: string) => {\n    await fetch(`/api/items/${id}`, { method: 'DELETE' });\n  }, []);\n\n  return (\n    <div>\n      <input value={search} onChange={(e) => setSearch(e.target.value)} />\n      <DataTable items={filteredItems} onDelete={handleDelete} />\n    </div>\n  );\n}\n```\n\nDon't overuse these hooks \u2014 they have overhead. Only memoize when: (1) passing values to `memo`-wrapped children, (2) values are expensive to compute, or (3) values are dependencies of other hooks. The React compiler (React 19+) auto-memoizes, reducing the need for manual memoization.",
+    "tags": [
+      "react",
+      "performance",
+      "useMemo",
+      "useCallback",
+      "memoization"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Zustand state management \u2014 setup and patterns for Next.js App Router",
+    "body": "Zustand is a lightweight state management library that works well with Next.js App Router. It avoids the provider-wrapping pattern and has a simple API.\n\n```tsx\n// stores/useCartStore.ts\nimport { create } from 'zustand';\nimport { persist } from 'zustand/middleware';\n\ninterface CartItem {\n  id: string;\n  name: string;\n  quantity: number;\n  price: number;\n}\n\ninterface CartStore {\n  items: CartItem[];\n  addItem: (item: Omit<CartItem, 'quantity'>) => void;\n  removeItem: (id: string) => void;\n  total: () => number;\n}\n\nexport const useCartStore = create<CartStore>()(\n  persist(\n    (set, get) => ({\n      items: [],\n      addItem: (item) =>\n        set((state) => {\n          const existing = state.items.find((i) => i.id === item.id);\n          if (existing) {\n            return {\n              items: state.items.map((i) =>\n                i.id === item.id ? { ...i, quantity: i.quantity + 1 } : i\n              ),\n            };\n          }\n          return { items: [...state.items, { ...item, quantity: 1 }] };\n        }),\n      removeItem: (id) =>\n        set((state) => ({ items: state.items.filter((i) => i.id !== id) })),\n      total: () => get().items.reduce((sum, i) => sum + i.price * i.quantity, 0),\n    }),\n    { name: 'cart-storage' }\n  )\n);\n```\n\nWith `persist` middleware, state survives page refreshes via localStorage. In Next.js, Zustand stores are client-only \u2014 use them in `'use client'` components. For SSR hydration, use `zustand/middleware`'s `onRehydrateStorage` to handle mismatches.",
+    "tags": [
+      "react",
+      "zustand",
+      "state-management",
+      "next.js",
+      "persist"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "community",
+    "title": "TanStack Query (React Query) \u2014 data fetching patterns with Next.js App Router",
+    "body": "TanStack Query manages server state with caching, background refetching, and stale-while-revalidate. Setting it up with Next.js App Router requires a provider in a Client Component.\n\n```tsx\n// providers/query-provider.tsx\n'use client';\nimport { QueryClient, QueryClientProvider } from '@tanstack/react-query';\nimport { useState } from 'react';\n\nexport function QueryProvider({ children }: { children: React.ReactNode }) {\n  const [client] = useState(\n    () => new QueryClient({\n      defaultOptions: {\n        queries: {\n          staleTime: 60 * 1000,\n          refetchOnWindowFocus: false,\n        },\n      },\n    })\n  );\n  return <QueryClientProvider client={client}>{children}</QueryClientProvider>;\n}\n\n// hooks/useUsers.ts\nimport { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';\n\nexport function useUsers() {\n  return useQuery({\n    queryKey: ['users'],\n    queryFn: async () => {\n      const res = await fetch('/api/users');\n      if (!res.ok) throw new Error('Failed to fetch');\n      return res.json() as Promise<User[]>;\n    },\n  });\n}\n\nexport function useDeleteUser() {\n  const queryClient = useQueryClient();\n  return useMutation({\n    mutationFn: (id: string) => fetch(`/api/users/${id}`, { method: 'DELETE' }),\n    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['users'] }),\n  });\n}\n```\n\nAdd `<QueryProvider>` in your root layout. Use `useState` to create the client (not module-level) to avoid sharing state between requests in SSR.",
+    "tags": [
+      "react",
+      "tanstack-query",
+      "react-query",
+      "data-fetching",
+      "next.js",
+      "caching"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Next.js Server Actions error handling \u2014 errors don't propagate to the client by default",
+    "body": "When a Server Action throws an error, Next.js catches it and only sends a generic error to the client for security. The actual error message is replaced with a digest hash in production.\n\n```tsx\n// BAD \u2014 throwing errors in Server Actions\n'use server';\nexport async function createPost(formData: FormData) {\n  const result = await db.insert(posts).values({ ... });\n  if (!result) throw new Error('DB insert failed'); // Client won't see this message!\n}\n\n// GOOD \u2014 return errors as data\n'use server';\nexport async function createPost(prevState: any, formData: FormData) {\n  try {\n    const parsed = schema.safeParse(Object.fromEntries(formData));\n    if (!parsed.success) {\n      return { success: false, error: 'Validation failed', fieldErrors: parsed.error.flatten().fieldErrors };\n    }\n    await db.insert(posts).values(parsed.data);\n    revalidatePath('/posts');\n    return { success: true, error: null };\n  } catch (e) {\n    return { success: false, error: 'Failed to create post. Please try again.' };\n  }\n}\n```\n\nPattern: return a discriminated union `{ success: boolean; error?: string }` from Server Actions instead of throwing. Use `useActionState` to consume the returned state. Only use `throw` when you want the error boundary to catch it (e.g., for truly unexpected errors).",
+    "tags": [
+      "next.js",
+      "server-actions",
+      "error-handling",
+      "gotcha",
+      "security"
+    ]
+  },
+  {
+    "type": "comparison",
+    "trust": "community",
+    "title": "Next.js App Router \u2014 when to use Server Components vs Client Components",
+    "body": "Choosing between Server and Client Components is one of the most important decisions in Next.js App Router.\n\n```\n| Use Case                          | Server Component | Client Component |\n|-----------------------------------|------------------|------------------|\n| Fetch data from DB/API            | Yes              | No (use hooks)   |\n| Access backend resources           | Yes              | No               |\n| Keep secrets (API keys, tokens)   | Yes              | No               |\n| Reduce client JS bundle           | Yes              | No               |\n| Use useState/useEffect            | No               | Yes              |\n| Use event handlers (onClick)      | No               | Yes              |\n| Use browser APIs (window, etc)    | No               | Yes              |\n| Use React context                 | No               | Yes              |\n| Use custom hooks with state       | No               | Yes              |\n```\n\nBest practice: default to Server Components. Only add `'use client'` when you need interactivity. Push `'use client'` boundaries as far down the tree as possible \u2014 wrap only the interactive leaf component, not the entire page.\n\n```tsx\n// Server Component (page)\nexport default async function ProductPage({ params }: { params: Promise<{ id: string }> }) {\n  const { id } = await params;\n  const product = await getProduct(id);\n  return (\n    <div>\n      <h1>{product.name}</h1>\n      <p>{product.description}</p>\n      <AddToCartButton productId={id} /> {/* Only this is 'use client' */}\n    </div>\n  );\n}\n```",
+    "tags": [
+      "next.js",
+      "server-components",
+      "client-components",
+      "architecture",
+      "comparison"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Next.js App Router \u2014 params and searchParams are Promises in Next.js 15",
+    "body": "In Next.js 15, `params` and `searchParams` in page components, layouts, and `generateMetadata` are now `Promise` objects. This is a breaking change from Next.js 14.\n\n```tsx\n// Next.js 14 (old way)\nexport default function Page({ params }: { params: { slug: string } }) {\n  return <h1>{params.slug}</h1>; // Direct access\n}\n\n// Next.js 15 (new way) \u2014 must await\nexport default async function Page({\n  params,\n}: {\n  params: Promise<{ slug: string }>;\n}) {\n  const { slug } = await params;\n  return <h1>{slug}</h1>;\n}\n\n// Same for searchParams:\nexport default async function SearchPage({\n  searchParams,\n}: {\n  searchParams: Promise<{ q?: string; page?: string }>;\n}) {\n  const { q, page } = await searchParams;\n  const results = await search(q, Number(page) || 1);\n  return <SearchResults results={results} />;\n}\n```\n\nThis change enables Next.js to start rendering the page shell before the params are available (from the URL parsing pipeline). The codemod `npx @next/codemod@latest next-async-request-api .` can auto-migrate most cases. If you see `TypeError: Cannot read properties of Promise`, this is likely the cause.",
+    "tags": [
+      "next.js",
+      "next-15",
+      "params",
+      "searchParams",
+      "breaking-change",
+      "migration"
+    ]
+  },
+  {
+    "type": "config",
+    "trust": "verified",
+    "title": "Next.js next.config.js \u2014 common configuration options for App Router",
+    "body": "Key configuration options for Next.js App Router projects in `next.config.js` (or `.mjs`/`.ts`).\n\n```ts\n// next.config.ts\nimport type { NextConfig } from 'next';\n\nconst config: NextConfig = {\n  // Enable React strict mode\n  reactStrictMode: true,\n\n  // Image optimization\n  images: {\n    remotePatterns: [\n      { protocol: 'https', hostname: '**.example.com' },\n    ],\n  },\n\n  // Server Actions config\n  serverActions: {\n    bodySizeLimit: '2mb',\n    allowedOrigins: ['my-app.com'],\n  },\n\n  // Redirect and rewrite rules\n  async redirects() {\n    return [\n      { source: '/old-path', destination: '/new-path', permanent: true },\n    ];\n  },\n\n  // Environment variables exposed to the browser\n  env: {\n    NEXT_PUBLIC_API_URL: process.env.API_URL,\n  },\n\n  // Turbopack (dev only, stable in Next.js 15)\n  // Run with: next dev --turbopack\n\n  // Output standalone for Docker\n  output: 'standalone',\n\n  // Customize webpack (only if needed)\n  webpack: (config, { isServer }) => {\n    if (!isServer) {\n      config.resolve.fallback = { fs: false };\n    }\n    return config;\n  },\n};\n\nexport default config;\n```\n\nNext.js 15 supports `next.config.ts` natively (no extra setup). The `output: 'standalone'` option creates a self-contained build that includes only needed dependencies, ideal for Docker deployments.",
+    "tags": [
+      "next.js",
+      "config",
+      "next.config.js",
+      "images",
+      "server-actions"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Next.js \u2014 Error: Event handlers cannot be passed to Client Component props",
+    "body": "Error message: `Error: Event handlers cannot be passed to Client Component props.\n  <button onClick={function onClick}>\n                   ^^^^^^^^^^^^^^^^^^\nIf you need interactivity, consider converting part of this to a Client Component.`\n\nThis error occurs when you try to use event handlers like `onClick` in a Server Component.\n\n```tsx\n// BAD \u2014 Server Components can't have event handlers\nexport default function Page() {\n  return (\n    <button onClick={() => console.log('clicked')}>Click me</button>\n  );\n}\n\n// FIX \u2014 Extract interactive part to a Client Component\n// components/Counter.tsx\n'use client';\nimport { useState } from 'react';\n\nexport function Counter() {\n  const [count, setCount] = useState(0);\n  return (\n    <button onClick={() => setCount(c => c + 1)}>\n      Count: {count}\n    </button>\n  );\n}\n\n// app/page.tsx (Server Component)\nimport { Counter } from '@/components/Counter';\n\nexport default function Page() {\n  return (\n    <div>\n      <h1>My Page</h1>\n      <Counter />\n    </div>\n  );\n}\n```\n\nRemember: functions are not serializable, so they cannot cross the server-to-client boundary as props. The only exception is Server Actions (functions with `'use server'`), which can be passed as `action` props to forms.",
+    "tags": [
+      "next.js",
+      "server-components",
+      "error",
+      "event-handlers",
+      "use-client"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "community",
+    "title": "Zustand selectors \u2014 preventing unnecessary re-renders with shallow comparison",
+    "body": "Zustand re-renders components whenever any part of the store changes by default. Use selectors to subscribe to only the state slices you need.\n\n```tsx\nimport { create } from 'zustand';\nimport { useShallow } from 'zustand/react/shallow';\n\ninterface AppStore {\n  user: { name: string; email: string } | null;\n  theme: 'light' | 'dark';\n  notifications: Notification[];\n  setTheme: (theme: 'light' | 'dark') => void;\n  addNotification: (n: Notification) => void;\n}\n\nconst useAppStore = create<AppStore>()((set) => ({\n  user: null,\n  theme: 'light',\n  notifications: [],\n  setTheme: (theme) => set({ theme }),\n  addNotification: (n) => set((s) => ({ notifications: [...s.notifications, n] })),\n}));\n\n// BAD \u2014 re-renders on ANY store change\nfunction Header() {\n  const store = useAppStore();\n  return <span>{store.user?.name}</span>;\n}\n\n// GOOD \u2014 re-renders only when user changes\nfunction Header() {\n  const user = useAppStore((state) => state.user);\n  return <span>{user?.name}</span>;\n}\n\n// GOOD \u2014 multiple values with shallow comparison\nfunction ThemeToggle() {\n  const { theme, setTheme } = useAppStore(\n    useShallow((state) => ({ theme: state.theme, setTheme: state.setTheme }))\n  );\n  return <button onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme}</button>;\n}\n```\n\nUse `useShallow` from `zustand/react/shallow` when selecting multiple values. Without it, the object selector creates a new reference every render, defeating memoization.",
+    "tags": [
+      "react",
+      "zustand",
+      "selectors",
+      "performance",
+      "re-renders"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "community",
+    "title": "TanStack Query \u2014 prefetching data in Next.js Server Components",
+    "body": "You can prefetch TanStack Query data in Server Components and pass it to Client Components via `HydrationBoundary`, avoiding loading spinners on initial render.\n\n```tsx\n// app/users/page.tsx (Server Component)\nimport { dehydrate, HydrationBoundary, QueryClient } from '@tanstack/react-query';\nimport { UserList } from './UserList';\n\nexport default async function UsersPage() {\n  const queryClient = new QueryClient();\n\n  await queryClient.prefetchQuery({\n    queryKey: ['users'],\n    queryFn: async () => {\n      const res = await fetch('https://api.example.com/users');\n      return res.json();\n    },\n  });\n\n  return (\n    <HydrationBoundary state={dehydrate(queryClient)}>\n      <UserList />\n    </HydrationBoundary>\n  );\n}\n\n// app/users/UserList.tsx\n'use client';\nimport { useQuery } from '@tanstack/react-query';\n\nexport function UserList() {\n  const { data: users, isLoading } = useQuery({\n    queryKey: ['users'],\n    queryFn: async () => {\n      const res = await fetch('https://api.example.com/users');\n      return res.json();\n    },\n  });\n\n  if (isLoading) return <p>Loading...</p>; // Won't show on initial load!\n  return <ul>{users?.map((u: any) => <li key={u.id}>{u.name}</li>)}</ul>;\n}\n```\n\nThe data is fetched on the server, serialized via `dehydrate`, and hydrated on the client. Subsequent navigations use TanStack Query's client-side caching and refetching. Create a new `QueryClient` per request in Server Components to avoid sharing state between users.",
+    "tags": [
+      "tanstack-query",
+      "react-query",
+      "next.js",
+      "SSR",
+      "prefetching",
+      "hydration"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "community",
+    "title": "Next.js revalidatePath does not work inside try/catch after redirect",
+    "body": "In Next.js, `redirect()` works by throwing a special error (NEXT_REDIRECT). If you call `redirect()` inside a try/catch, it gets caught and the redirect silently fails.\n\n```tsx\n// BAD \u2014 redirect is caught by try/catch\n'use server';\nexport async function createPost(formData: FormData) {\n  try {\n    await db.insert(posts).values({ title: formData.get('title') });\n    revalidatePath('/posts');\n    redirect('/posts'); // This throws NEXT_REDIRECT, caught below!\n  } catch (e) {\n    return { error: 'Something went wrong' }; // Swallows the redirect\n  }\n}\n\n// GOOD \u2014 redirect outside try/catch\n'use server';\nexport async function createPost(formData: FormData) {\n  let success = false;\n  try {\n    await db.insert(posts).values({ title: formData.get('title') });\n    success = true;\n  } catch (e) {\n    return { error: 'Something went wrong' };\n  }\n\n  if (success) {\n    revalidatePath('/posts');\n    redirect('/posts');\n  }\n}\n```\n\nAlternatively, you can re-throw the redirect error by checking `isRedirectError(e)` from `next/dist/client/components/redirect`. This applies to `notFound()` as well, which uses the same throw-based mechanism. This is one of the most common Server Action bugs in Next.js.",
+    "tags": [
+      "next.js",
+      "server-actions",
+      "redirect",
+      "gotcha",
+      "revalidation"
+    ]
+  },
+  {
+    "type": "config",
+    "trust": "verified",
+    "title": "Next.js route segment config \u2014 controlling caching and runtime per page",
+    "body": "Route segment configuration lets you control rendering, caching, and runtime behavior at the page or layout level using exported constants.\n\n```tsx\n// app/dashboard/page.tsx\n\n// Force dynamic rendering (no caching)\nexport const dynamic = 'force-dynamic';\n\n// Or force static rendering (build-time only)\nexport const dynamic = 'force-static';\n\n// Set revalidation interval (ISR)\nexport const revalidate = 3600; // Revalidate every hour\n\n// Choose runtime\nexport const runtime = 'edge'; // or 'nodejs' (default)\n\n// Set max execution time (seconds)\nexport const maxDuration = 30;\n\n// Control which dynamic params are allowed\nexport const dynamicParams = true; // false = return 404 for unknown params\n\n// Generate static params for dynamic routes\nexport async function generateStaticParams() {\n  const posts = await db.query.posts.findMany({ columns: { slug: true } });\n  return posts.map((post) => ({ slug: post.slug }));\n}\n\nexport default async function DashboardPage() {\n  const data = await fetchDashboardData();\n  return <Dashboard data={data} />;\n}\n```\n\nThese exports are per-segment, not global. A layout's config applies to all pages in that segment. `dynamic = 'force-dynamic'` is equivalent to `getServerSideProps` from Pages Router. `revalidate = 0` means no caching. These values can be combined with `generateStaticParams` for hybrid static/dynamic rendering.",
+    "tags": [
+      "next.js",
+      "app-router",
+      "config",
+      "caching",
+      "ISR",
+      "dynamic-rendering"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Next.js \u2014 Error: Invariant: headers() expects to have requestAsyncStorage",
+    "body": "Error message: `Error: Invariant: headers() expects to have requestAsyncStorage, none available.` or similar errors for `cookies()`, `redirect()`, `notFound()`.\n\nThis error occurs when you call request-scoped functions outside of a request context \u2014 typically in module-level code, `generateStaticParams`, or during build time.\n\n```tsx\n// BAD \u2014 called at module level (outside request context)\nimport { headers } from 'next/headers';\nconst headersList = headers(); // ERROR!\n\nexport default function Page() {\n  return <div>...</div>;\n}\n\n// BAD \u2014 called in generateStaticParams\nexport async function generateStaticParams() {\n  const cookieStore = cookies(); // ERROR! No request context here\n  return [{ slug: 'hello' }];\n}\n\n// GOOD \u2014 called inside the component function body\nexport default async function Page() {\n  const headersList = await headers();\n  const cookieStore = await cookies();\n  const userAgent = headersList.get('user-agent');\n  return <div>{userAgent}</div>;\n}\n```\n\nIn Next.js 15, `headers()` and `cookies()` are now async and return Promises. You must `await` them. These functions only work during server-side rendering of a request \u2014 they cannot be called during static generation, in `generateStaticParams`, or at the top level of a module. If you need header data in a statically generated page, pass it through middleware headers.",
+    "tags": [
+      "next.js",
+      "error",
+      "headers",
+      "cookies",
+      "request-context",
+      "async"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "community",
+    "title": "TanStack Query mutation with optimistic updates and rollback",
+    "body": "Optimistic updates in TanStack Query let you update the UI immediately while the mutation runs in the background, with automatic rollback on failure.\n\n```tsx\n'use client';\nimport { useMutation, useQueryClient } from '@tanstack/react-query';\n\nexport function useToggleTodo() {\n  const queryClient = useQueryClient();\n\n  return useMutation({\n    mutationFn: async (todoId: string) => {\n      const res = await fetch(`/api/todos/${todoId}/toggle`, { method: 'PATCH' });\n      if (!res.ok) throw new Error('Failed to toggle');\n      return res.json();\n    },\n    onMutate: async (todoId) => {\n      // Cancel outgoing refetches\n      await queryClient.cancelQueries({ queryKey: ['todos'] });\n\n      // Snapshot previous value for rollback\n      const previousTodos = queryClient.getQueryData<Todo[]>(['todos']);\n\n      // Optimistically update\n      queryClient.setQueryData<Todo[]>(['todos'], (old) =>\n        old?.map((todo) =>\n          todo.id === todoId ? { ...todo, completed: !todo.completed } : todo\n        )\n      );\n\n      return { previousTodos };\n    },\n    onError: (_err, _todoId, context) => {\n      // Rollback on error\n      queryClient.setQueryData(['todos'], context?.previousTodos);\n    },\n    onSettled: () => {\n      // Always refetch to ensure consistency\n      queryClient.invalidateQueries({ queryKey: ['todos'] });\n    },\n  });\n}\n```\n\nThe pattern is: cancel queries, snapshot, update optimistically, rollback on error, refetch on settle. The `context` returned from `onMutate` is passed to `onError` and `onSettled`. This works with any data shape \u2014 just adjust the `setQueryData` logic.",
+    "tags": [
+      "tanstack-query",
+      "react-query",
+      "optimistic-updates",
+      "mutations",
+      "rollback"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "community",
+    "title": "Next.js App Router intercepting routes \u2014 modal pattern with URL state",
+    "body": "Intercepting routes let you show a route as a modal while keeping the URL updated. When the user navigates directly to the URL, they see the full page.\n\n```\napp/\n  photos/\n    [id]/\n      page.tsx          # Full photo page (direct navigation)\n  @modal/\n    (.)photos/[id]/\n      page.tsx          # Intercepted: shows as modal\n      default.tsx\n  layout.tsx\n  default.tsx\n```\n\n```tsx\n// app/layout.tsx\nexport default function RootLayout({\n  children,\n  modal,\n}: {\n  children: React.ReactNode;\n  modal: React.ReactNode;\n}) {\n  return (\n    <html><body>\n      {children}\n      {modal}\n    </body></html>\n  );\n}\n\n// app/@modal/(.)photos/[id]/page.tsx\nimport { Modal } from '@/components/Modal';\n\nexport default async function PhotoModal({ params }: { params: Promise<{ id: string }> }) {\n  const { id } = await params;\n  const photo = await getPhoto(id);\n  return (\n    <Modal>\n      <img src={photo.url} alt={photo.title} />\n    </Modal>\n  );\n}\n\n// app/@modal/default.tsx\nexport default function Default() {\n  return null; // No modal by default\n}\n```\n\nThe `(.)` prefix means intercept at the same level. Use `(..)` for one level up, `(..)(..)` for two levels up, or `(...)` for root level. The `default.tsx` file is crucial \u2014 without it, parallel slots that don't match the current URL will 404.",
+    "tags": [
+      "next.js",
+      "app-router",
+      "intercepting-routes",
+      "modals",
+      "parallel-routes"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "community",
+    "title": "React 19 Actions \u2014 calling Server Actions from event handlers",
+    "body": "Server Actions don't have to be used with forms. In React 19, you can call them directly from event handlers using `useTransition` for loading states.\n\n```tsx\n'use client';\nimport { useTransition } from 'react';\nimport { deletePost, togglePublished } from '@/app/actions';\n\nexport function PostActions({ postId }: { postId: string }) {\n  const [isPending, startTransition] = useTransition();\n\n  function handleDelete() {\n    if (!confirm('Delete this post?')) return;\n    startTransition(async () => {\n      await deletePost(postId);\n    });\n  }\n\n  function handleToggle() {\n    startTransition(async () => {\n      await togglePublished(postId);\n    });\n  }\n\n  return (\n    <div className=\"flex gap-2\">\n      <button onClick={handleToggle} disabled={isPending}>\n        {isPending ? 'Updating...' : 'Toggle Published'}\n      </button>\n      <button onClick={handleDelete} disabled={isPending} className=\"text-red-600\">\n        {isPending ? 'Deleting...' : 'Delete'}\n      </button>\n    </div>\n  );\n}\n```\n\nWrapping in `startTransition` marks the update as non-urgent, so the UI stays responsive. The `isPending` flag lets you show loading states. This pattern is ideal for buttons, toggles, and delete actions that aren't part of a form. The Server Action handles revalidation on the server side.",
+    "tags": [
+      "react",
+      "react-19",
+      "server-actions",
+      "useTransition",
+      "event-handlers"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Next.js \u2014 Objects are not valid as a React child (found: [object Promise])",
+    "body": "Error message: `Error: Objects are not valid as a React child (found: [object Promise]). If you meant to render a collection of children, use an array instead.`\n\nThis usually happens when you forget to `await` an async operation in a Server Component, or when you try to render an object directly.\n\n```tsx\n// BAD \u2014 forgot to await\nexport default function Page() {\n  const data = fetch('https://api.example.com/data'); // Missing await!\n  return <div>{data}</div>; // data is a Promise, not the resolved value\n}\n\n// BAD \u2014 rendering an object\nexport default async function Page() {\n  const user = await getUser();\n  return <div>{user}</div>; // user is { name: '...', email: '...' }\n}\n\n// FIX \u2014 await and render specific fields\nexport default async function Page() {\n  const data = await fetch('https://api.example.com/data');\n  const json = await data.json();\n  return <div>{json.title}</div>;\n}\n\n// FIX \u2014 if in Client Component, use Suspense\n'use client';\nimport { use } from 'react';\n\nexport function UserName({ userPromise }: { userPromise: Promise<User> }) {\n  const user = use(userPromise);\n  return <span>{user.name}</span>;\n}\n```\n\nAlso triggered by rendering `Date` objects (`{new Date()}` should be `{new Date().toLocaleDateString()}`), or passing a Server Component without async/await when it returns a Promise.",
+    "tags": [
+      "react",
+      "next.js",
+      "error",
+      "Promise",
+      "async",
+      "rendering"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "unverified",
+    "title": "Zustand persist middleware causes hydration mismatch in Next.js",
+    "body": "Using Zustand's `persist` middleware with Next.js causes a hydration mismatch because the server renders with the initial state while the client hydrates with localStorage state.\n\n```tsx\n// The problem: server renders count=0, client hydrates with count=5 from localStorage\nconst useStore = create(\n  persist(\n    (set) => ({ count: 0, increment: () => set((s) => ({ count: s.count + 1 })) }),\n    { name: 'counter' }\n  )\n);\n\n// FIX 1: Use onRehydrateStorage + skip rendering until hydrated\n'use client';\nimport { useEffect, useState } from 'react';\n\nexport function Counter() {\n  const [hydrated, setHydrated] = useState(false);\n  const count = useStore((s) => s.count);\n\n  useEffect(() => {\n    setHydrated(true);\n  }, []);\n\n  if (!hydrated) return <span>0</span>; // Match server output\n  return <span>{count}</span>;\n}\n\n// FIX 2: Use Zustand's built-in hydration check\nimport { useStore } from './store';\n\nexport function Counter() {\n  const count = useStore((s) => s.count);\n  const hasHydrated = useStore.persist.hasHydrated();\n\n  // Use suppressHydrationWarning on the element\n  return <span suppressHydrationWarning>{hasHydrated ? count : 0}</span>;\n}\n```\n\nThe root cause is that localStorage is not available on the server. The `persist` middleware defaults to the initial state during SSR, then rehydrates with stored values on the client. Either delay rendering until hydration is complete, or use `suppressHydrationWarning` on specific elements.",
+    "tags": [
+      "zustand",
+      "next.js",
+      "hydration",
+      "persist",
+      "localStorage",
+      "gotcha"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "unverified",
+    "title": "How to implement streaming Server Components in Next.js with Suspense",
+    "body": "Next.js App Router supports streaming by default. Use `<Suspense>` boundaries to stream in parts of the page as they become ready, without blocking the entire page on the slowest data fetch.\n\n```tsx\n// app/dashboard/page.tsx\nimport { Suspense } from 'react';\n\nexport default function DashboardPage() {\n  return (\n    <div>\n      <h1>Dashboard</h1>\n      {/* This renders immediately */}\n      <Suspense fallback={<p>Loading stats...</p>}>\n        <SlowStats /> {/* Streams in when ready */}\n      </Suspense>\n      <Suspense fallback={<p>Loading chart...</p>}>\n        <SlowChart /> {/* Streams in independently */}\n      </Suspense>\n    </div>\n  );\n}\n\nasync function SlowStats() {\n  const stats = await fetch('https://api.example.com/stats', {\n    cache: 'no-store',\n  }).then((r) => r.json());\n  return (\n    <div className=\"grid grid-cols-3 gap-4\">\n      <StatCard label=\"Users\" value={stats.users} />\n      <StatCard label=\"Revenue\" value={stats.revenue} />\n      <StatCard label=\"Orders\" value={stats.orders} />\n    </div>\n  );\n}\n```\n\nThe page shell and any synchronous content render instantly. Each `<Suspense>` boundary streams its content as the async Server Component resolves. Components stream independently \u2014 `SlowChart` doesn't wait for `SlowStats`. This dramatically improves perceived performance. The `loading.tsx` file is just syntactic sugar for wrapping a page in `<Suspense>`. Use multiple boundaries for granular streaming.",
+    "tags": [
+      "next.js",
+      "streaming",
+      "Suspense",
+      "server-components",
+      "performance"
+    ]
+  },
+  {
+    "type": "question",
+    "trust": "community",
+    "title": "How to share state between Server Components and Client Components in Next.js",
+    "body": "Server Components and Client Components live in different environments. You cannot share state directly \u2014 but there are several patterns.\n\n```tsx\n// Pattern 1: Pass server data as props\n// app/page.tsx (Server Component)\nimport { ClientDashboard } from './ClientDashboard';\n\nexport default async function Page() {\n  const config = await getConfig(); // Server-side fetch\n  return <ClientDashboard initialConfig={config} />;\n}\n\n// Pattern 2: URL state with searchParams\n// app/products/page.tsx\nexport default async function ProductsPage({\n  searchParams,\n}: {\n  searchParams: Promise<{ category?: string; sort?: string }>;\n}) {\n  const { category, sort } = await searchParams;\n  const products = await getProducts({ category, sort });\n  return <ProductGrid products={products} />;\n}\n\n// Client component updates URL:\n'use client';\nimport { useRouter, useSearchParams } from 'next/navigation';\n\nexport function FilterBar() {\n  const router = useRouter();\n  const searchParams = useSearchParams();\n\n  function setCategory(cat: string) {\n    const params = new URLSearchParams(searchParams.toString());\n    params.set('category', cat);\n    router.push(`?${params.toString()}`);\n  }\n\n  return <select onChange={(e) => setCategory(e.target.value)}>...</select>;\n}\n```\n\nPattern 1 is for one-time data flow. Pattern 2 uses the URL as shared state \u2014 the Client Component updates the URL, which triggers a Server Component re-render with new `searchParams`. This is the recommended approach for filters, search, and pagination in the App Router.",
+    "tags": [
+      "next.js",
+      "server-components",
+      "client-components",
+      "state",
+      "searchParams"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "unverified",
+    "title": "Next.js unstable_cache gotcha \u2014 closure variables are not part of the cache key",
+    "body": "When using `unstable_cache` (or the newer `'use cache'` directive), variables from the closure are NOT included in the cache key. This can lead to stale data.\n\n```tsx\n// BAD \u2014 userId is captured by closure but not in cache key\nexport async function getUserPosts(userId: string) {\n  const getCachedPosts = unstable_cache(\n    async () => {\n      return db.query.posts.findMany({\n        where: eq(posts.authorId, userId), // userId from closure!\n      });\n    },\n    ['user-posts'], // Cache key doesn't include userId!\n    { revalidate: 3600 }\n  );\n  return getCachedPosts();\n}\n// Result: All users get the same cached posts from the first call\n\n// GOOD \u2014 include userId in the cache key\nexport async function getUserPosts(userId: string) {\n  const getCachedPosts = unstable_cache(\n    async () => {\n      return db.query.posts.findMany({\n        where: eq(posts.authorId, userId),\n      });\n    },\n    [`user-posts-${userId}`], // userId in cache key\n    { revalidate: 3600, tags: [`user-${userId}-posts`] }\n  );\n  return getCachedPosts();\n}\n```\n\nAlternatively, pass dynamic values as arguments to the cached function instead of capturing them from the closure. Arguments ARE included in the cache key automatically. This is a subtle bug because the cached function works correctly on the first call \u2014 the issue only appears when a different user hits the same cache.",
+    "tags": [
+      "next.js",
+      "caching",
+      "unstable_cache",
+      "gotcha",
+      "stale-data"
+    ]
+  },
+  {
+    "type": "answer",
+    "trust": "verified",
+    "title": "How to set up Next.js App Router with Zustand without hydration errors",
+    "body": "The recommended approach for using Zustand with Next.js App Router avoids hydration mismatches by creating the store per-request on the server and sharing it via context.\n\n```tsx\n// stores/counter-store.ts\nimport { createStore } from 'zustand';\n\nexport type CounterState = { count: number };\nexport type CounterActions = { increment: () => void; decrement: () => void };\nexport type CounterStore = CounterState & CounterActions;\n\nexport const createCounterStore = (initState: CounterState = { count: 0 }) =>\n  createStore<CounterStore>()((set) => ({\n    ...initState,\n    increment: () => set((s) => ({ count: s.count + 1 })),\n    decrement: () => set((s) => ({ count: s.count - 1 })),\n  }));\n\n// providers/counter-provider.tsx\n'use client';\nimport { createContext, useContext, useRef } from 'react';\nimport { useStore } from 'zustand';\nimport { createCounterStore, type CounterStore } from '@/stores/counter-store';\n\ntype CounterStoreApi = ReturnType<typeof createCounterStore>;\nconst CounterCtx = createContext<CounterStoreApi | null>(null);\n\nexport function CounterProvider({ children, initialCount }: { children: React.ReactNode; initialCount: number }) {\n  const storeRef = useRef<CounterStoreApi | null>(null);\n  if (!storeRef.current) {\n    storeRef.current = createCounterStore({ count: initialCount });\n  }\n  return <CounterCtx.Provider value={storeRef.current}>{children}</CounterCtx.Provider>;\n}\n\nexport function useCounterStore<T>(selector: (s: CounterStore) => T): T {\n  const store = useContext(CounterCtx);\n  if (!store) throw new Error('useCounterStore must be used within CounterProvider');\n  return useStore(store, selector);\n}\n```\n\nThe Server Component passes `initialCount` from the database. The store is created once per provider mount with `useRef`, matching the server-rendered output. This is Zustand's officially recommended pattern for Next.js.",
+    "tags": [
+      "zustand",
+      "next.js",
+      "app-router",
+      "hydration",
+      "SSR",
+      "provider"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "community",
+    "title": "Next.js \u2014 Error: useSearchParams() should be wrapped in a suspense boundary",
+    "body": "Error message: `Error: useSearchParams() should be wrapped in a suspense boundary at page \"/...\". Read more: https://nextjs.org/docs/messages/missing-suspense-with-csr-bailout`\n\nIn Next.js 14+, using `useSearchParams()` in a Client Component without a `<Suspense>` boundary causes this error during static generation.\n\n```tsx\n// BAD \u2014 triggers the error\n'use client';\nimport { useSearchParams } from 'next/navigation';\n\nexport default function SearchPage() {\n  const searchParams = useSearchParams(); // Error!\n  return <p>Query: {searchParams.get('q')}</p>;\n}\n\n// FIX 1 \u2014 wrap in Suspense\nimport { Suspense } from 'react';\n\nexport default function SearchPage() {\n  return (\n    <Suspense fallback={<p>Loading...</p>}>\n      <SearchContent />\n    </Suspense>\n  );\n}\n\nfunction SearchContent() {\n  const searchParams = useSearchParams();\n  return <p>Query: {searchParams.get('q')}</p>;\n}\n\n// FIX 2 \u2014 if the whole page needs searchParams, opt out of static rendering\nexport const dynamic = 'force-dynamic';\n```\n\n`useSearchParams()` causes the page to bail out of static generation because search params are only known at request time. Wrapping in `<Suspense>` lets Next.js statically render the page shell and hydrate the search params on the client. This is the recommended approach for search/filter pages.",
+    "tags": [
+      "next.js",
+      "useSearchParams",
+      "error",
+      "Suspense",
+      "static-generation"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "unverified",
+    "title": "React 19 \u2014 form reset after successful Server Action submission",
+    "body": "After a successful Server Action, you often want to reset the form. React 19 makes this straightforward with `useRef` and `useActionState`.\n\n```tsx\n'use client';\nimport { useRef, useEffect } from 'react';\nimport { useActionState } from 'react';\nimport { addComment } from '@/app/actions';\n\ntype State = { success: boolean; error?: string };\n\nexport function CommentForm({ postId }: { postId: string }) {\n  const formRef = useRef<HTMLFormElement>(null);\n\n  const addCommentWithId = addComment.bind(null, postId);\n  const [state, formAction, isPending] = useActionState(\n    addCommentWithId,\n    { success: false }\n  );\n\n  useEffect(() => {\n    if (state.success) {\n      formRef.current?.reset();\n    }\n  }, [state]);\n\n  return (\n    <form ref={formRef} action={formAction}>\n      <textarea\n        name=\"content\"\n        placeholder=\"Write a comment...\"\n        required\n        rows={3}\n        className=\"w-full rounded border p-2\"\n      />\n      {state.error && <p className=\"text-red-500 text-sm\">{state.error}</p>}\n      <button\n        type=\"submit\"\n        disabled={isPending}\n        className=\"mt-2 rounded bg-blue-600 px-4 py-2 text-white\"\n      >\n        {isPending ? 'Posting...' : 'Post Comment'}\n      </button>\n    </form>\n  );\n}\n```\n\nThe `bind` pattern passes the `postId` as the first argument to the Server Action, keeping it out of the form data. The `useEffect` watches for `state.success` to reset the form. An alternative approach is to use a `key` prop on the form that changes on success, forcing React to remount it.",
+    "tags": [
+      "react",
+      "react-19",
+      "forms",
+      "server-actions",
+      "reset",
+      "useActionState"
+    ]
+  }
+]
