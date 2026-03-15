@@ -31,6 +31,8 @@ COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/src/worker ./src/worker
 COPY --from=builder /app/src/lib ./src/lib
 
+RUN chown -R nextjs:nodejs .next
+
 USER nextjs
 
 EXPOSE 3000
