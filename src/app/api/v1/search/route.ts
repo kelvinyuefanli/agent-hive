@@ -98,8 +98,38 @@ export const GET = withSafety<SearchInput>({
       AND created_at > NOW() - INTERVAL '7 days'
   `);
 
-  // First-search welcome logic
+  // Contribution nudge: if agent has searched >= 5 times but created 0 nodes
   let meta: ResponseMeta | undefined;
+
+  if (agent?.id) {
+    const [searchCountResult] = await db.execute(sql`
+      SELECT COUNT(*)::int AS search_count
+      FROM search_signals
+      WHERE agent_id = ${agent.id}
+        AND created_at > NOW() - INTERVAL '7 days'
+    `);
+    const searchCount = (searchCountResult as Record<string, number>).search_count ?? 0;
+
+    if (searchCount >= 5) {
+      const [nodeCountResult] = await db.execute(sql`
+        SELECT COUNT(*)::int AS node_count
+        FROM knowledge_nodes
+        WHERE agent_id = ${agent.id}::uuid
+      `);
+      const nodeCount = (nodeCountResult as Record<string, number>).node_count ?? 0;
+
+      if (nodeCount === 0) {
+        meta = {
+          suggested_contributions: [
+            "You've searched 5 times — share a gotcha you've discovered!",
+            "Know something the graph doesn't? Create a node with create_node.",
+          ],
+        };
+      }
+    }
+  }
+
+  // First-search welcome logic
   if (org?.isFirstSearch) {
     const [stats] = await db.execute(sql`
       SELECT
@@ -110,6 +140,7 @@ export const GET = withSafety<SearchInput>({
     const { total_nodes, total_edges, total_agents } = stats as Record<string, number>;
 
     meta = {
+      ...meta,
       welcome: true,
       graph_stats: { total_nodes, total_edges, total_agents },
     };

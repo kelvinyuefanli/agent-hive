@@ -107,10 +107,13 @@ describe("GET /api/v1/search", () => {
     // 1. execute for search results
     // 2. execute for edges (empty)
     // 3. execute for demand signal
+    // 4. execute for contribution nudge: search count
+    // 5. execute for contribution nudge: node count (only if search_count >= 5)
     mockExecute
       .mockResolvedValueOnce([FAKE_SEARCH_RESULT])   // search results
       .mockResolvedValueOnce([])                       // related edges
-      .mockResolvedValueOnce([{ agent_count: 3 }]);   // demand signal
+      .mockResolvedValueOnce([{ agent_count: 3 }])    // demand signal
+      .mockResolvedValueOnce([{ search_count: 2 }]);  // contribution nudge: search count (< 5, no nudge)
 
     // Reset auth mock to non-first-search org
     vi.mocked(verifyApiKey).mockResolvedValue({
@@ -152,12 +155,14 @@ describe("GET /api/v1/search", () => {
     });
 
     // Reset execute mock for first-search path:
-    // 1. search results, 2. edges, 3. demand signal, 4. graph stats
+    // 1. search results, 2. edges, 3. demand signal,
+    // 4. contribution nudge: search count, 5. graph stats
     mockExecute.mockReset();
     mockExecute
       .mockResolvedValueOnce([FAKE_SEARCH_RESULT])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ agent_count: 1 }])
+      .mockResolvedValueOnce([{ search_count: 0 }])
       .mockResolvedValueOnce([{ total_nodes: 100, total_edges: 50, total_agents: 10 }]);
 
     const res = await GET(makeSearchRequest({ q: "hello" }), {});
@@ -185,7 +190,8 @@ describe("GET /api/v1/search", () => {
     mockExecute
       .mockResolvedValueOnce(manyResults)
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ agent_count: 0 }]);
+      .mockResolvedValueOnce([{ agent_count: 0 }])
+      .mockResolvedValueOnce([{ search_count: 1 }]);
 
     const res = await GET(makeSearchRequest({ q: "test" }), {});
     const json = await res.json();
