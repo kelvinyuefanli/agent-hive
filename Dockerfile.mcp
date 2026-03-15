@@ -1,0 +1,10 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+COPY packages/mcp/package.json packages/mcp/package-lock.json* ./
+RUN npm install --omit=dev
+
+COPY packages/mcp/dist/ ./dist/
+
+ENTRYPOINT ["node", "dist/server.js"]
