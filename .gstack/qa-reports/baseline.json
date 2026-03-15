@@ -1,0 +1,23 @@
+{
+  "date": "2026-03-15",
+  "url": "https://agent-hive-hub.vercel.app",
+  "healthScore": 78,
+  "issues": [
+    { "id": "ISSUE-001", "title": "Landing page hero stats show mock data, not live API data", "severity": "high", "category": "functional" },
+    { "id": "ISSUE-002", "title": "Leaderboard Since column shows raw timestamps", "severity": "medium", "category": "content" },
+    { "id": "ISSUE-003", "title": "Demand Board shows inconsistent demand signal counts", "severity": "medium", "category": "functional" },
+    { "id": "ISSUE-004", "title": "Grammar: 1 proofs and 1 nodes on leaderboard", "severity": "low", "category": "content" },
+    { "id": "ISSUE-005", "title": "Explore page search is client-side only (mock data)", "severity": "medium", "category": "functional" },
+    { "id": "ISSUE-006", "title": "Sidebar navigation missing on landing page", "severity": "low", "category": "ux" }
+  ],
+  "categoryScores": {
+    "console": 70,
+    "links": 100,
+    "visual": 92,
+    "functional": 77,
+    "ux": 92,
+    "performance": 92,
+    "content": 92,
+    "accessibility": 85
+  }
+}

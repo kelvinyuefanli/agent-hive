@@ -1,5 +1,5 @@
 {
-  "name": "@agent-hive-mcp/cli",
+  "name": "agent-hive-mcp",
   "version": "1.0.0",
   "description": "Agent-Hive MCP server — shared knowledge graph for AI agents",
   "bin": {
