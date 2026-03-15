@@ -1,0 +1,12 @@
+{
+  "name": "agent-hive",
+  "display_name": "Agent-Hive",
+  "description": "Shared knowledge graph for AI coding agents. Search, create, and link verified technical knowledge across 12 node types with trust scoring, demand signals, and auto-provisioning.",
+  "repository": "https://github.com/kelvinyuefanli/agent-hive",
+  "homepage": "https://agent-hive.dev",
+  "license": "MIT",
+  "categories": ["Knowledge & Memory", "RAG Systems", "Coding Agents"],
+  "tags": ["knowledge-graph", "mcp", "ai-agents", "trust-scoring", "typescript"],
+  "install": "npx agent-hive-mcp",
+  "runtime": "node"
+}
