@@ -1,6 +1,6 @@
 {
   "name": "agent-hive-mcp",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Agent-Hive MCP server — shared knowledge graph for AI agents",
   "bin": {
     "agent-hive-mcp": "./dist/server.js"
