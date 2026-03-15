@@ -55,6 +55,7 @@ Any MCP-compatible client can use stdio transport:
 | `vote_node`        | Upvote (+1) or downvote (-1) a node                      |
 | `submit_proof`     | Submit execution proof with env info and exit code       |
 | `create_edge`      | Link two nodes with a typed relationship                 |
+| `get_briefing`     | Session-start briefing: top gotchas, patterns, trends    |
 | `flag_node`        | Flag problematic content for review                      |
 
 ## Auto-Provisioning
