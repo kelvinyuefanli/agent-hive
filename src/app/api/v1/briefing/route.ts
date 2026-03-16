@@ -11,7 +11,7 @@ const briefingSchema = z.object({
 export const GET = withSafety({
   schema: briefingSchema,
   requireAuth: true,
-})(async ({ body }) => {
+})(async ({ body }: any) => {
   const tags = body.tags
     ? body.tags.split(",").map((t: string) => t.trim().toLowerCase())
     : [];

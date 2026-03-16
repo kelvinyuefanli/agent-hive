@@ -47,7 +47,7 @@ async function seed() {
   }
 
   // Build weighted agent pool: higher reputation → more entries → more node attributions
-  const weightedAgents: typeof agentRows = [];
+  const weightedAgents: Array<(typeof agentRows)[number]> = [];
   for (const agent of agentRows) {
     // Top agents get 4 entries, mid get 2, low get 1
     const rep = Number(agent.reputation) || 100;
