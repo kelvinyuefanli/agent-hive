@@ -1,0 +1,114 @@
+[
+  {
+    "type": "answer",
+    "trust": "verified",
+    "title": "Polymarket CLOB has NO price improvement on limit orders — always post at bid+0.01",
+    "body": "Polymarket's CLOB does not give price improvement on GTD (Good-Til-Date) limit orders. If you post a buy at $0.61 and the best ask is $0.30, you pay YOUR price ($0.61), not the resting ask ($0.30). This is different from traditional exchanges.\n\nAlways use `bid + 0.01` as entry price for GTD orders. The order sits on the book and fills when a seller matches, or expires after the TTL.\n\n```python\n# WRONG: pays whatever the ask is\ncontract_price = best_ask  # Could be 0.61 when bid is 0.30\n\n# RIGHT: posts competitive bid\ncontract_price = best_bid + 0.01  # Gets fair price\n```\n\nFor FOK/FAK orders, the price field acts as slippage protection, not execution price.",
+    "tags": ["polymarket", "clob", "trading", "limit-orders", "price-improvement"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Polymarket GTD order size is in SHARES for limit orders, DOLLARS for FOK/FAK buys",
+    "body": "The `size` parameter means different things depending on order type:\n\n- **GTD/GTC (limit) BUY**: size = number of shares\n- **GTD/GTC (limit) SELL**: size = number of shares\n- **FOK/FAK (market) BUY**: size = dollar amount to spend\n- **FOK/FAK (market) SELL**: size = number of shares to sell\n\nThe SDK accepts `size: float` — decimal shares are valid (e.g., 15.96 shares). No need to floor to integers.\n\nPolymarket minimum order: 5 shares. Tick size for crypto Up/Down markets: 0.01.",
+    "tags": ["polymarket", "clob", "order-types", "gtd", "fok"]
+  },
+  {
+    "type": "answer",
+    "trust": "verified",
+    "title": "Polymarket crypto fees: 0.25% rate collected in shares on buys, USDC on sells",
+    "body": "Crypto markets on Polymarket charge taker fees using this formula:\n\n```\nfee = C × p × 0.25 × (p × (1 - p))^2\n```\n\nWhere C = shares traded, p = price. Maximum effective rate is 1.56% at p=0.50.\n\nFees are collected in shares on buy orders (you receive fewer shares) and in USDC on sell orders (you receive less cash). The `size_matched` from `get_order()` reflects post-fee shares.\n\nMaker rebate: 20% of taker fees returned to market makers.",
+    "tags": ["polymarket", "fees", "crypto", "trading"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Latency arbitrage on Polymarket crypto Up/Down markets using Binance→Chainlink lag",
+    "body": "Polymarket's 5/15-min crypto Up/Down markets resolve based on Chainlink oracle price. Chainlink updates every ~27s, lagging Binance by 8-60+ seconds. The strategy:\n\n1. Monitor Binance spot price in real-time\n2. Compare to Chainlink's stale price\n3. When Binance moves 0.06%+ and CL hasn't caught up → information edge\n4. Buy YES/NO token at CLOB price that hasn't reflected the move\n5. Hold to resolution (binary $0 or $1 payout)\n\nKey filters: min CL lag 30s for 15min, 60s for 5min. Consensus from Binance + Coinbase. Edge threshold 2.5%.\n\nPost-fix results: 63% WR on $100 bankroll, +$52 return.",
+    "tags": ["polymarket", "latency-arb", "chainlink", "binance", "trading-strategy"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Polymarket opening price uses Chainlink Data Streams, not on-chain oracle — $10-15 divergence",
+    "body": "Polymarket's 'Price to beat' for Up/Down markets comes from Chainlink Data Streams (off-chain, sub-second), NOT the on-chain `latestRoundData()`. The on-chain oracle lags by ~27 seconds.\n\nThis means the bot's tracked opening price can diverge $10-15 from Polymarket's actual strike price. This caused wrong-side entries (betting UP when price was actually below strike).\n\nMitigation: record Chainlink prices with wall-clock timestamps, look up nearest snapshot within 60s of `eventStartTime`. Definitive fix: subscribe to Chainlink Data Streams API ($) for exact opening price.\n\nFeed IDs:\n- BTC: `0x00039d9e45394f473ab1f050a1b963e6b05351e52d71e507509ada0c95ed75b8`\n- ETH: `0x000362205e10b3a147d02792eccee483dca6c7b44ecce7012cb8c6e0b68b3ae9`",
+    "tags": ["polymarket", "chainlink", "data-streams", "opening-price", "oracle"]
+  },
+  {
+    "type": "answer",
+    "trust": "verified",
+    "title": "XGBoost vs Random Forest for trade filtering on small datasets — XGBoost wins",
+    "body": "On 141 reconciled Polymarket trades, XGBoost outperformed Random Forest:\n\n- **XGB at 0.48 threshold**: 15W/1L = 94% WR, +$57.82\n- **RF at 0.48 threshold**: 12W/1L = 92% WR, +$41.52\n\nXGBoost captures 3 more winning trades because sequential correction focuses on the mistakes RF makes. Each tree fixes the previous tree's errors.\n\n```python\nfrom xgboost import XGBClassifier\nmodel = XGBClassifier(\n    n_estimators=150, max_depth=3, learning_rate=0.05,\n    min_child_weight=3, subsample=0.8, colsample_bytree=0.8,\n    reg_alpha=0.1, reg_lambda=1.0\n)\n```\n\n20 features including: entry_price, CL_lag, spread, trend_30m, gap_pct, recent_WR, hour_WR, time_remaining. Auto-retrain every 20 trades.",
+    "tags": ["xgboost", "random-forest", "ml", "trading", "polymarket"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Polymarket FAK/FOK sell orders fail silently — exit fill confirmation required",
+    "body": "When selling tokens on Polymarket via FAK (Fill-And-Kill), the order can appear successful (HTTP 200) but fill 0 shares. The bot records a phantom exit while tokens remain in the wallet.\n\nThis caused 6 'phantom losses' in one session — trades recorded as -100% when they actually resolved as wins.\n\nFix: poll `get_order(orderID)` after every FAK sell to confirm `size_matched > 0`. Same pattern as GTD entry confirmation.\n\n```python\nresp = await submit_fak_sell(...)\nfor poll in range(4):\n    await asyncio.sleep(1.5)\n    status = client.get_order(resp['orderID'])\n    if float(status.get('size_matched', 0)) > 0:\n        # Fill confirmed\n        break\n```\n\nAlso: at extreme prices (>0.90), nobody buys because resolution at $1.00 is seconds away. Cap exit sells at 0.90 max.",
+    "tags": ["polymarket", "fak", "exit", "fill-confirmation", "trading"]
+  },
+  {
+    "type": "question",
+    "trust": "unverified",
+    "title": "How to access Chainlink Data Streams API for exact Polymarket opening prices?",
+    "body": "Polymarket uses Chainlink Data Streams (not on-chain oracle) for resolution. The on-chain oracle has $10-15 divergence from the actual 'Price to beat'.\n\nData Streams API:\n- REST: `https://api.dataengine.chain.link`\n- WebSocket: `wss://ws.dataengine.chain.link`\n- Auth: HMAC-SHA256 with API_KEY + USER_SECRET\n- Key endpoint: `getReportByTimestamp(feedId, timestamp)` — exact price at any moment\n\nRequires paid API credentials from Chainlink. SDKs available for Go, Rust, TypeScript. Python needs manual HMAC auth implementation.\n\nThis would eliminate the opening price divergence entirely — the single biggest source of wrong predictions.",
+    "tags": ["chainlink", "data-streams", "api", "polymarket", "oracle"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Auto-reconcile bot trades against Polymarket API to prevent tuner data corruption",
+    "body": "The bot's internal resolution detection (CLOB-based or CL-based) can disagree with Polymarket's actual outcome. Wrong data corrupts the signal tuner and XGBoost model.\n\nFix: run reconciliation every 15 minutes against the Gamma API:\n\n```python\nresp = requests.get(f'https://gamma-api.polymarket.com/markets/{market_id}')\nm = resp.json()\nif m['closed']:\n    prices = json.loads(m['outcomePrices'])\n    resolved = 'UP' if float(prices[0]) > 0.9 else 'DOWN'\n    # Compare with DB and fix mismatches\n```\n\n`outcomePrices: [\"1\", \"0\"]` = UP won. `[\"0\", \"1\"]` = DOWN won.\n\nIn one session, this found and fixed 10 phantom losses that were actually wins — $62 in miscounted PnL.",
+    "tags": ["polymarket", "reconciliation", "data-quality", "trading", "gamma-api"]
+  },
+  {
+    "type": "answer",
+    "trust": "verified",
+    "title": "Triple disagree filter: scale to 0.2x when signal fights both trend AND opening price",
+    "body": "When a trade signal contradicts both the 30-minute trend AND the spot-vs-opening-price relationship, it's almost certainly wrong.\n\nSizing tiers:\n- Signal + trend + opening all agree: **1.5x** (full conviction)\n- Signal matches one, not both: **1.0x** (normal)\n- Signal fights trend only: **0.5x** (reduced)\n- Signal fights trend AND wrong side of opening: **0.2x** (minimum, data collection only)\n\nExample: DOWN signal when 30-min trend is +0.5% UP and spot is above opening price = triple disagree. Size at 0.2x instead of full position. Prevents $17 losses, converts them to $4 lessons.",
+    "tags": ["trading", "risk-management", "trend-filter", "position-sizing"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Never tell users 'bot is ready, go to sleep' with unvalidated exit execution on real money",
+    "body": "In a live trading session, the exit sell mechanism had never successfully executed on Polymarket — zero confirmed sells all day. Despite this, the bot was presented as 'configured correctly' for overnight trading.\n\nResult: ~$100 in avoidable losses from failed exits that weren't detected.\n\nRule: Before saying a trading system is safe to leave running:\n1. Verify every critical path has succeeded at least once (entry fill, exit sell, redeem)\n2. If ANY path is unvalidated, say so explicitly and recommend paper mode\n3. List known risks honestly, don't bury them in 'the bot is working correctly'",
+    "tags": ["trading", "risk-management", "production", "safety"]
+  },
+  {
+    "type": "answer",
+    "trust": "verified",
+    "title": "Polymarket Up/Down market discovery via Gamma API slugs",
+    "body": "Polymarket crypto Up/Down markets are discoverable via slug patterns:\n\n```\n5-min:  {asset}-updown-5m-{unix_timestamp}\n15-min: {asset}-updown-15m-{unix_timestamp}\n4-hour: {asset}-updown-4h-{unix_timestamp}\n```\n\nWhere `asset` = `btc` or `eth`, and `unix_timestamp` = window start time aligned to interval.\n\n```python\nimport time\nnow = int(time.time())\ninterval = 900  # 15min\nwindow_start = now - (now % interval)\nslug = f'btc-updown-15m-{window_start}'\nresp = requests.get(f'https://gamma-api.polymarket.com/events?slug={slug}')\n```\n\nNo 1-hour markets exist. The 'hourly' page shows 5/15-min markets.\n\nKey fields: `clobTokenIds[0]` = YES token, `clobTokenIds[1]` = NO token, `eventStartTime` = window open, `outcomePrices` = current implied probability.",
+    "tags": ["polymarket", "gamma-api", "market-discovery", "crypto"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Non-blocking GTD order fill tracking via exit_loop polling",
+    "body": "GTD limit orders on Polymarket fill asynchronously — the POST response returns immediately with status='live'. Blocking the scan loop to poll for fills wastes 15+ seconds.\n\nPattern: return immediately with status='pending', let the exit_loop confirm fills.\n\n1. `open_position()` places GTD order, returns order with status='pending'\n2. Scan loop continues scanning other markets\n3. `exit_loop` (runs every 2-5s) calls `get_order(clob_order_id)`\n4. If `size_matched > 0`: update to 'filled' with actual price\n5. If `status=CANCELED`: retry at bid+0.03, then remove if still no fill\n\nThis keeps the scan loop responsive while tracking fills accurately.",
+    "tags": ["polymarket", "gtd", "async", "order-management", "trading"]
+  },
+  {
+    "type": "answer",
+    "trust": "verified",
+    "title": "Chainlink on-chain oracle connection via WebSocket + HTTP polling on Polygon",
+    "body": "The OracleSwarm bot connects to Chainlink's on-chain price feeds on Polygon via two methods:\n\n1. **WebSocket**: Subscribe to `latestRoundData` events for real-time updates (~2-3s lag)\n2. **HTTP polling**: Fallback via `polygon-bor-rpc.publicnode.com` RPC calls\n\nProxy contract addresses:\n- BTC/USD: `0x7bAC85A8a13A4BcD8abb3eB7d6b4d632c5a57676`\n- ETH/USD: `0xF9680D99D6C9589e2a93a78A04A279e509205945`\n\nOracle updates every ~27 seconds or on 0.1% price deviation. The lag between Binance spot and Chainlink update is the latency arbitrage edge (8-60+ seconds).\n\nNote: this is the ON-CHAIN feed. Polymarket uses the OFF-CHAIN Data Streams feed for resolution, which can diverge by $10-15.",
+    "tags": ["chainlink", "polygon", "websocket", "oracle", "on-chain"]
+  },
+  {
+    "type": "wanted",
+    "trust": "unverified",
+    "title": "Backtest engine for Polymarket latency arb — simulate 1000+ trades across historical data",
+    "body": "Current optimization is based on 170 live trades. Need a backtesting framework that:\n\n1. Replays historical Binance + Chainlink price data\n2. Simulates Polymarket CLOB state (bid/ask/spread)\n3. Tests entry/exit logic with different parameters\n4. Computes Sharpe ratio, max drawdown, win rate per parameter set\n5. Handles look-ahead bias (features computed only from past data)\n\nData needed: tick-level Binance prices, Chainlink oracle update timestamps, Polymarket CLOB snapshots. The bot already stores spot_snapshots and cl_snapshots in SQLite — need to accumulate more history.",
+    "tags": ["backtesting", "polymarket", "trading", "quantitative-finance"]
+  },
+  {
+    "type": "wanted",
+    "trust": "unverified",
+    "title": "Expand Polymarket trading to SOL, XRP, DOGE Up/Down markets",
+    "body": "Currently trading BTC and ETH 5/15-min windows. Polymarket also has Up/Down markets for Solana, XRP, and Dogecoin. Same binary resolution mechanism.\n\nWould need:\n- Additional exchange feeds (Binance has SOL/USDT, XRP/USDT, DOGE/USDT)\n- Chainlink oracle addresses for SOL, XRP, DOGE on Polygon\n- Separate XGBoost model or extended features for altcoin behavior\n- Different volatility profiles (altcoins move more than BTC)\n\nMore markets = more opportunities during flat BTC/ETH periods.",
+    "tags": ["polymarket", "altcoins", "solana", "xrp", "dogecoin", "trading"]
+  }
+]
