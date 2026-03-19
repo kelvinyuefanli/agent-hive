@@ -1,0 +1,107 @@
+[
+  {
+    "type": "doc",
+    "trust": "verified",
+    "title": "How Polymarket crypto Up/Down markets work — binary resolution mechanics",
+    "body": "Polymarket offers binary markets on whether BTC/ETH will go Up or Down within a time window (5min, 15min, 4hr). Each market has a YES token (Up) and NO token (Down). At resolution, the winning token pays $1.00 and the losing token pays $0.00.\n\nThe 'Price to beat' is set by Chainlink Data Streams at the exact window start time. If the Chainlink price at window end >= opening price, the market resolves UP. Otherwise DOWN.\n\nKey insight: the CLOB (order book) prices reflect market consensus probability. When YES is at $0.60, the market thinks there's a 60% chance of UP. Our edge comes from knowing the direction before the CLOB prices it in.",
+    "tags": ["polymarket", "binary-markets", "crypto", "resolution", "chainlink"]
+  },
+  {
+    "type": "doc",
+    "trust": "verified",
+    "title": "The latency arb edge — why Binance leads Chainlink by 8-60 seconds",
+    "body": "Chainlink's on-chain oracle updates every ~27 seconds or when price deviates 0.1%. Binance spot updates in milliseconds. During fast moves, Binance shows the new price 8-60+ seconds before Chainlink updates.\n\nThis creates a window where we know the price direction but the Polymarket CLOB hasn't fully reflected it. We buy tokens at the pre-move CLOB price and hold to resolution.\n\nThe edge is structural — it exists because Chainlink's heartbeat is fixed. It won't go away unless Chainlink changes their update mechanism. However, market makers on Polymarket also see Binance, so the CLOB adjusts within seconds for obvious moves. The edge only exists for the first 10-30 seconds of a move.",
+    "tags": ["latency-arb", "binance", "chainlink", "oracle-lag", "edge"]
+  },
+  {
+    "type": "doc",
+    "trust": "verified",
+    "title": "Why the opening price is the most critical data point in Polymarket Up/Down trading",
+    "body": "The entire trade outcome depends on one comparison: closing price vs opening price. If you have the wrong opening price, every downstream decision is corrupt — direction calls, edge calculations, wrong-side checks, and resolution detection all break.\n\nPolymarket uses Chainlink Data Streams (off-chain, sub-second) to set the opening price. The on-chain Chainlink oracle lags by ~27 seconds, creating a $10-15 divergence. This means the bot might think BTC opened at $74,150 when it actually opened at $74,165 — and bet UP when the real position is already underwater.\n\nThe definitive fix is Chainlink Data Streams API access (paid). The workaround is recording CL prices with wall-clock timestamps and looking up the nearest snapshot to the window start time.",
+    "tags": ["opening-price", "polymarket", "chainlink", "data-streams", "critical"]
+  },
+  {
+    "type": "doc",
+    "trust": "verified",
+    "title": "Why hold-to-resolution beats early exit on Polymarket 5-minute binary markets",
+    "body": "On 5-minute windows, attempts to sell tokens early (stop-loss or take-profit) consistently fail because:\n\n1. FAK/FOK sell orders find no buyers at extreme prices (>0.90 or <0.10) near resolution — market makers just wait for the $1 payout.\n2. Stop-loss sells at 0.01 destroy value on correct predictions that temporarily dip before recovering.\n3. The 5-minute window is too short for the sell to execute, confirm, and settle.\n\nData showed 3 out of 5 stop-loss 'saves' actually killed winning trades (correct predictions that dipped then recovered). Hold-to-resolution is the correct strategy for short-duration binary markets.",
+    "tags": ["polymarket", "exit-strategy", "binary-markets", "stop-loss", "hold-to-resolution"]
+  },
+  {
+    "type": "doc",
+    "trust": "verified",
+    "title": "Signal filtering hierarchy — how OracleSwarm decides to enter a trade",
+    "body": "The bot evaluates signals through a sequential filter chain. Each gate is pass/fail — failing any gate skips the trade.\n\n1. Warmup check (5min after restart for CL history)\n2. Daily loss limit (-$50 stops all entries)\n3. Window validity (not expired, 40%+ time remaining, not already traded)\n4. Price move threshold (Binance moved 0.06-0.10%+ in 60s)\n5. Chainlink lag (30s for 15min, 60s for 5min)\n6. Spread threshold (Binance-CL divergence > 0.035%)\n7. Trend filter (signal vs 30-min trend — scale 0.2x to 1.5x)\n8. Wrong-side check (spot vs opening price alignment)\n9. CLOB freshness (<3s old)\n10. Entry price range (0.30-0.80)\n11. Edge threshold (model_prob - entry_price > 2.5%)\n12. XGBoost confidence gate (>= 0.48 win probability)\n13. Kelly sizing with multiple confidence scales\n\nThe XGBoost gate is the most powerful — it achieved 94% WR on backtested trades by learning patterns across all features simultaneously.",
+    "tags": ["signal-filtering", "gates", "trading-logic", "xgboost", "polymarket"]
+  },
+  {
+    "type": "doc",
+    "trust": "verified",
+    "title": "Why DOWN bets on Polymarket require different logic than UP bets",
+    "body": "DOWN bets (buying NO tokens) have several asymmetries vs UP bets:\n\n1. The NO token orderbook is thinner — fewer market makers, wider spreads, more FOK kills.\n2. The 'correct side' check is inverted — for DOWN, spot should be BELOW opening price.\n3. Mean-reversion DOWN signals (Binance dips below CL) are unreliable — the dip is often temporary and price bounces back UP.\n4. The probability model overestimates DOWN edge because the fitted model was trained on UP-dominated data.\n\nIn testing: DOWN 15min was the most profitable bucket (7W/3L = 70% WR, +$36) because down-trending days produce consistent DOWN signals. But DOWN on flat/up days is a coin flip.\n\nThe trend filter is critical for DOWN bets — only take DOWN when the 30-min trend confirms downward momentum.",
+    "tags": ["polymarket", "down-bets", "no-token", "asymmetry", "trading"]
+  },
+  {
+    "type": "doc",
+    "trust": "verified",
+    "title": "Position sizing for binary markets — Kelly criterion with multiple confidence scales",
+    "body": "Binary markets resolve at $0 or $1, so position sizing directly determines whether the strategy is profitable or not. Kelly criterion optimized for variable odds:\n\nkelly_full = (b*p - q) / b, where b = (1/entry_price - 1), p = model probability, q = 1-p\n\nMultiple scaling factors stack multiplicatively:\n- Kelly fraction (0.15 base)\n- Confidence scale (Bayesian bucket observation count)\n- Correlation scale (0.5x if same-direction position open)\n- Asset scale (0.75x for ETH vs BTC)\n- Trend scale (0.2x to 1.5x based on trend alignment)\n- Consensus scale (0.7x if only Binance, 1.0x if Binance+Coinbase agree)\n\nFloor: 6.75% of bankroll. Cap: 13.5%. This ensures minimum $7-8 bets (above Polymarket's 5-share minimum) while preventing outsized losses.",
+    "tags": ["kelly-criterion", "position-sizing", "binary-markets", "risk-management"]
+  },
+  {
+    "type": "doc",
+    "trust": "verified",
+    "title": "Auto-reconciliation — why you should never trust a trading bot's own PnL tracking",
+    "body": "In 2 days of live trading, the bot's internal PnL tracking was wrong on 10 out of 40 trades — 25% error rate. The causes:\n\n1. Stop-loss recorded phantom exits that never executed on Polymarket\n2. Resolution detection used CL price drift (wrong) instead of CLOB state\n3. Take-profit for DOWN bets checked the YES token instead of NO token\n4. FAK sells appeared successful (HTTP 200) but filled 0 shares\n\nThe fix: verify every trade against Polymarket's Gamma API ground truth. outcomePrices=['1','0'] = UP won, ['0','1'] = DOWN won. Run reconciliation every 15 minutes and fix mismatches in both the positions table and signal_tuner_trades table.\n\nNever train a model on unreconciled data — phantom losses corrupt feature importance and threshold calibration.",
+    "tags": ["reconciliation", "data-quality", "polymarket", "pnl-tracking", "model-training"]
+  },
+  {
+    "type": "doc",
+    "trust": "verified",
+    "title": "Trend following vs latency arb — when each strategy works on Polymarket",
+    "body": "Two distinct strategies for Polymarket crypto Up/Down markets:\n\nLATENCY ARB: Works when Binance makes a sharp move and Chainlink hasn't caught up. Best in the first 60-90 seconds of a window during volatile periods. Requires high CL lag (30s+). Works on 5min and 15min.\n\nTREND FOLLOWING: Works when there's a sustained directional move over 30+ minutes. Best mid-window when the trend is confirmed. Doesn't require CL lag — uses 30-min price trend as primary signal. Better suited for 4-hour windows where trends have time to play out.\n\nOn a trending day (BTC dropping all day), trend-following DOWN signals dominated — 70% WR. On a choppy day, latency arb UP signals with high CL lag were more reliable.\n\nThe bot uses latency arb for 5/15min (requires oracle lag) and trend-following for 4hr (requires sustained trend). Both use XGBoost as a confidence gate.",
+    "tags": ["latency-arb", "trend-following", "polymarket", "trading-strategy"]
+  },
+  {
+    "type": "doc",
+    "trust": "verified",
+    "title": "How to set up a Polymarket trading bot on Lightsail — systemd, proxy wallet, CLOB API",
+    "body": "Infrastructure for 24/7 Polymarket trading:\n\n1. AWS Lightsail instance (Montreal, $3.50/mo) running Ubuntu\n2. Python 3.11 venv with py-clob-client, httpx, structlog, xgboost\n3. systemd service for auto-restart on crash\n4. Polymarket proxy wallet (signature_type=1) — gasless transactions via Builder Relayer\n5. CLOB API credentials (API_KEY, SECRET, PASSPHRASE) derived from POLYGON_PRIVATE_KEY\n6. Chainlink oracle connection via WebSocket + HTTP polling on Polygon RPC\n7. Binance + Coinbase price feeds for consensus\n8. SQLite DB for trade history, signal tuner data, CL snapshots\n9. Log rotation to /var/log/oracleswarm/bot.log\n\nKey env vars: POLYGON_PRIVATE_KEY, POLYMARKET_API_KEY, POLYMARKET_API_SECRET, POLYMARKET_API_PASSPHRASE, POLYMARKET_FUNDER, POLYMARKET_SIGNATURE_TYPE=1, LIVE_TRADING=true",
+    "tags": ["polymarket", "infrastructure", "lightsail", "systemd", "deployment"]
+  },
+  {
+    "type": "doc",
+    "trust": "verified",
+    "title": "Multi-exchange consensus — why two exchanges are better than one for trading signals",
+    "body": "Using only Binance for price signals creates false positive risk. A single exchange can have: flash crashes, API glitches, liquidation cascades, or manipulation events that don't reflect the real market.\n\nAdding Coinbase as a second source provides consensus validation. When both exchanges agree on direction (within 5 bps spread), the signal is 2-3x more reliable. When they disagree, the signal strength is halved.\n\nCurrent implementation: Binance is primary (lower latency), Coinbase confirms. Consensus check runs every 30s. Future improvement: add Kraken, OKX, Bybit for 5-exchange consensus — captures >90% of global crypto volume and virtually eliminates single-exchange false signals.",
+    "tags": ["consensus", "multi-exchange", "binance", "coinbase", "signal-quality"]
+  },
+  {
+    "type": "doc",
+    "trust": "verified",
+    "title": "The phantom exit problem — when your bot thinks it sold but Polymarket says otherwise",
+    "body": "The most dangerous bug in Polymarket bot development: the bot records a successful exit (stop-loss at $0.01, take-profit at $0.93) but the tokens never actually leave the wallet. This happens because:\n\n1. FAK orders can return HTTP 200 with 0 fills — the API doesn't error on empty fills\n2. At extreme prices (>0.90), no market maker is buying — they wait for resolution\n3. The bot assumes the sell worked and moves on, recording phantom PnL\n\nConsequences: the bankroll tracker is wrong, the tuner trains on fake data, risk limits are miscalculated, and manual redemption is needed for actually-winning tokens that the bot thinks it sold.\n\nPrevention: always poll get_order() to confirm fills on both entry AND exit. Never trust the initial API response alone.",
+    "tags": ["polymarket", "phantom-exit", "fill-confirmation", "trading-bugs"]
+  },
+  {
+    "type": "doc",
+    "trust": "verified",
+    "title": "Feature engineering for XGBoost trade filtering on Polymarket",
+    "body": "20 features that separate winning from losing trades on Polymarket Up/Down markets:\n\nPRICE FEATURES: entry_price (cheaper = more upside), edge (model_prob - price), estimated_prob\n\nORACLE FEATURES: cl_lag_s (higher = more info edge), abs_spread (Binance vs CL divergence), spread_direction (positive = UP signal)\n\nMARKET FEATURES: is_eth (ETH 64% WR vs BTC 44%), is_15min (15min 62% vs 5min 47%), clob_spread (liquidity indicator)\n\nTIMING FEATURES: hour_sin/cos (cyclical encoding), time_remaining_pct (how much window is left)\n\nTREND FEATURES: trend_30m (directional momentum), gap_pct (spot vs opening), trend_aligned (does signal match trend)\n\nMETA FEATURES: recent_wr (last 10 trades), hour_wr (historical hour performance)\n\nTop 3 by importance: is_down, is_15min, entry_price. The model learned that DOWN + 15min + cheap entry is the highest-conviction setup.",
+    "tags": ["xgboost", "feature-engineering", "ml", "polymarket", "trading"]
+  },
+  {
+    "type": "doc",
+    "trust": "verified",
+    "title": "Bankroll management for Polymarket bots — starting small, growing with wins",
+    "body": "Starting configuration for a new Polymarket trading bot:\n\n1. Begin with $100-130 bankroll cap regardless of wallet balance\n2. Min bet: 6.75% ($7-9). Max bet: 13.5% ($14-17)\n3. Daily loss limit: -$50 (stops all new entries)\n4. Bankroll grows automatically: after successful redemptions, cap increases by profit\n5. Persist bankroll cap to DB so it survives restarts\n6. Maximum cap: $500 initially\n\nThe bankroll cap is separate from wallet balance. Wallet might have $600 but the bot only sizes trades off the $130 cap. This prevents catastrophic losses during the validation phase.\n\nOnly increase the cap after 50+ trades with verified positive EV. Never increase based on a few lucky wins — the sample size needs to prove the strategy works.",
+    "tags": ["bankroll", "risk-management", "polymarket", "position-sizing"]
+  },
+  {
+    "type": "doc",
+    "trust": "verified",
+    "title": "4-hour market strategy — trend following replaces latency arb for longer windows",
+    "body": "4-hour Polymarket windows require a fundamentally different approach than 5/15-minute windows:\n\nWhy latency arb doesn't work: Chainlink catches up to Binance within minutes. Over 4 hours, there's zero oracle lag edge.\n\nWhat works instead: TREND FOLLOWING. Over 4 hours, crypto trends tend to persist. A 30-minute trend of +0.2% has meaningful predictive power for the full 4-hour resolution.\n\nEntry criteria for 4h:\n- Wait 5+ minutes after window open (let opening price settle)\n- 30-min trend > 0.2% in either direction\n- Spot on correct side of opening price (UP if above, DOWN if below)\n- Coinbase consensus confirms direction\n- Entry only in first 50% of window (don't chase late)\n\nKey difference from 5/15min: no CL lag requirement, bigger moves needed, trend alignment is primary not secondary.",
+    "tags": ["4-hour", "trend-following", "polymarket", "trading-strategy"]
+  }
+]
