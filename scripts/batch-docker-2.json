@@ -1,0 +1,590 @@
+[
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Docker COPY invalidates cache even when file contents haven't changed",
+    "body": "Docker's layer caching for COPY is based on file checksums, but it recalculates them every build. If your build context includes files that change frequently (like `.git` or logs), unrelated COPY instructions get invalidated.\n\n```dockerfile\n# Bad — entire context changing invalidates this\nCOPY . /app\nRUN npm install\n\n# Good — copy dependency files first, install, then copy source\nCOPY package.json package-lock.json /app/\nRUN npm install\nCOPY . /app\n```\n\nAlways structure your Dockerfile so that layers with the least frequent changes come first. Combined with a proper `.dockerignore`, this can reduce build times from minutes to seconds.",
+    "tags": ["docker", "layer-caching", "build-optimization", "dockerfile"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Docker multi-stage build ARGs don't persist across stages",
+    "body": "ARG values declared before the first FROM are global but must be re-declared (without a default) in each stage that needs them. ARG values declared inside a stage are scoped to that stage only.\n\n```dockerfile\n# Global ARG — available to FROM lines\nARG NODE_VERSION=20\n\nFROM node:${NODE_VERSION}-alpine AS builder\n# Must re-declare to use inside this stage\nARG NODE_VERSION\nRUN echo \"Building with Node ${NODE_VERSION}\"\n\nFROM node:${NODE_VERSION}-alpine AS runtime\n# This ARG is NOT available here unless re-declared\nARG NODE_VERSION\nRUN echo \"Running with Node ${NODE_VERSION}\"\n```\n\nForgetting to re-declare the ARG inside a stage is a silent bug — the variable expands to an empty string with no error.",
+    "tags": ["docker", "multi-stage-build", "arg", "dockerfile"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Docker ADD vs COPY — ADD has hidden auto-extraction behavior",
+    "body": "ADD automatically extracts tar archives and supports remote URLs. This sounds useful but creates unpredictable behavior and cache invalidation issues.\n\n```dockerfile\n# ADD extracts tar files automatically\nADD app.tar.gz /app/  # Extracted!\nCOPY app.tar.gz /app/  # Copied as-is\n\n# ADD fetches remote URLs (but no caching headers)\nADD https://example.com/file.txt /app/  # Downloaded every build\n```\n\nBest practice: always use COPY unless you explicitly need tar extraction. For remote files, use `RUN curl` or `RUN wget` instead of ADD — you get better caching control and can verify checksums.",
+    "tags": ["docker", "dockerfile", "copy", "add", "best-practices"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Docker HEALTHCHECK default interval is 30s with 30s start period",
+    "body": "If you add a HEALTHCHECK without specifying timing, Docker waits 0 seconds before the first check. Containers can be marked unhealthy before your app finishes starting.\n\n```dockerfile\n# Bad — first check runs immediately at container start\nHEALTHCHECK CMD curl -f http://localhost:3000/health || exit 1\n\n# Good — give the app time to start\nHEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \\\n  CMD curl -f http://localhost:3000/health || exit 1\n```\n\nThe `--start-period` is critical for apps with slow startup (JVM, large Node apps). During the start period, failed health checks don't count toward the retry limit. Without it, orchestrators like Swarm or ECS may restart containers in a crash loop.",
+    "tags": ["docker", "healthcheck", "container-orchestration", "startup"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Docker compose v2 uses dash instead of underscore for service names in networks",
+    "body": "Docker Compose v2 changed the default project separator from underscore to dash. This breaks DNS resolution if you hardcoded container hostnames.\n\n```yaml\n# compose.yaml\nservices:\n  my-api:\n    image: my-api:latest\n    depends_on:\n      - my-db\n  my-db:\n    image: postgres:16\n```\n\nIn Compose v1, the container name was `myproject_my-db_1`. In v2, it's `myproject-my-db-1`. However, the DNS hostname for inter-service communication is just the service name (`my-db`), not the container name. If you were using container names for DNS resolution, switch to service names.\n\n```python\n# Correct — use the service name\nDATABASE_URL = \"postgresql://user:pass@my-db:5432/app\"\n# Wrong — don't use the container name\nDATABASE_URL = \"postgresql://user:pass@myproject-my-db-1:5432/app\"\n```",
+    "tags": ["docker", "compose-v2", "networking", "dns", "migration"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Docker volume mounts silently override container directory contents",
+    "body": "When you bind-mount a host directory to a container path, the host directory completely replaces whatever was in the container at that path — including files created during the build.\n\n```yaml\n# compose.yaml\nservices:\n  app:\n    build: .\n    volumes:\n      - .:/app  # Replaces everything in /app including node_modules!\n```\n\n```dockerfile\n# Dockerfile\nCOPY package.json /app/\nRUN npm install  # Creates /app/node_modules\nCOPY . /app\n```\n\nThe `npm install` runs during build, but the bind mount overwrites `/app/node_modules` with whatever is (or isn't) on the host. Fix with a named volume for node_modules:\n\n```yaml\nvolumes:\n  - .:/app\n  - /app/node_modules  # Anonymous volume preserves container's node_modules\n```",
+    "tags": ["docker", "volumes", "bind-mount", "node-modules", "gotcha"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Docker ENTRYPOINT exec form doesn't expand shell variables",
+    "body": "The exec form `[\"binary\", \"arg\"]` does not invoke a shell, so environment variable expansion and globbing don't work.\n\n```dockerfile\n# This does NOT expand $PORT — runs literally \"$PORT\"\nENTRYPOINT [\"node\", \"server.js\", \"--port\", \"$PORT\"]\n\n# Option 1: Use shell form (PID 1 issue though)\nENTRYPOINT node server.js --port $PORT\n\n# Option 2: Use exec form with explicit shell\nENTRYPOINT [\"/bin/sh\", \"-c\", \"node server.js --port $PORT\"]\n\n# Option 3 (best): Use an entrypoint script\nCOPY entrypoint.sh /entrypoint.sh\nENTRYPOINT [\"/entrypoint.sh\"]\n```\n\nOption 3 is preferred because the script can use `exec` to replace the shell process, ensuring proper signal handling:\n\n```bash\n#!/bin/sh\nexec node server.js --port \"${PORT:-3000}\"\n```",
+    "tags": ["docker", "entrypoint", "shell-form", "exec-form", "environment-variables"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Docker signals not reaching app when using shell form CMD",
+    "body": "When you use shell form for CMD or ENTRYPOINT, your process runs as a child of `/bin/sh`, which doesn't forward signals. SIGTERM from `docker stop` never reaches your app, causing a 10-second timeout then SIGKILL.\n\n```dockerfile\n# Bad — node is PID 2, shell is PID 1, signals lost\nCMD npm start\n\n# Good — node is PID 1, receives signals directly\nCMD [\"node\", \"server.js\"]\n```\n\nIf you must use shell form (for variable expansion), use `exec`:\n\n```dockerfile\nCMD exec node server.js\n```\n\nAlternatively, use `tini` as an init system that properly forwards signals:\n\n```dockerfile\nRUN apk add --no-cache tini\nENTRYPOINT [\"/sbin/tini\", \"--\"]\nCMD [\"node\", \"server.js\"]\n```",
+    "tags": ["docker", "signals", "graceful-shutdown", "pid1", "tini"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Docker build context sent to daemon is larger than expected",
+    "body": "Docker sends the entire build context directory to the daemon before the build starts. Without a `.dockerignore`, this includes `.git`, `node_modules`, test fixtures, and other large directories.\n\n```\n# .dockerignore\n.git\nnode_modules\n*.md\n.env*\ndist\ncoverage\n.next\n__pycache__\n*.pyc\n.pytest_cache\n.vscode\n.idea\nDockerfile*\ndocker-compose*\n```\n\nYou can verify what's being sent:\n\n```bash\n# Check context size\ndu -sh --exclude=.git . \n\n# Build with progress to see context transfer\ndocker build --progress=plain -t myapp .\n# First line shows: \"sending build context to docker daemon  XXX MB\"\n```\n\nA 2GB context directory means Docker copies 2GB to the daemon on every build. A proper `.dockerignore` often reduces this to under 10MB.",
+    "tags": ["docker", "dockerignore", "build-context", "performance"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Docker compose depends_on doesn't wait for service readiness",
+    "body": "`depends_on` only waits for the container to start, not for the service inside it to be ready. Your app will crash trying to connect to a database that hasn't finished initializing.\n\n```yaml\nservices:\n  app:\n    build: .\n    depends_on:\n      db:\n        condition: service_healthy  # Wait for health check\n  db:\n    image: postgres:16\n    healthcheck:\n      test: [\"CMD-SHELL\", \"pg_isready -U postgres\"]\n      interval: 5s\n      timeout: 5s\n      retries: 5\n```\n\nThe `condition: service_healthy` syntax requires a healthcheck on the dependency. For services without health checks, implement retry logic in your application code:\n\n```javascript\nasync function connectWithRetry(url, maxRetries = 10) {\n  for (let i = 0; i < maxRetries; i++) {\n    try { return await connect(url); }\n    catch { await new Promise(r => setTimeout(r, 2000)); }\n  }\n  throw new Error('Failed to connect after retries');\n}\n```",
+    "tags": ["docker", "compose-v2", "depends-on", "healthcheck", "startup-order"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Alpine-based images missing common libraries causing runtime crashes",
+    "body": "Alpine uses musl libc instead of glibc. Precompiled binaries (like Node native addons, Python wheels, or Go CGO binaries) built against glibc will segfault or fail to load on Alpine.\n\n```dockerfile\n# This can fail with \"Error: Error loading shared library\"\nFROM node:20-alpine\nRUN npm install bcrypt  # Native addon compiled against glibc\n\n# Fix 1: Install compatibility packages\nFROM node:20-alpine\nRUN apk add --no-cache python3 make g++\nRUN npm install bcrypt  # Recompiles from source\n\n# Fix 2: Use slim instead of alpine\nFROM node:20-slim\nRUN npm install bcrypt  # Works out of the box\n```\n\nAlpine images are ~5MB smaller but the compatibility headaches often aren't worth it. `node:20-slim` (Debian-based) is ~75MB vs Alpine's ~50MB — a negligible difference for the reliability gain.",
+    "tags": ["docker", "alpine", "musl", "glibc", "native-modules"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Docker buildx platform emulation is 10-50x slower than native builds",
+    "body": "Building ARM images on x86 (or vice versa) with `docker buildx` uses QEMU emulation, which is extremely slow — especially for compilation steps.\n\n```bash\n# Cross-platform build (slow — QEMU emulation)\ndocker buildx build --platform linux/amd64,linux/arm64 -t myapp .\n\n# Faster: use a remote native builder\ndocker buildx create --name remote-arm \\\n  --driver docker-container \\\n  --platform linux/arm64 \\\n  ssh://user@arm-server\n\ndocker buildx build --builder remote-arm \\\n  --platform linux/amd64,linux/arm64 -t myapp .\n```\n\nFor CI, consider building each platform natively on its own runner and using `docker manifest` to combine them, rather than cross-compiling everything on one machine.",
+    "tags": ["docker", "buildx", "multi-platform", "arm64", "performance"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Docker container logs can fill up disk space with json-file driver",
+    "body": "The default `json-file` logging driver has no size limit. Long-running containers can generate gigabytes of logs that fill up the host disk.\n\n```json\n// /etc/docker/daemon.json — set global defaults\n{\n  \"log-driver\": \"json-file\",\n  \"log-opts\": {\n    \"max-size\": \"10m\",\n    \"max-file\": \"3\"\n  }\n}\n```\n\nPer-container override in compose:\n\n```yaml\nservices:\n  app:\n    image: myapp\n    logging:\n      driver: json-file\n      options:\n        max-size: \"10m\"\n        max-file: \"3\"\n```\n\nTo check current log sizes: `docker system df -v` or `du -sh /var/lib/docker/containers/*/`. To truncate a specific container's log: `truncate -s 0 $(docker inspect --format='{{.LogPath}}' container_name)`.",
+    "tags": ["docker", "logging", "disk-space", "json-file", "log-rotation"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Docker USER directive doesn't create the user — you must create it first",
+    "body": "The USER instruction switches the user for subsequent instructions, but it doesn't create the user. If the user doesn't exist, the build fails or the container runs with a numeric UID that has no home directory.\n\n```dockerfile\n# Wrong — user doesn't exist\nUSER appuser\nRUN npm install  # Fails: user not found\n\n# Correct — create user first\nRUN addgroup --system --gid 1001 appgroup && \\\n    adduser --system --uid 1001 --ingroup appgroup appuser\nUSER appuser\nWORKDIR /home/appuser/app\nCOPY --chown=appuser:appgroup . .\nRUN npm install\n```\n\nAlways pair USER with `--chown` on COPY/ADD instructions, otherwise files are owned by root and the non-root user can't read them.",
+    "tags": ["docker", "security", "rootless", "user", "dockerfile"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Docker compose env_file doesn't support multiline values or quotes",
+    "body": "Docker Compose's `env_file` uses a simple parser that doesn't handle quoted strings the same way a shell does. Quotes become part of the value.\n\n```bash\n# .env file\nDB_PASSWORD=\"my secret password\"\n# Actual value in container: \"my secret password\" (with quotes!)\n\n# Correct for env_file:\nDB_PASSWORD=my secret password\n# Actual value: my secret password\n\n# But this breaks if value has = sign:\nCONNECTION_STRING=host=localhost port=5432\n# Only gets: host\n```\n\nFor complex values, use `environment` in your compose file directly, or use Docker secrets:\n\n```yaml\nservices:\n  app:\n    environment:\n      - DB_PASSWORD=my secret password\n      - CONNECTION_STRING=host=localhost port=5432\n```",
+    "tags": ["docker", "compose-v2", "env-file", "environment-variables"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Docker bridge network DNS resolution only works with user-defined networks",
+    "body": "Containers on the default `bridge` network cannot resolve each other by container name. Only user-defined bridge networks support automatic DNS.\n\n```bash\n# Default bridge — no DNS resolution\ndocker run --name db -d postgres\ndocker run --name app -d myapp\n# Inside app: ping db → fails\n\n# User-defined network — DNS works\ndocker network create mynet\ndocker run --name db --network mynet -d postgres\ndocker run --name app --network mynet -d myapp\n# Inside app: ping db → resolves to db container IP\n```\n\nDocker Compose automatically creates a user-defined network, which is why service-to-service DNS works out of the box in Compose but not with raw `docker run`.",
+    "tags": ["docker", "networking", "dns", "bridge-network", "compose-v2"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Docker named volumes persist data even after container removal",
+    "body": "Named volumes are not removed with `docker rm` or `docker compose down`. This is a feature, but it catches people off guard when they expect a fresh database after recreating containers.\n\n```yaml\nservices:\n  db:\n    image: postgres:16\n    volumes:\n      - pgdata:/var/lib/postgresql/data\nvolumes:\n  pgdata:\n```\n\n```bash\n# This does NOT remove volumes\ndocker compose down\n\n# This removes volumes too\ndocker compose down -v\n\n# Check orphaned volumes\ndocker volume ls\ndocker volume prune  # Remove unused volumes\n```\n\nThis is especially surprising when you change the database initialization scripts (like Postgres init SQL files) — the old volume still has data from the previous init, and the new scripts never run because the data directory isn't empty.",
+    "tags": ["docker", "volumes", "data-persistence", "compose-v2", "postgres"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Docker EXPOSE doesn't actually expose ports — it's just documentation",
+    "body": "The EXPOSE instruction in a Dockerfile does nothing at runtime. It's metadata that documents which ports the container listens on, but doesn't publish them.\n\n```dockerfile\n# This does NOT make port 3000 accessible from the host\nEXPOSE 3000\n```\n\nYou still need `-p` to publish ports:\n\n```bash\n# Actually exposes the port\ndocker run -p 3000:3000 myapp\n\n# EXPOSE + -P publishes all EXPOSE'd ports to random host ports\ndocker run -P myapp  # 3000 → 49153 (random)\n```\n\nThe only functional use of EXPOSE is with `docker run -P` (capital P), which auto-maps all EXPOSE'd ports to random host ports. In Compose, use the `ports` directive — EXPOSE is irrelevant.",
+    "tags": ["docker", "expose", "ports", "networking", "dockerfile"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Docker RUN commands create a new layer — chain them to reduce image size",
+    "body": "Each RUN instruction creates a new filesystem layer. Files deleted in a later RUN still exist in the previous layer, inflating image size.\n\n```dockerfile\n# Bad — 3 layers, apt cache persists in layer 1\nRUN apt-get update\nRUN apt-get install -y curl\nRUN rm -rf /var/lib/apt/lists/*\n\n# Good — 1 layer, cache cleaned in same layer\nRUN apt-get update && \\\n    apt-get install -y --no-install-recommends curl && \\\n    rm -rf /var/lib/apt/lists/*\n```\n\nThis is critical for package manager caches, build tools, and temporary files. If you install `gcc` to compile something, remove it in the same RUN or use multi-stage builds.",
+    "tags": ["docker", "layers", "image-size", "dockerfile", "optimization"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Docker compose profiles let you define optional services that don't start by default",
+    "body": "Services with profiles only start when explicitly requested. This is useful for dev tools, debug containers, and one-off tasks.\n\n```yaml\nservices:\n  app:\n    build: .\n    ports: [\"3000:3000\"]\n  db:\n    image: postgres:16\n  \n  # Only starts with --profile debug\n  pgadmin:\n    image: dpage/pgadmin4\n    profiles: [\"debug\"]\n    ports: [\"5050:80\"]\n  \n  # Only starts with --profile seed\n  seeder:\n    build: ./seed\n    profiles: [\"seed\"]\n    depends_on: [db]\n```\n\n```bash\ndocker compose up           # Only app + db\ndocker compose --profile debug up  # app + db + pgadmin\ndocker compose --profile seed run seeder  # Run seeder one-off\n```\n\nGotcha: a service with a profile that is a dependency of a non-profile service will NOT auto-start. You must explicitly activate the profile.",
+    "tags": ["docker", "compose-v2", "profiles", "development", "optional-services"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Docker resource limits are not enforced by default — containers can consume all host resources",
+    "body": "Without explicit limits, a container can use all available CPU and memory on the host, potentially crashing other containers or the host itself.\n\n```yaml\n# compose.yaml\nservices:\n  app:\n    image: myapp\n    deploy:\n      resources:\n        limits:\n          cpus: '2.0'\n          memory: 512M\n        reservations:\n          cpus: '0.5'\n          memory: 256M\n```\n\n```bash\n# docker run equivalent\ndocker run --cpus=2.0 --memory=512m --memory-swap=512m myapp\n```\n\nImportant: `--memory` alone still allows swap usage. Set `--memory-swap` equal to `--memory` to disable swap. In Compose v2, resource limits under `deploy.resources` work even without Swarm mode.",
+    "tags": ["docker", "resource-limits", "memory", "cpu", "compose-v2"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Docker layer caching breaks when COPY includes frequently changing files",
+    "body": "Docker invalidates a COPY layer and all subsequent layers when any file in the copied set changes. A single changed file in a large directory busts the cache for everything after it.\n\n```dockerfile\n# Bad — any source change invalidates npm install cache\nCOPY . /app\nRUN npm install\nRUN npm run build\n\n# Good — separate dependency install from source copy\nCOPY package.json package-lock.json /app/\nRUN npm install --production\nCOPY . /app\nRUN npm run build\n```\n\nFor monorepos, copy workspace package.json files individually before the full COPY:\n\n```dockerfile\nCOPY package.json pnpm-lock.yaml pnpm-workspace.yaml /app/\nCOPY packages/api/package.json /app/packages/api/\nCOPY packages/web/package.json /app/packages/web/\nRUN pnpm install --frozen-lockfile\nCOPY . /app\n```",
+    "tags": ["docker", "layer-caching", "monorepo", "build-optimization"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Docker compose watch restarting on every file save in large projects",
+    "body": "Compose Watch (the replacement for bind mounts in dev) can trigger excessive rebuilds if the watch path is too broad.\n\n```yaml\nservices:\n  app:\n    build: .\n    develop:\n      watch:\n        # Sync source files without rebuild\n        - action: sync\n          path: ./src\n          target: /app/src\n        # Rebuild only when dependencies change\n        - action: rebuild\n          path: ./package.json\n        # Sync+restart when config changes\n        - action: sync+restart\n          path: ./config\n          target: /app/config\n```\n\n```bash\ndocker compose watch  # Starts watch mode\n```\n\nGotcha: don't set `action: rebuild` on a broad path like `./src` — use `sync` for source files and reserve `rebuild` for dependency changes. The `sync` action is like a live bind mount but works with remote Docker hosts too.",
+    "tags": ["docker", "compose-v2", "watch", "development", "hot-reload"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Docker secrets in Swarm are mounted as files, not environment variables",
+    "body": "Docker Swarm secrets are mounted at `/run/secrets/<name>` as files. Libraries that read from environment variables won't find them automatically.\n\n```yaml\nservices:\n  app:\n    image: myapp\n    secrets:\n      - db_password\n    environment:\n      # Read from the secret file\n      DB_PASSWORD_FILE: /run/secrets/db_password\nsecrets:\n  db_password:\n    file: ./secrets/db_password.txt\n```\n\nYour app must read the file:\n\n```javascript\nconst fs = require('fs');\nconst dbPassword = process.env.DB_PASSWORD_FILE\n  ? fs.readFileSync(process.env.DB_PASSWORD_FILE, 'utf8').trim()\n  : process.env.DB_PASSWORD;\n```\n\nMany official images (Postgres, MySQL, Redis) support the `_FILE` suffix convention natively, e.g., `POSTGRES_PASSWORD_FILE`.",
+    "tags": ["docker", "secrets", "swarm", "security", "environment-variables"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Docker WORKDIR creates the directory if it doesn't exist",
+    "body": "WORKDIR implicitly creates the directory and all parent directories. This can mask issues where you intended to COPY into an existing path.\n\n```dockerfile\n# WORKDIR creates /app/src even if it doesn't exist\nWORKDIR /app/src\nRUN ls  # Empty directory, no error\n\n# Common mistake: typo in WORKDIR path\nWORKDIR /ap/src  # Creates /ap/src — no error!\nCOPY . .  # Files end up in wrong place\n```\n\nWORKDIR also affects all subsequent RUN, CMD, ENTRYPOINT, COPY, and ADD instructions. Always use absolute paths with WORKDIR to avoid confusion about the current directory.",
+    "tags": ["docker", "workdir", "dockerfile", "directory-creation"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Docker compose extends is back in Compose v2 but with limitations",
+    "body": "Compose v2 re-introduced `extends` (it was removed in Compose v3 for Swarm). But extended services cannot have `depends_on`, `links`, or `volumes_from` — these fields are not inherited.\n\n```yaml\n# compose.base.yaml\nservices:\n  base-node:\n    image: node:20-slim\n    working_dir: /app\n    environment:\n      NODE_ENV: production\n\n# compose.yaml\nservices:\n  api:\n    extends:\n      file: compose.base.yaml\n      service: base-node\n    ports: [\"3000:3000\"]\n    command: node api.js\n  worker:\n    extends:\n      file: compose.base.yaml\n      service: base-node\n    command: node worker.js\n```\n\nIf you need to share `depends_on`, use YAML anchors instead of `extends`.",
+    "tags": ["docker", "compose-v2", "extends", "yaml", "reusability"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Docker image scanning misses vulnerabilities in non-package files",
+    "body": "Docker security scanners (Trivy, Snyk, Scout) only detect vulnerabilities in known package managers (apt, apk, npm, pip). Binaries copied directly or compiled from source are invisible to scanners.\n\n```bash\n# Scan with Docker Scout\ndocker scout quickview myapp:latest\ndocker scout cves myapp:latest\n\n# Scan with Trivy\ntrivy image myapp:latest\n\n# Scan with Snyk\nsnyk container test myapp:latest\n```\n\nGotcha: if you `COPY` a precompiled binary or download a tarball with `curl`, no scanner will flag vulnerabilities in it. Always prefer installing via package managers when possible, and pin versions explicitly:\n\n```dockerfile\n# Scannable — version tracked by package manager\nRUN apk add --no-cache curl=8.5.0-r0\n\n# Not scannable — invisible to security tools\nRUN curl -L https://example.com/tool-v1.2.3 -o /usr/local/bin/tool\n```",
+    "tags": ["docker", "security-scanning", "trivy", "vulnerabilities", "best-practices"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Docker build cache is not shared between BuildKit and legacy builder",
+    "body": "Docker Desktop uses BuildKit by default, but CI systems or older Docker versions may use the legacy builder. The two have separate caches and different cache behaviors.\n\n```bash\n# Check which builder is active\nDOCKER_BUILDKIT=1 docker build .  # Force BuildKit\nDOCKER_BUILDKIT=0 docker build .  # Force legacy builder\n\n# BuildKit supports inline cache for registry-based caching\ndocker build --build-arg BUILDKIT_INLINE_CACHE=1 -t myapp .\ndocker push myapp:latest\n\n# Pull cache from registry on CI\ndocker build --cache-from myapp:latest -t myapp .\n```\n\nBuildKit also supports cache mounts that persist across builds:\n\n```dockerfile\n# syntax=docker/dockerfile:1\nRUN --mount=type=cache,target=/root/.npm npm install\n```\n\nThis keeps the npm cache between builds without including it in the final image layer.",
+    "tags": ["docker", "buildkit", "cache", "ci-cd", "build-performance"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Docker container timezone defaults to UTC regardless of host timezone",
+    "body": "Containers use UTC by default. Applications logging timestamps or scheduling tasks will use UTC unless explicitly configured.\n\n```dockerfile\n# Set timezone in Dockerfile (Debian/Ubuntu)\nRUN apt-get update && \\\n    apt-get install -y --no-install-recommends tzdata && \\\n    ln -sf /usr/share/zoneinfo/America/New_York /etc/localtime && \\\n    echo \"America/New_York\" > /etc/timezone\n\n# Alpine\nRUN apk add --no-cache tzdata && \\\n    cp /usr/share/zoneinfo/America/New_York /etc/localtime && \\\n    echo \"America/New_York\" > /etc/timezone\n```\n\nOr pass via environment:\n\n```yaml\nservices:\n  app:\n    image: myapp\n    environment:\n      - TZ=America/New_York\n```\n\nBest practice: keep containers in UTC and handle timezone conversion at the application level. This avoids confusion when containers run across different regions.",
+    "tags": ["docker", "timezone", "utc", "logging", "configuration"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Docker rootless mode has limited network and storage driver support",
+    "body": "Rootless Docker runs the daemon as a non-root user for security, but comes with limitations: no binding to ports below 1024, limited storage drivers, and no `--privileged` flag.\n\n```bash\n# Install rootless Docker\ndockerctl-rootless.sh install\n\n# Set environment\nexport DOCKER_HOST=unix://$XDG_RUNTIME_DIR/docker.sock\n\n# Port mapping below 1024 requires net.ipv4.ip_unprivileged_port_start\nsudo sysctl -w net.ipv4.ip_unprivileged_port_start=80\n```\n\nRootless Docker uses `fuse-overlayfs` instead of the native overlay2 driver, which can be slower. For production, Podman (daemonless) is often a better choice for rootless container workflows since it was designed rootless-first.",
+    "tags": ["docker", "rootless", "security", "podman", "production"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Docker error: no space left on device during build",
+    "body": "This error occurs when Docker's storage is full — not necessarily the host disk. Docker stores images, containers, volumes, and build cache separately.\n\n```bash\n# Check Docker disk usage\ndocker system df\n\n# Clean up everything unused\ndocker system prune -a --volumes\n\n# More targeted cleanup\ndocker image prune -a        # Remove all unused images\ndocker container prune        # Remove stopped containers\ndocker volume prune           # Remove unused volumes\ndocker builder prune          # Remove build cache\n\n# Nuclear option — remove ALL Docker data\ndocker system prune -a --volumes -f\n```\n\nIn CI, add `docker system prune -f` at the start of each pipeline. For Docker Desktop, increase the disk image size in Settings > Resources > Advanced.",
+    "tags": ["docker", "disk-space", "error", "cleanup", "ci-cd"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Docker error: bind mount permission denied on Linux host",
+    "body": "When running a container as a non-root user, bind-mounted files may be inaccessible because the container user's UID doesn't match the host file owner.\n\n```bash\n# Error: EACCES: permission denied, open '/app/data/file.txt'\n\n# Fix 1: Match UIDs\ndocker run -u $(id -u):$(id -g) -v ./data:/app/data myapp\n\n# Fix 2: Set permissions in Dockerfile\nRUN chown -R 1000:1000 /app/data\n\n# Fix 3: Use user namespace remapping\n# /etc/docker/daemon.json\n{\n  \"userns-remap\": \"default\"\n}\n```\n\nOn Docker Desktop for Mac/Windows, this isn't an issue because file sharing uses a virtualization layer that maps permissions automatically. It's a Linux-only problem.",
+    "tags": ["docker", "permissions", "bind-mount", "linux", "uid-gid"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Docker error: Cannot connect to the Docker daemon",
+    "body": "The most common Docker error. It means the Docker daemon isn't running or your user doesn't have permission to access the socket.\n\n```bash\n# Check if daemon is running\nsystemctl status docker\nsudo systemctl start docker\n\n# Check socket permissions\nls -la /var/run/docker.sock\n\n# Add user to docker group (Linux)\nsudo usermod -aG docker $USER\nnewgrp docker  # Apply without logout\n\n# macOS: start Docker Desktop\nopen -a Docker\n\n# If using a custom socket\nexport DOCKER_HOST=unix:///var/run/docker.sock\n```\n\nIn CI environments (GitHub Actions, GitLab CI), ensure the Docker service is started in the pipeline config. For Docker-in-Docker (DinD), mount the host socket or use the `docker:dind` service.",
+    "tags": ["docker", "daemon", "error", "socket", "permissions"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Docker error: port is already allocated",
+    "body": "This error occurs when the host port is already in use by another container or process.\n\n```bash\n# Find what's using the port\nlsof -i :3000\nnetstat -tlnp | grep 3000\n\n# Find which container uses the port\ndocker ps --format '{{.Names}}: {{.Ports}}' | grep 3000\n\n# Fix: use a different host port\ndocker run -p 3001:3000 myapp\n\n# Or stop the conflicting container\ndocker stop $(docker ps -q --filter publish=3000)\n```\n\nIn Compose, if you have multiple compose files running, they may conflict on ports. Use `docker compose ps` to see all running services and their port mappings.\n\nPro tip: use port 0 to let Docker assign a random available port:\n```bash\ndocker run -p 0:3000 myapp\ndocker port <container> 3000  # Shows assigned port\n```",
+    "tags": ["docker", "port-conflict", "error", "networking"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Docker error: OCI runtime create failed — exec format error",
+    "body": "This happens when you try to run an image built for a different CPU architecture (e.g., running an ARM image on x86 or vice versa).\n\n```bash\n# Check image architecture\ndocker inspect myapp --format '{{.Architecture}}'\n\n# Check host architecture\nuname -m\n\n# Pull the correct platform\ndocker pull --platform linux/amd64 myapp:latest\n\n# Build for the correct platform\ndocker build --platform linux/amd64 -t myapp .\n\n# Enable multi-platform support via QEMU\ndocker run --privileged --rm tonistiigi/binfmt --install all\n```\n\nThis is increasingly common with Apple Silicon Macs. Always specify `--platform linux/amd64` in CI/CD pipelines to ensure consistent builds across developer machines and servers.",
+    "tags": ["docker", "architecture", "arm64", "amd64", "exec-format-error"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Docker error: max depth exceeded when using too many layers",
+    "body": "Docker images have a layer limit (historically 127 layers with AUFS, higher with overlay2). Deep multi-stage builds or images based on many FROM layers can hit this.\n\n```dockerfile\n# Each instruction adds a layer\nRUN command1  # Layer\nRUN command2  # Layer\nRUN command3  # Layer\n\n# Fix: combine RUN instructions\nRUN command1 && \\\n    command2 && \\\n    command3\n```\n\nWith overlay2 (the modern default), the limit is much higher but the real issue is performance — hundreds of layers slow down image pulls and container starts. Keep total layers under 20 for optimal performance by combining related RUN instructions.",
+    "tags": ["docker", "layers", "error", "overlay2", "image-optimization"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Docker error: network has active endpoints when removing network",
+    "body": "You can't remove a Docker network while containers are still connected to it.\n\n```bash\n# Error: network mynet has active endpoints\n\n# Find connected containers\ndocker network inspect mynet --format '{{range .Containers}}{{.Name}} {{end}}'\n\n# Disconnect all containers\ndocker network disconnect -f mynet container_name\n\n# Or stop all containers using the network\ndocker ps --filter network=mynet -q | xargs docker stop\n\n# Now remove the network\ndocker network rm mynet\n\n# Nuclear: remove all unused networks\ndocker network prune\n```\n\nIn Compose, `docker compose down` handles this automatically. The error usually happens when you manually created a network and forgot to clean up containers.",
+    "tags": ["docker", "networking", "error", "cleanup"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Docker error: COPY failed file not found — build context confusion",
+    "body": "COPY paths are relative to the build context (the directory passed to `docker build`), not the Dockerfile location.\n\n```bash\n# Build context is current directory\ndocker build -t myapp .\n\n# Build context is parent directory\ndocker build -t myapp -f docker/Dockerfile ..\n```\n\n```dockerfile\n# If Dockerfile is in docker/ but build context is project root:\nCOPY src/ /app/src/           # Correct — relative to build context (project root)\nCOPY docker/nginx.conf /etc/  # Correct\nCOPY ../shared/ /app/shared/  # ERROR — can't go above build context\n```\n\nYou cannot COPY files from outside the build context. The build context defines the boundary. If you need files from a parent directory, set the build context to the parent and use `-f` to specify the Dockerfile location.",
+    "tags": ["docker", "copy", "build-context", "error", "dockerfile"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Docker error: container unhealthy after healthcheck fails",
+    "body": "When a container's health check fails `retries` times in a row, Docker marks it as unhealthy. This can trigger restarts in orchestrators.\n\n```bash\n# Check health status\ndocker inspect --format='{{json .State.Health}}' mycontainer | jq\n\n# See health check logs\ndocker inspect --format='{{range .State.Health.Log}}{{.Output}}{{end}}' mycontainer\n\n# Common issues:\n# 1. Health check command not installed in image\n# Fix: install curl/wget in Dockerfile\nRUN apt-get update && apt-get install -y curl\n\n# 2. Wrong port or path\nHEALTHCHECK CMD curl -f http://localhost:3000/health  # Is it really 3000?\n\n# 3. App hasn't started yet — increase start-period\nHEALTHCHECK --start-period=60s CMD curl -f http://localhost:3000/health\n```\n\nTo disable a health check inherited from a base image: `HEALTHCHECK NONE`.",
+    "tags": ["docker", "healthcheck", "unhealthy", "error", "debugging"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Docker error: image with reference was not found — tag was overwritten",
+    "body": "If you pull `myapp:latest` and someone pushes a new version with the same tag, your local image becomes untagged (`<none>:<none>`) and any reference to the tag pulls the new version.\n\n```bash\n# These images are dangling — old tags overwritten\ndocker images --filter 'dangling=true'\n\n# Pin versions instead of using :latest\ndocker pull myapp:1.2.3\n\n# Even better — use digest for immutable references\ndocker pull myapp@sha256:abc123...\n\n# In Compose, pin with digest\nservices:\n  app:\n    image: myapp@sha256:abc123def456...\n```\n\nIn production, never deploy `:latest`. Use semantic versioning or commit SHAs as tags. In CI, output the full image digest and use it in deployment manifests.",
+    "tags": ["docker", "tags", "latest", "immutable", "error"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Docker error: container exits immediately with code 0",
+    "body": "A container exits when its main process (PID 1) exits. If your CMD runs a background process, the container stops immediately because the foreground shell exits.\n\n```dockerfile\n# Bad — starts nginx in background, shell exits, container stops\nCMD nginx\n\n# Good — run in foreground\nCMD [\"nginx\", \"-g\", \"daemon off;\"]\n\n# Bad — runs process in background\nCMD node server.js &\n\n# Good — run in foreground\nCMD [\"node\", \"server.js\"]\n```\n\nFor debugging, run the container interactively:\n\n```bash\ndocker run -it myapp /bin/sh\n# Then manually run your CMD to see what happens\n```\n\nAnother common cause: the entrypoint script doesn't use `exec`, so when the script finishes, PID 1 (the shell) exits even though the app is still running as a child process.",
+    "tags": ["docker", "exit-code", "foreground", "cmd", "debugging"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Docker error: toomanyrequests — Docker Hub rate limiting",
+    "body": "Docker Hub limits anonymous pulls to 100 per 6 hours, and authenticated free accounts to 200 per 6 hours. CI pipelines frequently hit this.\n\n```bash\n# Check remaining pulls\nTOKEN=$(curl -s \"https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/alpine:pull\" | jq -r .token)\ncurl -s -H \"Authorization: Bearer $TOKEN\" \"https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/latest\" -I 2>&1 | grep ratelimit\n\n# Fix 1: Login to Docker Hub\ndocker login -u username\n\n# Fix 2: Use a mirror/proxy registry\n# /etc/docker/daemon.json\n{\n  \"registry-mirrors\": [\"https://mirror.gcr.io\"]\n}\n\n# Fix 3: Copy base images to your own registry\ndocker pull node:20-slim\ndocker tag node:20-slim ghcr.io/myorg/node:20-slim\ndocker push ghcr.io/myorg/node:20-slim\n```\n\nIn CI, always cache pulled images and authenticate with Docker Hub.",
+    "tags": ["docker", "rate-limiting", "docker-hub", "ci-cd", "error"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Docker error: dns resolution failed in container during build",
+    "body": "RUN instructions that fetch from the internet (apt-get, npm install, pip install) fail with DNS errors when Docker's DNS configuration doesn't match the host.\n\n```bash\n# Error: Could not resolve host: registry.npmjs.org\n\n# Fix 1: Use host DNS in build\ndocker build --network=host -t myapp .\n\n# Fix 2: Configure Docker DNS\n# /etc/docker/daemon.json\n{\n  \"dns\": [\"8.8.8.8\", \"8.8.4.4\"]\n}\nsudo systemctl restart docker\n\n# Fix 3: Compose build with network\nservices:\n  app:\n    build:\n      context: .\n      network: host\n```\n\nThis is especially common in corporate environments with custom DNS servers, VPNs, or proxy configurations. Docker Desktop for Mac has its own DNS resolution that sometimes conflicts with VPN software.",
+    "tags": ["docker", "dns", "error", "build", "networking"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Docker error: failed to compute cache key — file not found in context",
+    "body": "BuildKit's error message when COPY can't find a file. Different from the legacy builder's error — check your `.dockerignore` first.\n\n```bash\n# Error: failed to compute cache key: \"/src\" not found\n\n# Common cause: file is in .dockerignore\ncat .dockerignore\n# If it shows 'src/' — that's your problem\n\n# Another cause: build context is wrong\ndocker build -f Dockerfile .  # Context is .\ndocker build -f Dockerfile ..  # Context is parent dir\n\n# Debug: list files in build context\n# (BuildKit doesn't show context transfer progress by default)\nDOCKER_BUILDKIT=0 docker build .  # Legacy builder shows context size\n```\n\nBuildKit only transfers files that are actually referenced by COPY/ADD instructions (lazy context), so the error means the file truly isn't in the context or is excluded by `.dockerignore`.",
+    "tags": ["docker", "buildkit", "cache-key", "error", "dockerignore"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Docker error: insufficient memory — container killed by OOM",
+    "body": "When a container exceeds its memory limit, the kernel's OOM killer terminates it with exit code 137 (128 + SIGKILL signal 9).\n\n```bash\n# Check if container was OOM killed\ndocker inspect mycontainer --format='{{.State.OOMKilled}}'\n\n# Check container memory usage\ndocker stats mycontainer --no-stream\n\n# Increase memory limit\ndocker run --memory=1g --memory-swap=1g myapp\n\n# In Compose\nservices:\n  app:\n    deploy:\n      resources:\n        limits:\n          memory: 1G\n```\n\nFor Node.js, also set the V8 heap limit:\n```dockerfile\nCMD [\"node\", \"--max-old-space-size=768\", \"server.js\"]\n```\n\nThe V8 heap limit should be ~75% of the container memory limit to leave room for other memory usage (buffers, native addons, etc.).",
+    "tags": ["docker", "oom-killer", "memory", "exit-code-137", "error"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Docker error: context canceled during multi-stage build",
+    "body": "BuildKit parallelizes multi-stage builds. If one stage fails, it cancels all other running stages, producing a confusing \"context canceled\" error on the stages that were actually succeeding.\n\n```\n[builder 3/5] RUN npm install\n => ERROR: context canceled\n[test 2/3] RUN npm test\n => ERROR: npm ERR! Test failed  <-- actual error\n```\n\nThe real error is in the stage that failed first, not the \"context canceled\" ones. Read BuildKit output from bottom to top or search for the first ERROR that isn't \"context canceled\".\n\nTo debug, build a specific stage in isolation:\n\n```bash\n# Build only the failing stage\ndocker build --target test -t myapp-test .\n```",
+    "tags": ["docker", "buildkit", "multi-stage", "error", "debugging"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Docker error: /bin/sh not found when using distroless base image",
+    "body": "Distroless images (like `gcr.io/distroless/static` or `gcr.io/distroless/base`) don't have a shell. Shell-form CMD/RUN fails, and you can't exec into the container.\n\n```dockerfile\n# Fails — no /bin/sh in distroless\nFROM gcr.io/distroless/static\nCMD node server.js  # Shell form requires /bin/sh\n\n# Works — exec form doesn't need shell\nFROM gcr.io/distroless/static\nCMD [\"/app/server\"]  # Direct execution\n\n# Use debug variant for troubleshooting\nFROM gcr.io/distroless/base:debug\n# Now you can: docker exec -it container /busybox/sh\n```\n\nDistroless images are great for security (minimal attack surface) but require all RUN commands in a builder stage. The final stage should only COPY binaries and use exec-form CMD.",
+    "tags": ["docker", "distroless", "shell", "error", "security"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Docker error: compose file version is obsolete — remove version field",
+    "body": "Docker Compose v2 ignores the `version` field. Including it produces a warning, and old version-specific features may not work as expected.\n\n```yaml\n# Old — produces warning\nversion: '3.8'\nservices:\n  app:\n    image: myapp\n\n# Correct for Compose v2 — no version field\nservices:\n  app:\n    image: myapp\n```\n\nCompose v2 merged all features from all version specifications. Features that were `deploy`-only in v3 (like `resources`, `restart_policy`) now work without Swarm. If migrating from v2 or v3 files, just remove the `version` line and test.",
+    "tags": ["docker", "compose-v2", "version", "migration", "error"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Docker error: cannot mount volume over existing directory with contents",
+    "body": "When using named volumes, Docker copies the container directory's contents into the volume on first use. But bind mounts always overlay — overwriting what's in the container.\n\n```yaml\n# Named volume — container contents are copied to volume (first time only)\nvolumes:\n  - mydata:/app/data  # /app/data contents preserved\n\n# Bind mount — host directory overlays container contents\nvolumes:\n  - ./data:/app/data  # Container's /app/data is hidden\n```\n\nThis difference catches people when switching from named volumes to bind mounts during development. If you need the container's files, initialize the bind mount directory first:\n\n```bash\n# Copy files from container to host\ndocker create --name temp myapp\ndocker cp temp:/app/data ./data\ndocker rm temp\n```",
+    "tags": ["docker", "volumes", "bind-mount", "named-volume", "error"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Multi-stage Docker build for Node.js production image",
+    "body": "A production-optimized multi-stage build that separates build dependencies from runtime, resulting in a minimal final image.\n\n```dockerfile\n# syntax=docker/dockerfile:1\n\n# Stage 1: Install dependencies\nFROM node:20-slim AS deps\nWORKDIR /app\nCOPY package.json package-lock.json ./\nRUN npm ci --ignore-scripts\n\n# Stage 2: Build\nFROM deps AS builder\nCOPY . .\nRUN npm run build\n\n# Stage 3: Production dependencies only\nFROM node:20-slim AS prod-deps\nWORKDIR /app\nCOPY package.json package-lock.json ./\nRUN npm ci --omit=dev --ignore-scripts\n\n# Stage 4: Runtime\nFROM node:20-slim AS runtime\nRUN addgroup --system app && adduser --system --ingroup app app\nWORKDIR /app\nCOPY --from=prod-deps --chown=app:app /app/node_modules ./node_modules\nCOPY --from=builder --chown=app:app /app/dist ./dist\nCOPY --chown=app:app package.json ./\nUSER app\nEXPOSE 3000\nHEALTHCHECK --interval=30s --timeout=5s --start-period=10s \\\n  CMD node -e \"require('http').get('http://localhost:3000/health', r => r.statusCode === 200 ? process.exit(0) : process.exit(1))\"\nCMD [\"node\", \"dist/server.js\"]\n```\n\nThis pattern yields images ~150MB instead of ~1GB. The health check uses Node directly instead of curl (no need to install additional tools).",
+    "tags": ["docker", "multi-stage-build", "nodejs", "production", "pattern"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Docker Compose development environment with hot reload and debug ports",
+    "body": "A complete development Compose setup with hot reload, debugging, and local services.\n\n```yaml\n# compose.yaml\nservices:\n  app:\n    build:\n      context: .\n      target: development  # Multi-stage target\n    ports:\n      - \"3000:3000\"\n      - \"9229:9229\"  # Node.js debugger\n    environment:\n      - NODE_ENV=development\n      - DATABASE_URL=postgresql://postgres:postgres@db:5432/myapp\n      - REDIS_URL=redis://redis:6379\n    develop:\n      watch:\n        - action: sync\n          path: ./src\n          target: /app/src\n        - action: rebuild\n          path: package.json\n    depends_on:\n      db:\n        condition: service_healthy\n      redis:\n        condition: service_started\n\n  db:\n    image: postgres:16\n    environment:\n      POSTGRES_DB: myapp\n      POSTGRES_USER: postgres\n      POSTGRES_PASSWORD: postgres\n    ports:\n      - \"5432:5432\"\n    volumes:\n      - pgdata:/var/lib/postgresql/data\n      - ./init.sql:/docker-entrypoint-initdb.d/init.sql\n    healthcheck:\n      test: [\"CMD-SHELL\", \"pg_isready -U postgres\"]\n      interval: 5s\n      timeout: 5s\n      retries: 5\n\n  redis:\n    image: redis:7-alpine\n    ports:\n      - \"6379:6379\"\n\nvolumes:\n  pgdata:\n```\n\nRun with `docker compose watch` for automatic sync on file changes. Attach VS Code debugger to port 9229 for breakpoint debugging.",
+    "tags": ["docker", "compose-v2", "development", "hot-reload", "debugging"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Docker health check patterns for different application types",
+    "body": "Health checks should verify that the application is actually serving requests, not just that the process is running.\n\n```dockerfile\n# HTTP server (no curl needed)\nHEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=3 \\\n  CMD node -e \"require('http').get('http://localhost:3000/health', r => { process.exit(r.statusCode === 200 ? 0 : 1) }).on('error', () => process.exit(1))\"\n\n# Python HTTP server\nHEALTHCHECK CMD python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\"\n\n# PostgreSQL\nHEALTHCHECK CMD pg_isready -U postgres -d mydb\n\n# Redis\nHEALTHCHECK CMD redis-cli ping | grep PONG\n\n# Worker process (check PID file or recent output)\nHEALTHCHECK CMD test -f /tmp/worker.pid && kill -0 $(cat /tmp/worker.pid)\n\n# gRPC service\nHEALTHCHECK CMD grpc_health_probe -addr=:50051\n```\n\nFor Compose orchestration, health checks control `depends_on` ordering with `condition: service_healthy`. Keep health check endpoints lightweight — no database queries or external API calls.",
+    "tags": ["docker", "healthcheck", "pattern", "monitoring", "compose-v2"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Docker BuildKit cache mounts for faster dependency installation",
+    "body": "Cache mounts persist a directory across builds without including it in the image. This dramatically speeds up package manager operations.\n\n```dockerfile\n# syntax=docker/dockerfile:1\n\n# Node.js — cache npm/yarn/pnpm\nRUN --mount=type=cache,target=/root/.npm \\\n    npm ci\n\nRUN --mount=type=cache,target=/root/.yarn/berry/cache \\\n    yarn install --immutable\n\nRUN --mount=type=cache,target=/root/.local/share/pnpm/store \\\n    pnpm install --frozen-lockfile\n\n# Python — cache pip\nRUN --mount=type=cache,target=/root/.cache/pip \\\n    pip install -r requirements.txt\n\n# Go — cache module downloads and build cache\nRUN --mount=type=cache,target=/go/pkg/mod \\\n    --mount=type=cache,target=/root/.cache/go-build \\\n    go build -o /app/server .\n\n# Rust — cache cargo registry and build artifacts\nRUN --mount=type=cache,target=/usr/local/cargo/registry \\\n    --mount=type=cache,target=/app/target \\\n    cargo build --release\n\n# apt — cache downloaded packages\nRUN --mount=type=cache,target=/var/cache/apt \\\n    --mount=type=cache,target=/var/lib/apt/lists \\\n    apt-get update && apt-get install -y curl\n```\n\nCache mounts require BuildKit (`DOCKER_BUILDKIT=1` or Docker Desktop). The cache persists on the builder, not in the image — perfect for CI when using persistent runners.",
+    "tags": ["docker", "buildkit", "cache-mount", "build-performance", "pattern"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Docker networking pattern — isolating frontend and backend networks",
+    "body": "Use multiple networks to control which services can communicate. The frontend proxy shouldn't have direct database access.\n\n```yaml\nservices:\n  nginx:\n    image: nginx\n    ports: [\"80:80\"]\n    networks: [frontend]\n    depends_on: [api]\n\n  api:\n    build: .\n    networks: [frontend, backend]  # Bridge between networks\n    environment:\n      DATABASE_URL: postgresql://postgres:secret@db:5432/app\n\n  db:\n    image: postgres:16\n    networks: [backend]  # Only accessible from backend network\n    volumes: [pgdata:/var/lib/postgresql/data]\n\n  redis:\n    image: redis:7\n    networks: [backend]\n\nnetworks:\n  frontend:\n  backend:\n\nvolumes:\n  pgdata:\n```\n\nWith this setup, nginx can reach api but NOT db or redis directly. The api service is on both networks, acting as a bridge. This follows the principle of least privilege for container networking.",
+    "tags": ["docker", "networking", "isolation", "compose-v2", "security"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Docker Compose override files for environment-specific config",
+    "body": "Use override files to layer environment-specific configuration on top of a base compose file.\n\n```yaml\n# compose.yaml (base)\nservices:\n  app:\n    image: myapp:latest\n    environment:\n      NODE_ENV: production\n    restart: always\n\n  db:\n    image: postgres:16\n    volumes:\n      - pgdata:/var/lib/postgresql/data\n\nvolumes:\n  pgdata:\n```\n\n```yaml\n# compose.override.yaml (auto-loaded in dev)\nservices:\n  app:\n    build: .\n    ports: [\"3000:3000\", \"9229:9229\"]\n    environment:\n      NODE_ENV: development\n    volumes:\n      - .:/app\n    restart: \"no\"\n\n  db:\n    ports: [\"5432:5432\"]\n    environment:\n      POSTGRES_PASSWORD: devpass\n```\n\n```yaml\n# compose.prod.yaml (explicit for prod)\nservices:\n  app:\n    deploy:\n      replicas: 3\n      resources:\n        limits: { memory: 512M }\n  db:\n    environment:\n      POSTGRES_PASSWORD_FILE: /run/secrets/db_password\n```\n\n```bash\n# Dev: auto-uses compose.yaml + compose.override.yaml\ndocker compose up\n\n# Prod: explicit file selection\ndocker compose -f compose.yaml -f compose.prod.yaml up -d\n```",
+    "tags": ["docker", "compose-v2", "override", "environments", "pattern"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Docker graceful shutdown pattern with proper signal handling",
+    "body": "Implement graceful shutdown so your app finishes in-flight requests before Docker sends SIGKILL (after the 10-second default timeout).\n\n```javascript\n// server.js\nconst server = app.listen(3000);\n\n// Handle SIGTERM from docker stop\nprocess.on('SIGTERM', () => {\n  console.log('SIGTERM received, shutting down gracefully...');\n  server.close(() => {\n    // Close database connections\n    db.end().then(() => {\n      console.log('Graceful shutdown complete');\n      process.exit(0);\n    });\n  });\n\n  // Force shutdown after 8 seconds (before Docker's 10s SIGKILL)\n  setTimeout(() => {\n    console.error('Forced shutdown');\n    process.exit(1);\n  }, 8000);\n});\n```\n\n```dockerfile\n# Ensure proper signal handling\nFROM node:20-slim\n# Use dumb-init or tini for signal forwarding\nRUN apt-get update && apt-get install -y --no-install-recommends dumb-init\nENTRYPOINT [\"dumb-init\", \"--\"]\nCMD [\"node\", \"server.js\"]\n```\n\nIncrease the stop timeout for apps that need more time:\n```yaml\nservices:\n  app:\n    stop_grace_period: 30s  # Default is 10s\n```",
+    "tags": ["docker", "graceful-shutdown", "signals", "sigterm", "pattern"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Docker CI/CD pipeline with registry caching and multi-platform builds",
+    "body": "An optimized Docker build pipeline for GitHub Actions using registry cache and multi-platform support.\n\n```yaml\n# .github/workflows/docker.yml\nname: Build and Push\non:\n  push:\n    branches: [main]\n    tags: ['v*']\n\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: docker/setup-buildx-action@v3\n      - uses: docker/login-action@v3\n        with:\n          registry: ghcr.io\n          username: ${{ github.actor }}\n          password: ${{ secrets.GITHUB_TOKEN }}\n\n      - uses: docker/metadata-action@v5\n        id: meta\n        with:\n          images: ghcr.io/${{ github.repository }}\n          tags: |\n            type=ref,event=branch\n            type=semver,pattern={{version}}\n            type=sha,prefix=\n\n      - uses: docker/build-push-action@v5\n        with:\n          context: .\n          platforms: linux/amd64,linux/arm64\n          push: true\n          tags: ${{ steps.meta.outputs.tags }}\n          cache-from: type=gha\n          cache-to: type=gha,mode=max\n```\n\nGitHub Actions cache (`type=gha`) is faster than registry cache for GHA runners. `mode=max` caches all layers, not just the final stage.",
+    "tags": ["docker", "ci-cd", "github-actions", "buildx", "multi-platform"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Docker Compose one-off task pattern for migrations and seeds",
+    "body": "Use Compose for one-off tasks like database migrations, seeding, and maintenance scripts without keeping long-running services.\n\n```yaml\nservices:\n  db:\n    image: postgres:16\n    healthcheck:\n      test: [\"CMD-SHELL\", \"pg_isready\"]\n      interval: 5s\n      retries: 5\n\n  migrate:\n    build: .\n    profiles: [\"tools\"]  # Don't start with `up`\n    command: npx prisma migrate deploy\n    depends_on:\n      db:\n        condition: service_healthy\n    environment:\n      DATABASE_URL: postgresql://postgres:postgres@db:5432/myapp\n\n  seed:\n    build: .\n    profiles: [\"tools\"]\n    command: node scripts/seed.js\n    depends_on:\n      db:\n        condition: service_healthy\n```\n\n```bash\n# Run migration (starts db, waits for healthy, runs migrate, exits)\ndocker compose run --rm migrate\n\n# Run seed\ndocker compose run --rm seed\n\n# Or use --profile for multiple tools\ndocker compose --profile tools run --rm migrate\n```\n\nThe `--rm` flag removes the container after exit. Using `profiles: [\"tools\"]` ensures these services don't start with `docker compose up`.",
+    "tags": ["docker", "compose-v2", "migrations", "one-off-tasks", "pattern"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Docker security hardening — read-only filesystem and dropped capabilities",
+    "body": "Harden containers by restricting filesystem access and Linux capabilities.\n\n```yaml\nservices:\n  app:\n    image: myapp\n    read_only: true  # Immutable root filesystem\n    tmpfs:\n      - /tmp  # Writable temp directory\n      - /var/run  # For PID files\n    security_opt:\n      - no-new-privileges:true  # Prevent privilege escalation\n    cap_drop:\n      - ALL  # Drop all Linux capabilities\n    cap_add:\n      - NET_BIND_SERVICE  # Only add what's needed\n```\n\n```bash\n# docker run equivalent\ndocker run --read-only \\\n  --tmpfs /tmp \\\n  --security-opt no-new-privileges:true \\\n  --cap-drop ALL \\\n  --cap-add NET_BIND_SERVICE \\\n  myapp\n```\n\nCombine with a non-root USER, a minimal base image (distroless or Alpine), and no setuid binaries for defense in depth. Run `docker run --rm -it myapp /bin/sh -c 'find / -perm -4000'` to find setuid binaries in your image.",
+    "tags": ["docker", "security", "hardening", "capabilities", "read-only"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Docker log aggregation pattern with structured JSON logging",
+    "body": "Configure containers to output structured JSON logs for easy parsing by log aggregation tools.\n\n```javascript\n// Application code — output JSON logs to stdout\nconst log = (level, message, meta = {}) => {\n  console.log(JSON.stringify({\n    timestamp: new Date().toISOString(),\n    level,\n    message,\n    service: process.env.SERVICE_NAME || 'api',\n    ...meta\n  }));\n};\n\nlog('info', 'Request handled', { method: 'GET', path: '/api/users', duration: 45 });\n```\n\n```yaml\n# compose.yaml with fluentd logging driver\nservices:\n  app:\n    image: myapp\n    logging:\n      driver: fluentd\n      options:\n        fluentd-address: localhost:24224\n        tag: myapp.{{.Name}}\n\n  # Or use json-file with labels for Docker log queries\n  api:\n    image: myapi\n    logging:\n      driver: json-file\n      options:\n        max-size: \"10m\"\n        max-file: \"3\"\n        labels: \"service,environment\"\n    labels:\n      service: api\n      environment: production\n```\n\nAlways log to stdout/stderr, never to files inside the container. Let Docker's logging driver handle rotation and forwarding.",
+    "tags": ["docker", "logging", "json", "fluentd", "observability"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Docker init containers pattern using Compose for setup tasks",
+    "body": "Kubernetes has init containers natively. In Docker Compose, you can simulate the pattern using depends_on with service_completed_successfully.\n\n```yaml\nservices:\n  # Init container: run migrations before app starts\n  init-db:\n    image: myapp\n    command: npx prisma migrate deploy\n    depends_on:\n      db:\n        condition: service_healthy\n    restart: \"no\"  # Run once only\n\n  # Init container: wait for external service\n  init-check-api:\n    image: curlimages/curl\n    command: sh -c 'until curl -sf http://external-api:8080/health; do sleep 2; done'\n    restart: \"no\"\n\n  app:\n    build: .\n    depends_on:\n      init-db:\n        condition: service_completed_successfully\n      init-check-api:\n        condition: service_completed_successfully\n      db:\n        condition: service_healthy\n\n  db:\n    image: postgres:16\n    healthcheck:\n      test: [\"CMD-SHELL\", \"pg_isready\"]\n      interval: 5s\n      retries: 5\n```\n\nThe `service_completed_successfully` condition ensures the init containers ran and exited with code 0 before the app starts.",
+    "tags": ["docker", "compose-v2", "init-containers", "startup-order", "pattern"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Docker build secrets for private registries and API keys during build",
+    "body": "BuildKit secrets let you use sensitive data during the build without embedding it in the image layers.\n\n```dockerfile\n# syntax=docker/dockerfile:1\n\nFROM node:20-slim\nWORKDIR /app\n\n# Mount npm token as secret during install\nCOPY package.json package-lock.json ./\nRUN --mount=type=secret,id=npmrc,target=/root/.npmrc \\\n    npm ci\n\n# Mount SSH key for private git repos\nRUN --mount=type=ssh \\\n    git clone git@github.com:private/repo.git\n\n# Mount arbitrary secret files\nRUN --mount=type=secret,id=api_key \\\n    API_KEY=$(cat /run/secrets/api_key) && \\\n    curl -H \"Authorization: Bearer $API_KEY\" https://api.example.com/data > data.json\n```\n\n```bash\n# Pass secrets at build time\ndocker build --secret id=npmrc,src=$HOME/.npmrc \\\n             --secret id=api_key,src=./api_key.txt \\\n             --ssh default \\\n             -t myapp .\n```\n\nSecrets are never stored in the image layers, even if the build fails midway. This replaces the insecure pattern of using ARG for secrets.",
+    "tags": ["docker", "buildkit", "secrets", "security", "pattern"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Docker Compose variable interpolation with defaults and required values",
+    "body": "Compose supports shell-style variable expansion with defaults and error messages.\n\n```yaml\nservices:\n  app:\n    image: myapp:${TAG:-latest}           # Default: latest\n    ports:\n      - \"${PORT:-3000}:3000\"              # Default: 3000\n    environment:\n      - DATABASE_URL=${DATABASE_URL:?DATABASE_URL is required}  # Error if missing\n      - LOG_LEVEL=${LOG_LEVEL:-info}       # Default: info\n      - NODE_ENV=${NODE_ENV}               # Empty string if not set\n```\n\n```bash\n# .env file (auto-loaded by Compose)\nTAG=1.2.3\nPORT=8080\nDATABASE_URL=postgresql://localhost:5432/app\n\n# Override at runtime\nTAG=canary docker compose up\n\n# Validate required vars\ndocker compose config  # Shows interpolated config, errors on missing required vars\n```\n\nThe `${VAR:?error}` syntax stops Compose startup with your error message if the variable is unset or empty. Use `docker compose config` to preview the fully interpolated file.",
+    "tags": ["docker", "compose-v2", "variables", "env-file", "configuration"]
+  },
+  {
+    "type": "config",
+    "trust": "verified",
+    "title": "Docker daemon.json production configuration",
+    "body": "A production-ready Docker daemon configuration with logging, storage, and security settings.\n\n```json\n{\n  \"log-driver\": \"json-file\",\n  \"log-opts\": {\n    \"max-size\": \"10m\",\n    \"max-file\": \"3\"\n  },\n  \"storage-driver\": \"overlay2\",\n  \"live-restore\": true,\n  \"default-ulimits\": {\n    \"nofile\": {\n      \"Name\": \"nofile\",\n      \"Hard\": 65536,\n      \"Soft\": 65536\n    }\n  },\n  \"default-address-pools\": [\n    {\n      \"base\": \"172.17.0.0/12\",\n      \"size\": 24\n    }\n  ],\n  \"metrics-addr\": \"0.0.0.0:9323\",\n  \"experimental\": false,\n  \"features\": {\n    \"buildkit\": true\n  },\n  \"insecure-registries\": [],\n  \"dns\": [\"8.8.8.8\", \"8.8.4.4\"]\n}\n```\n\nKey settings: `live-restore` keeps containers running during daemon restarts. `default-ulimits` prevents \"too many open files\" errors. `metrics-addr` exposes Prometheus metrics. Place this file at `/etc/docker/daemon.json` and restart Docker: `sudo systemctl restart docker`.",
+    "tags": ["docker", "daemon", "configuration", "production", "performance"]
+  },
+  {
+    "type": "config",
+    "trust": "verified",
+    "title": "Docker .dockerignore for Node.js projects — minimal build context",
+    "body": "A comprehensive `.dockerignore` that keeps the build context small and secure.\n\n```\n# Version control\n.git\n.gitignore\n\n# Dependencies (will be installed in container)\nnode_modules\n\n# Build output (will be built in container)\ndist\nbuild\n.next\n\n# Development files\n.env\n.env.*\n!.env.example\n*.md\nLICENSE\n\n# IDE\n.vscode\n.idea\n*.swp\n*.swo\n\n# Testing\ncoverage\n.nyc_output\n*.test.ts\n*.spec.ts\n__tests__\n\n# Docker files (don't need to be in context)\nDockerfile*\ndocker-compose*\ncompose.yaml\ncompose.override.yaml\n.dockerignore\n\n# CI/CD\n.github\n.gitlab-ci.yml\n\n# OS files\n.DS_Store\nThumbs.db\n```\n\nTest your `.dockerignore` by checking context size: build with `DOCKER_BUILDKIT=0` temporarily to see `Sending build context to Docker daemon` message. A well-configured ignore file typically reduces context from 500MB+ to under 5MB.",
+    "tags": ["docker", "dockerignore", "nodejs", "build-context", "config"]
+  },
+  {
+    "type": "config",
+    "trust": "verified",
+    "title": "Docker Compose production config with restart policies and logging",
+    "body": "Production compose configuration with proper restart policies, resource limits, and log management.\n\n```yaml\nservices:\n  app:\n    image: ghcr.io/myorg/myapp:${TAG}\n    restart: unless-stopped\n    ports:\n      - \"3000:3000\"\n    environment:\n      NODE_ENV: production\n      DATABASE_URL: ${DATABASE_URL:?Required}\n    deploy:\n      resources:\n        limits:\n          cpus: '2.0'\n          memory: 512M\n        reservations:\n          cpus: '0.5'\n          memory: 256M\n    logging:\n      driver: json-file\n      options:\n        max-size: \"10m\"\n        max-file: \"5\"\n    healthcheck:\n      test: [\"CMD\", \"node\", \"-e\", \"fetch('http://localhost:3000/health').then(r => process.exit(r.ok ? 0 : 1))\"]\n      interval: 30s\n      timeout: 10s\n      retries: 3\n      start_period: 30s\n\n  db:\n    image: postgres:16\n    restart: unless-stopped\n    volumes:\n      - pgdata:/var/lib/postgresql/data\n    environment:\n      POSTGRES_PASSWORD_FILE: /run/secrets/db_password\n    secrets:\n      - db_password\n    deploy:\n      resources:\n        limits:\n          memory: 1G\n    shm_size: 256m  # Shared memory for Postgres\n\nsecrets:\n  db_password:\n    file: ./secrets/db_password.txt\n\nvolumes:\n  pgdata:\n```\n\nUse `restart: unless-stopped` (not `always`) so you can intentionally stop services. Set `shm_size` for Postgres to avoid \"could not resize shared memory segment\" errors.",
+    "tags": ["docker", "compose-v2", "production", "configuration", "deployment"]
+  },
+  {
+    "type": "config",
+    "trust": "verified",
+    "title": "Docker BuildKit Dockerfile with mount cache and bind mounts",
+    "body": "Advanced Dockerfile using BuildKit features for maximum build performance.\n\n```dockerfile\n# syntax=docker/dockerfile:1\n\nFROM node:20-slim AS base\nWORKDIR /app\nENV NODE_ENV=production\n\n# Install system dependencies with apt cache mount\nRUN --mount=type=cache,target=/var/cache/apt \\\n    --mount=type=cache,target=/var/lib/apt/lists \\\n    apt-get update && apt-get install -y --no-install-recommends \\\n    openssl ca-certificates\n\n# Install Node dependencies with npm cache mount\nFROM base AS deps\nCOPY package.json package-lock.json ./\nRUN --mount=type=cache,target=/root/.npm \\\n    npm ci --omit=dev\n\n# Build stage\nFROM base AS build\nCOPY package.json package-lock.json ./\nRUN --mount=type=cache,target=/root/.npm \\\n    npm ci\nCOPY . .\nRUN npm run build\n\n# Final stage — minimal runtime image\nFROM gcr.io/distroless/nodejs20-debian12\nWORKDIR /app\nCOPY --from=deps /app/node_modules ./node_modules\nCOPY --from=build /app/dist ./dist\nCOPY package.json ./\nEXPOSE 3000\nCMD [\"dist/server.js\"]\n```\n\nThe `# syntax=docker/dockerfile:1` directive enables BuildKit frontend features. Cache mounts persist across builds on the same builder but never appear in the final image. Using distroless as the final base gives you the smallest possible image with no shell or system utilities.",
+    "tags": ["docker", "buildkit", "cache-mount", "distroless", "config"]
+  },
+  {
+    "type": "config",
+    "trust": "verified",
+    "title": "Docker Compose networking config with custom subnets and aliases",
+    "body": "Define custom networks with specific subnets for predictable IP ranges, and use aliases for service discovery.\n\n```yaml\nservices:\n  api:\n    build: ./api\n    networks:\n      backend:\n        aliases:\n          - api.local  # Additional DNS name\n        ipv4_address: 172.20.0.10  # Static IP\n\n  web:\n    build: ./web\n    networks:\n      frontend:\n      backend:\n        aliases:\n          - web.internal\n\n  nginx:\n    image: nginx\n    ports: [\"80:80\", \"443:443\"]\n    networks:\n      frontend:\n        ipv4_address: 172.21.0.10\n\nnetworks:\n  frontend:\n    driver: bridge\n    ipam:\n      config:\n        - subnet: 172.21.0.0/24\n          gateway: 172.21.0.1\n  backend:\n    driver: bridge\n    internal: true  # No external internet access\n    ipam:\n      config:\n        - subnet: 172.20.0.0/24\n```\n\nThe `internal: true` flag prevents containers on the backend network from reaching the internet — useful for database containers that should only be accessible internally. Aliases provide additional DNS names beyond the service name.",
+    "tags": ["docker", "networking", "compose-v2", "subnets", "dns-aliases"]
+  },
+  {
+    "type": "config",
+    "trust": "verified",
+    "title": "Docker Compose with Traefik reverse proxy and automatic SSL",
+    "body": "Traefik auto-discovers services via Docker labels and provisions Let's Encrypt certificates.\n\n```yaml\nservices:\n  traefik:\n    image: traefik:v3.0\n    command:\n      - --providers.docker=true\n      - --providers.docker.exposedbydefault=false\n      - --entrypoints.web.address=:80\n      - --entrypoints.websecure.address=:443\n      - --certificatesresolvers.letsencrypt.acme.email=admin@example.com\n      - --certificatesresolvers.letsencrypt.acme.storage=/certs/acme.json\n      - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web\n    ports:\n      - \"80:80\"\n      - \"443:443\"\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n      - certs:/certs\n\n  api:\n    build: ./api\n    labels:\n      - traefik.enable=true\n      - traefik.http.routers.api.rule=Host(`api.example.com`)\n      - traefik.http.routers.api.entrypoints=websecure\n      - traefik.http.routers.api.tls.certresolver=letsencrypt\n      - traefik.http.services.api.loadbalancer.server.port=3000\n\n  web:\n    build: ./web\n    labels:\n      - traefik.enable=true\n      - traefik.http.routers.web.rule=Host(`example.com`)\n      - traefik.http.routers.web.entrypoints=websecure\n      - traefik.http.routers.web.tls.certresolver=letsencrypt\n\nvolumes:\n  certs:\n```\n\nTraefik reads Docker labels to configure routing. `exposedbydefault=false` means services must opt in with `traefik.enable=true`. Mount the Docker socket as read-only for security.",
+    "tags": ["docker", "traefik", "reverse-proxy", "ssl", "compose-v2"]
+  },
+  {
+    "type": "config",
+    "trust": "verified",
+    "title": "Docker Compose GPU passthrough for ML/AI workloads",
+    "body": "Pass NVIDIA GPUs to containers for machine learning training and inference.\n\n```yaml\nservices:\n  ml-training:\n    image: pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime\n    deploy:\n      resources:\n        reservations:\n          devices:\n            - driver: nvidia\n              count: all  # Or specific: count: 1\n              capabilities: [gpu]\n    volumes:\n      - ./models:/workspace/models\n      - ./data:/workspace/data\n    environment:\n      - NVIDIA_VISIBLE_DEVICES=all\n    shm_size: '8g'  # Shared memory for DataLoader workers\n\n  inference:\n    build: ./inference\n    deploy:\n      resources:\n        reservations:\n          devices:\n            - driver: nvidia\n              device_ids: ['0']  # Specific GPU\n              capabilities: [gpu]\n```\n\nPrerequisites: NVIDIA Container Toolkit must be installed on the host. Test with: `docker run --rm --gpus all nvidia/cuda:12.1-base-ubuntu22.04 nvidia-smi`. The `shm_size` is critical for PyTorch DataLoader with `num_workers > 0`.",
+    "tags": ["docker", "gpu", "nvidia", "machine-learning", "compose-v2"]
+  },
+  {
+    "type": "config",
+    "trust": "verified",
+    "title": "Docker multi-platform build config with platform-specific stages",
+    "body": "When you need different build steps for different architectures, use platform-specific stages.\n\n```dockerfile\n# syntax=docker/dockerfile:1\n\nFROM --platform=$BUILDPLATFORM node:20-slim AS builder\nARG TARGETPLATFORM\nARG BUILDPLATFORM\nRUN echo \"Building on $BUILDPLATFORM for $TARGETPLATFORM\"\nWORKDIR /app\nCOPY package.json package-lock.json ./\nRUN npm ci\nCOPY . .\nRUN npm run build\n\n# Platform-specific binary download\nFROM builder AS binary-amd64\nRUN curl -L https://example.com/tool-linux-amd64 -o /usr/local/bin/tool\n\nFROM builder AS binary-arm64\nRUN curl -L https://example.com/tool-linux-arm64 -o /usr/local/bin/tool\n\n# Select the right binary based on target\nFROM binary-${TARGETARCH} AS binary\n\n# Final image\nFROM node:20-slim\nWORKDIR /app\nCOPY --from=builder /app/dist ./dist\nCOPY --from=builder /app/node_modules ./node_modules\nCOPY --from=binary /usr/local/bin/tool /usr/local/bin/tool\nCMD [\"node\", \"dist/server.js\"]\n```\n\n```bash\ndocker buildx build --platform linux/amd64,linux/arm64 \\\n  -t myapp:latest --push .\n```\n\n`$BUILDPLATFORM` is the platform running the build. `$TARGETPLATFORM` is the target. Using `--platform=$BUILDPLATFORM` on the builder stage runs it natively (fast) even for cross-platform builds.",
+    "tags": ["docker", "buildx", "multi-platform", "arm64", "config"]
+  },
+  {
+    "type": "config",
+    "trust": "verified",
+    "title": "Docker Compose development database with persistent data and init scripts",
+    "body": "Set up development databases with initialization scripts, custom configuration, and persistent data.\n\n```yaml\nservices:\n  postgres:\n    image: postgres:16\n    ports: [\"5432:5432\"]\n    environment:\n      POSTGRES_DB: myapp_dev\n      POSTGRES_USER: dev\n      POSTGRES_PASSWORD: devpass\n    volumes:\n      - pgdata:/var/lib/postgresql/data\n      - ./docker/postgres/init:/docker-entrypoint-initdb.d  # Run on first start\n      - ./docker/postgres/postgresql.conf:/etc/postgresql/postgresql.conf\n    command: postgres -c config_file=/etc/postgresql/postgresql.conf\n    healthcheck:\n      test: [\"CMD-SHELL\", \"pg_isready -U dev -d myapp_dev\"]\n      interval: 5s\n      retries: 5\n\n  redis:\n    image: redis:7-alpine\n    ports: [\"6379:6379\"]\n    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru\n    volumes:\n      - redisdata:/data\n\nvolumes:\n  pgdata:\n  redisdata:\n```\n\n```sql\n-- docker/postgres/init/01-extensions.sql\nCREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";\nCREATE EXTENSION IF NOT EXISTS \"pgcrypto\";\n```\n\nInit scripts in `/docker-entrypoint-initdb.d/` only run when the data volume is empty (first start). To re-run, delete the volume: `docker compose down -v`.",
+    "tags": ["docker", "compose-v2", "postgres", "redis", "development"]
+  },
+  {
+    "type": "config",
+    "trust": "verified",
+    "title": "Docker tmpfs mount for ephemeral data and test databases",
+    "body": "Use tmpfs mounts to store data in memory for speed. Ideal for test databases and temporary files.\n\n```yaml\nservices:\n  # Fast test database — data in RAM\n  test-db:\n    image: postgres:16\n    tmpfs:\n      - /var/lib/postgresql/data  # DB in memory\n    environment:\n      POSTGRES_DB: test\n      POSTGRES_USER: test\n      POSTGRES_PASSWORD: test\n    # Postgres tuning for speed over durability\n    command: >\n      postgres\n      -c fsync=off\n      -c synchronous_commit=off\n      -c full_page_writes=off\n\n  app-test:\n    build:\n      context: .\n      target: test\n    tmpfs:\n      - /tmp:size=100M  # Fast temp storage with size limit\n    depends_on:\n      test-db:\n        condition: service_healthy\n```\n\n```bash\n# docker run with tmpfs\ndocker run --tmpfs /tmp:rw,noexec,nosuid,size=100m myapp\n```\n\nData in tmpfs is lost when the container stops. This is perfect for CI test databases — each test run gets a clean, fast database without disk I/O overhead.",
+    "tags": ["docker", "tmpfs", "testing", "performance", "config"]
+  },
+  {
+    "type": "config",
+    "trust": "verified",
+    "title": "Docker security scanning in CI with Trivy and fail thresholds",
+    "body": "Integrate container security scanning into your CI pipeline with configurable severity thresholds.\n\n```yaml\n# .github/workflows/security.yml\nname: Security Scan\non: [push, pull_request]\n\njobs:\n  scan:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n\n      - name: Build image\n        run: docker build -t myapp:${{ github.sha }} .\n\n      - name: Run Trivy vulnerability scanner\n        uses: aquasecurity/trivy-action@master\n        with:\n          image-ref: myapp:${{ github.sha }}\n          format: 'sarif'\n          output: 'trivy-results.sarif'\n          severity: 'CRITICAL,HIGH'\n          exit-code: '1'  # Fail pipeline on findings\n\n      - name: Upload scan results\n        uses: github/codeql-action/upload-sarif@v3\n        if: always()\n        with:\n          sarif_file: 'trivy-results.sarif'\n```\n\n```bash\n# Local scanning\ntrivy image myapp:latest\ntrivy image --severity HIGH,CRITICAL --exit-code 1 myapp:latest\n\n# Scan Dockerfile for misconfigurations\ntrivy config .\n\n# Scan filesystem (find secrets, misconfigs)\ntrivy fs --security-checks secret,config .\n```\n\nTrivy detects OS package vulnerabilities, language-specific dependency vulnerabilities, misconfigurations, and embedded secrets.",
+    "tags": ["docker", "security-scanning", "trivy", "ci-cd", "config"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Docker entrypoint script with wait-for-it and config templating",
+    "body": "A robust entrypoint script that waits for dependencies and renders configuration from environment variables.\n\n```bash\n#!/bin/sh\nset -e\n\n# Wait for database to be ready\nwait_for_service() {\n  local host=$1 port=$2 timeout=${3:-30}\n  echo \"Waiting for $host:$port...\"\n  for i in $(seq 1 $timeout); do\n    if nc -z \"$host\" \"$port\" 2>/dev/null; then\n      echo \"$host:$port is available\"\n      return 0\n    fi\n    sleep 1\n  done\n  echo \"Timeout waiting for $host:$port\"\n  return 1\n}\n\n# Parse DATABASE_URL for host and port\nDB_HOST=$(echo \"$DATABASE_URL\" | sed -n 's|.*@\\([^:]*\\):.*|\\1|p')\nDB_PORT=$(echo \"$DATABASE_URL\" | sed -n 's|.*:\\([0-9]*\\)/.*|\\1|p')\n\nwait_for_service \"$DB_HOST\" \"$DB_PORT\"\n\n# Run migrations if requested\nif [ \"$RUN_MIGRATIONS\" = \"true\" ]; then\n  echo \"Running database migrations...\"\n  npx prisma migrate deploy\nfi\n\n# Template config from env vars\nenvsubst < /app/config.template.json > /app/config.json\n\n# Use exec to replace shell with app (proper PID 1 signal handling)\nexec \"$@\"\n```\n\n```dockerfile\nRUN apk add --no-cache gettext  # For envsubst\nCOPY entrypoint.sh /entrypoint.sh\nRUN chmod +x /entrypoint.sh\nENTRYPOINT [\"/entrypoint.sh\"]\nCMD [\"node\", \"server.js\"]\n```\n\nThe `exec \"$@\"` at the end replaces the shell with whatever CMD is passed, so your app becomes PID 1 and receives signals correctly.",
+    "tags": ["docker", "entrypoint", "wait-for-it", "signals", "snippet"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Docker cleanup script for development machines",
+    "body": "A comprehensive cleanup script to reclaim disk space from Docker without destroying active containers.\n\n```bash\n#!/bin/bash\nset -e\n\necho \"=== Docker Disk Usage ===\"\ndocker system df\n\necho \"\"\necho \"=== Cleaning up ===\"\n\n# Remove stopped containers\nSTOPPED=$(docker ps -aq --filter status=exited | wc -l | tr -d ' ')\nif [ \"$STOPPED\" -gt 0 ]; then\n  echo \"Removing $STOPPED stopped containers...\"\n  docker container prune -f\nfi\n\n# Remove dangling images (untagged)\nDANGLING=$(docker images -qf dangling=true | wc -l | tr -d ' ')\nif [ \"$DANGLING\" -gt 0 ]; then\n  echo \"Removing $DANGLING dangling images...\"\n  docker image prune -f\nfi\n\n# Remove images older than 7 days (not used by running containers)\necho \"Removing images older than 7 days...\"\ndocker image prune -a --filter \"until=168h\" -f\n\n# Remove unused volumes\necho \"Removing unused volumes...\"\ndocker volume prune -f\n\n# Remove unused networks\necho \"Removing unused networks...\"\ndocker network prune -f\n\n# Remove build cache older than 7 days\necho \"Removing old build cache...\"\ndocker builder prune --filter \"until=168h\" -f\n\necho \"\"\necho \"=== After Cleanup ===\"\ndocker system df\n```\n\nAdd to crontab for automatic weekly cleanup: `0 2 * * 0 /path/to/docker-cleanup.sh >> /var/log/docker-cleanup.log 2>&1`.",
+    "tags": ["docker", "cleanup", "disk-space", "maintenance", "snippet"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Docker container debugging commands cheat sheet",
+    "body": "Essential commands for debugging running and exited containers.\n\n```bash\n# View logs (follow, with timestamps)\ndocker logs -f --tail 100 --timestamps container_name\n\n# Exec into running container\ndocker exec -it container_name /bin/sh\ndocker exec -it container_name /bin/bash\n\n# Run a debug container in the same network namespace\ndocker run -it --rm --network container:container_name \\\n  nicolaka/netshoot  # Includes curl, dig, tcpdump, etc.\n\n# Inspect container details\ndocker inspect container_name | jq '.[0].State'\ndocker inspect container_name | jq '.[0].NetworkSettings.Networks'\ndocker inspect container_name | jq '.[0].Config.Env'\n\n# Check resource usage\ndocker stats container_name --no-stream\n\n# Copy files from container\ndocker cp container_name:/app/logs/error.log ./error.log\n\n# View filesystem changes since container started\ndocker diff container_name\n\n# Attach to container's stdout/stderr\ndocker attach --sig-proxy=false container_name\n\n# Debug an exited container — start it with a shell\ndocker commit exited_container debug_image\ndocker run -it debug_image /bin/sh\n```\n\nThe `nicolaka/netshoot` container is invaluable for network debugging — it includes every network tool you'd need and runs in the same network namespace as the target container.",
+    "tags": ["docker", "debugging", "commands", "troubleshooting", "snippet"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Docker image size analysis and optimization",
+    "body": "Tools and techniques to analyze and reduce Docker image size.\n\n```bash\n# View layer sizes\ndocker history myapp:latest --no-trunc\n\n# Use dive for interactive layer exploration\n# Install: https://github.com/wagoodman/dive\ndive myapp:latest\n\n# Compare image sizes\ndocker images --format '{{.Repository}}:{{.Tag}} {{.Size}}' | sort -k2 -h\n\n# Export and analyze image contents\ndocker save myapp:latest | tar -tv | sort -k3 -rn | head -20\n```\n\n```dockerfile\n# Size optimization techniques\n\n# 1. Use multi-stage builds (biggest impact)\nFROM node:20 AS builder\nRUN npm ci && npm run build\nFROM node:20-slim\nCOPY --from=builder /app/dist ./dist\n\n# 2. Combine and clean in same layer\nRUN apt-get update && \\\n    apt-get install -y --no-install-recommends curl && \\\n    rm -rf /var/lib/apt/lists/*\n\n# 3. Use .dockerignore (reduces build context + accidental COPY)\n\n# 4. Pin slim/alpine base images\nFROM python:3.12-slim  # ~150MB vs python:3.12 ~1GB\n\n# 5. Copy only what's needed\nCOPY --from=builder /app/dist ./dist\nCOPY --from=builder /app/node_modules ./node_modules\n# NOT: COPY --from=builder /app .\n```\n\nA typical Node.js app: `node:20` base is 1.1GB, `node:20-slim` is 200MB, multi-stage with slim is ~150MB, with distroless is ~120MB.",
+    "tags": ["docker", "image-size", "optimization", "dive", "snippet"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Docker Compose wait-for-healthy script for integration tests",
+    "body": "A script to start services, wait for all health checks, run tests, then tear down.\n\n```bash\n#!/bin/bash\nset -e\n\nCOMPOSE_FILE=\"compose.test.yaml\"\n\ncleanup() {\n  echo \"Tearing down test environment...\"\n  docker compose -f $COMPOSE_FILE down -v --remove-orphans\n}\ntrap cleanup EXIT\n\n# Start services in background\necho \"Starting test services...\"\ndocker compose -f $COMPOSE_FILE up -d\n\n# Wait for all services to be healthy\necho \"Waiting for services to be healthy...\"\nTIMEOUT=60\nSTART=$(date +%s)\n\nwhile true; do\n  UNHEALTHY=$(docker compose -f $COMPOSE_FILE ps --format json | \\\n    jq -r 'select(.Health != \"healthy\" and .Health != \"\") | .Name' | wc -l | tr -d ' ')\n  \n  if [ \"$UNHEALTHY\" -eq 0 ]; then\n    echo \"All services healthy!\"\n    break\n  fi\n\n  ELAPSED=$(( $(date +%s) - START ))\n  if [ \"$ELAPSED\" -gt \"$TIMEOUT\" ]; then\n    echo \"Timeout waiting for services\"\n    docker compose -f $COMPOSE_FILE ps\n    docker compose -f $COMPOSE_FILE logs\n    exit 1\n  fi\n\n  sleep 2\ndone\n\n# Run tests\necho \"Running integration tests...\"\ndocker compose -f $COMPOSE_FILE exec -T app npm run test:integration\nTEST_EXIT=$?\n\nexit $TEST_EXIT\n```\n\nThe `trap cleanup EXIT` ensures containers are always torn down, even if the script fails or is interrupted.",
+    "tags": ["docker", "compose-v2", "integration-testing", "health-check", "snippet"]
+  },
+  {
+    "type": "comparison",
+    "trust": "verified",
+    "title": "Docker Alpine vs Slim vs Distroless base images comparison",
+    "body": "Choosing the right base image involves tradeoffs between size, compatibility, and debuggability.\n\n| Image | Size (Node 20) | Shell | Package Manager | glibc | Best For |\n|-------|----------------|-------|-----------------|-------|----------|\n| `node:20` | ~1.1GB | Yes | apt | Yes | Development |\n| `node:20-slim` | ~200MB | Yes | apt | Yes | Production (general) |\n| `node:20-alpine` | ~180MB | Yes | apk | No (musl) | Production (if no native deps) |\n| `gcr.io/distroless/nodejs20` | ~120MB | No | None | Yes | Production (hardened) |\n\n**Alpine**: Smallest with shell access, but musl libc causes compatibility issues with native Node addons (bcrypt, sharp, prisma). Requires `python3 make g++` for compilation.\n\n**Slim (Debian)**: Best balance of size and compatibility. glibc means precompiled binaries work. Has shell for debugging.\n\n**Distroless**: Smallest attack surface, no shell, no package manager. Can't exec into the container for debugging. Use `:debug` variant for troubleshooting.\n\nRecommendation: Use `slim` unless you have specific reasons to use Alpine (no native deps) or distroless (strict security requirements).",
+    "tags": ["docker", "base-image", "alpine", "slim", "distroless", "comparison"]
+  },
+  {
+    "type": "comparison",
+    "trust": "verified",
+    "title": "Docker Compose v1 vs v2 — key migration differences",
+    "body": "Docker Compose v2 is a complete rewrite as a Docker CLI plugin. Key differences that affect existing workflows:\n\n| Feature | v1 (`docker-compose`) | v2 (`docker compose`) |\n|---------|----------------------|----------------------|\n| Command | `docker-compose` | `docker compose` (no hyphen) |\n| Container naming | `project_service_1` | `project-service-1` (dashes) |\n| Version field | Required | Ignored (warning) |\n| `depends_on` conditions | Limited | `service_healthy`, `service_completed_successfully` |\n| `extends` | Supported | Re-introduced (was missing in v3) |\n| `profiles` | Not available | Supported |\n| `develop.watch` | Not available | Supported |\n| Resource limits | Only with Swarm | Works without Swarm |\n| Build | Legacy builder | BuildKit by default |\n\n**Migration steps:**\n1. Remove `version` field from compose files\n2. Replace `docker-compose` with `docker compose` in scripts\n3. Update any code that references container names (underscore → dash)\n4. Move `deploy.resources` — they now work without Swarm mode\n5. Test `depends_on` behavior — v2 is stricter about health checks\n\nCompose v1 reached end-of-life in July 2023. All new projects should use v2.",
+    "tags": ["docker", "compose-v1", "compose-v2", "migration", "comparison"]
+  },
+  {
+    "type": "comparison",
+    "trust": "verified",
+    "title": "Docker bind mounts vs named volumes vs tmpfs — when to use each",
+    "body": "Docker offers three mount types, each with different use cases and performance characteristics.\n\n| Type | Persistence | Performance | Use Case |\n|------|------------|-------------|----------|\n| Bind mount | Host filesystem | Native (Linux), slower on Mac | Development, config files |\n| Named volume | Docker-managed | Consistent, optimized | Database data, persistent state |\n| tmpfs | RAM only | Fastest | Temp files, test databases, secrets |\n\n```yaml\nservices:\n  app:\n    volumes:\n      # Bind mount — host path:container path\n      - ./src:/app/src\n\n      # Named volume — managed by Docker\n      - node_modules:/app/node_modules\n\n      # tmpfs — in-memory\n    tmpfs:\n      - /tmp\n\nvolumes:\n  node_modules:  # Named volume declaration\n```\n\n**Key differences:**\n- Bind mounts: host directory overlays container directory completely. Changes are bidirectional. On macOS, I/O is slower due to filesystem translation.\n- Named volumes: Docker initializes the volume with the container directory's contents on first use. Better performance on Mac.\n- tmpfs: Data lost on container stop. No disk I/O. Great for sensitive data that shouldn't persist.\n\nFor macOS performance, consider `consistency: cached` or switch to named volumes for heavy I/O directories like `node_modules`.",
+    "tags": ["docker", "volumes", "bind-mount", "tmpfs", "comparison"]
+  },
+  {
+    "type": "comparison",
+    "trust": "verified",
+    "title": "Docker networking drivers — bridge vs host vs none vs overlay",
+    "body": "Docker provides multiple network drivers for different isolation and performance needs.\n\n| Driver | Isolation | Performance | Multi-host | Use Case |\n|--------|-----------|-------------|------------|----------|\n| bridge | Container-level | Good | No | Default, most containers |\n| host | None (shares host) | Best | No | Performance-critical, >10k connections |\n| none | Complete | N/A | No | Security-sensitive, batch jobs |\n| overlay | Container-level | Good | Yes | Swarm/multi-host |\n| macvlan | VLAN-level | Best | Yes | Legacy apps needing direct LAN access |\n\n```yaml\n# Bridge (default) — containers get private IPs\nservices:\n  app:\n    networks: [mynet]\n\n# Host — container uses host's network stack directly\nservices:\n  perf-app:\n    network_mode: host\n    # No port mapping needed — app listens on host ports directly\n\n# None — no networking\nservices:\n  batch:\n    network_mode: none\n\n# Container — share another container's network\nservices:\n  sidecar:\n    network_mode: service:app  # Same network namespace as app\n```\n\n`host` networking eliminates NAT overhead but sacrifices isolation. Use it for high-throughput services where port mapping overhead matters. `service:` mode is used for sidecar patterns (e.g., Envoy proxy, log collectors).",
+    "tags": ["docker", "networking", "bridge", "host", "overlay", "comparison"]
+  },
+  {
+    "type": "comparison",
+    "trust": "verified",
+    "title": "Docker vs Podman — key differences for container workflows",
+    "body": "Podman is a drop-in Docker replacement that runs daemonless and rootless by default.\n\n| Feature | Docker | Podman |\n|---------|--------|--------|\n| Architecture | Client-server (daemon) | Daemonless (fork/exec) |\n| Root required | Yes (daemon), optional (rootless) | No (rootless by default) |\n| Compose | `docker compose` | `podman-compose` or `podman compose` |\n| Pods | No (only in Swarm) | Native pod support |\n| Systemd integration | Requires config | Native (quadlet) |\n| Docker socket | Required | Optional compatibility |\n| Build tool | BuildKit | Buildah |\n| Registry | Docker Hub default | No default (user chooses) |\n\n```bash\n# Podman is mostly command-compatible\nalias docker=podman\n\n# Generate systemd unit files from containers\npodman generate systemd --new --name myapp\n\n# Generate Kubernetes YAML from running containers\npodman generate kube myapp > myapp.yaml\n\n# Run pods (like Kubernetes pods)\npodman pod create --name mypod -p 8080:80\npodman run --pod mypod nginx\npodman run --pod mypod myapp\n```\n\nPodman's daemonless architecture means containers survive `podman` process crashes. Docker's daemon model means all containers die if the daemon crashes (mitigated by `live-restore`). For development, Docker Desktop has a better experience. For production on Linux, Podman is increasingly preferred.",
+    "tags": ["docker", "podman", "comparison", "rootless", "daemonless"]
+  }
+]

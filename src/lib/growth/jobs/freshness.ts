@@ -24,6 +24,52 @@ export const freshness: EnricherJob = {
       `);
     }
 
-    return { processed: uniqueNodeIds.length, created: 0 };
+    let processed = uniqueNodeIds.length;
+
+    // Process usage reports: boost/penalize freshness based on helpfulness
+    let usageRows: Array<{ node_id: string; helpful: boolean; agent_count: number }> = [];
+    try {
+      const usageSignals = await tx.execute(sql`
+        SELECT node_id, helpful, COUNT(DISTINCT agent_id)::int AS agent_count
+        FROM usage_reports
+        WHERE created_at > NOW() - INTERVAL '24 hours'
+        GROUP BY node_id, helpful
+      `);
+      usageRows = Array.from(usageSignals as any) as typeof usageRows;
+    } catch {
+      // usage_reports table may not exist yet during migration
+    }
+
+    for (const row of usageRows) {
+      if (row.helpful) {
+        // Boost freshness for helpful nodes (+0.1 per report, cap at 1.0)
+        await tx.execute(sql`
+          UPDATE knowledge_nodes
+          SET freshness = LEAST(1.0, freshness + 0.1),
+              updated_at = NOW()
+          WHERE id = ${row.node_id}::uuid
+        `);
+        // Promote to community trust if 3+ helpful reports from different agents
+        if (row.agent_count >= 3) {
+          await tx.execute(sql`
+            UPDATE knowledge_nodes
+            SET trust_level = 'community'
+            WHERE id = ${row.node_id}::uuid
+              AND trust_level = 'unverified'
+          `);
+        }
+      } else {
+        // Penalize freshness for unhelpful nodes (-0.05, floor at 0.0)
+        await tx.execute(sql`
+          UPDATE knowledge_nodes
+          SET freshness = GREATEST(0.0, freshness - 0.05),
+              updated_at = NOW()
+          WHERE id = ${row.node_id}::uuid
+        `);
+      }
+      processed++;
+    }
+
+    return { processed, created: 0 };
   },
 };

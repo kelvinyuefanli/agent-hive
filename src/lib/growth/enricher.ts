@@ -7,11 +7,15 @@ import { coOccurrence } from "./jobs/co-occurrence";
 import { freshness } from "./jobs/freshness";
 import { trustCascade } from "./jobs/trust-cascade";
 import { domainExpertise } from "./jobs/domain-expertise";
+import { outcomeMining } from "./jobs/outcome-mining";
+import { strategyGenesis } from "./jobs/strategy-genesis";
+import { strategyFitness } from "./jobs/strategy-fitness";
 import type { EnricherJob } from "./jobs/demand-detection";
 
 const ENRICHER_LOCK_ID = 42_000_001;
 const SIGNAL_TTL_HOURS = 24;
 const DELETE_BATCH_SIZE = 5000;
+const OUTCOME_TTL_HOURS = 168; // 7 days
 
 interface JobConfig {
   job: EnricherJob;
@@ -25,6 +29,9 @@ const jobConfigs: JobConfig[] = [
   { job: freshness, envVar: "ENABLE_FRESHNESS", shortName: "freshness" },
   { job: trustCascade, envVar: "ENABLE_TRUST_CASCADE", shortName: "trust_cascade" },
   { job: domainExpertise, envVar: "ENABLE_DOMAIN_EXPERTISE", shortName: "domain_expertise" },
+  { job: outcomeMining, envVar: "ENABLE_OUTCOME_MINING", shortName: "outcome_mining" },
+  { job: strategyGenesis, envVar: "ENABLE_STRATEGY_GENESIS", shortName: "strategy_genesis" },
+  { job: strategyFitness, envVar: "ENABLE_STRATEGY_FITNESS", shortName: "strategy_fitness" },
 ];
 
 function isJobEnabled(envVar: string): boolean {
@@ -126,8 +133,65 @@ export async function runEnricherCycle(): Promise<void> {
         totalReadDeleted += deleted;
       } while (deleted >= DELETE_BATCH_SIZE);
 
+      // Batched delete for outcome_reports (7-day TTL)
+      let totalOutcomeDeleted = 0;
+      do {
+        const result = await tx.execute(sql`
+          WITH deleted AS (
+            DELETE FROM outcome_reports
+            WHERE id IN (
+              SELECT id FROM outcome_reports
+              WHERE created_at < NOW() - INTERVAL '${sql.raw(String(OUTCOME_TTL_HOURS))} hours'
+              LIMIT ${DELETE_BATCH_SIZE}
+            )
+            RETURNING id
+          )
+          SELECT count(*)::int AS cnt FROM deleted
+        `);
+        deleted = Number((result as unknown as Array<{ cnt: number }>)[0]?.cnt ?? 0);
+        totalOutcomeDeleted += deleted;
+      } while (deleted >= DELETE_BATCH_SIZE);
+
+      // Batched delete for usage_reports (7-day TTL)
+      let totalUsageDeleted = 0;
+      do {
+        const result = await tx.execute(sql`
+          WITH deleted AS (
+            DELETE FROM usage_reports
+            WHERE id IN (
+              SELECT id FROM usage_reports
+              WHERE created_at < NOW() - INTERVAL '${sql.raw(String(OUTCOME_TTL_HOURS))} hours'
+              LIMIT ${DELETE_BATCH_SIZE}
+            )
+            RETURNING id
+          )
+          SELECT count(*)::int AS cnt FROM deleted
+        `);
+        deleted = Number((result as unknown as Array<{ cnt: number }>)[0]?.cnt ?? 0);
+        totalUsageDeleted += deleted;
+      } while (deleted >= DELETE_BATCH_SIZE);
+
+      // Batched delete for failure_reports (7-day TTL)
+      let totalFailureDeleted = 0;
+      do {
+        const result = await tx.execute(sql`
+          WITH deleted AS (
+            DELETE FROM failure_reports
+            WHERE id IN (
+              SELECT id FROM failure_reports
+              WHERE created_at < NOW() - INTERVAL '${sql.raw(String(OUTCOME_TTL_HOURS))} hours'
+              LIMIT ${DELETE_BATCH_SIZE}
+            )
+            RETURNING id
+          )
+          SELECT count(*)::int AS cnt FROM deleted
+        `);
+        deleted = Number((result as unknown as Array<{ cnt: number }>)[0]?.cnt ?? 0);
+        totalFailureDeleted += deleted;
+      } while (deleted >= DELETE_BATCH_SIZE);
+
       // Store sweep count for logging
-      (results as any).__signalsSwept = totalSearchDeleted + totalReadDeleted;
+      (results as any).__signalsSwept = totalSearchDeleted + totalReadDeleted + totalOutcomeDeleted + totalUsageDeleted + totalFailureDeleted;
     });
 
     // 5. Structured JSON log

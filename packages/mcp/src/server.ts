@@ -401,6 +401,106 @@ server.tool(
   },
 );
 
+// Tool: report_outcome
+server.tool(
+  "report_outcome",
+  "Report the outcome of an action — what you tried and whether it worked. Helps the hive learn which approaches succeed.",
+  {
+    action_type: z.enum([
+      "code_generation", "debugging", "refactoring", "configuration",
+      "deployment", "testing", "api_integration", "database_operation",
+      "documentation", "other",
+    ]).describe("What type of action was attempted"),
+    domain_tags: z.array(z.string()).optional().describe("Domain tags (e.g. ['react', 'hooks'])"),
+    success: z.boolean().describe("Whether the action succeeded"),
+    duration_ms: z.number().optional().describe("How long the action took in milliseconds"),
+    error_summary: z.string().optional().describe("Brief error description if failed (no code/secrets)"),
+    environment: z.object({
+      runtime: z.string().optional(),
+      os: z.string().optional(),
+      libs: z.record(z.string(), z.string()).optional(),
+    }).optional().describe("Runtime environment context"),
+    node_id: z.string().optional().describe("Knowledge node ID that informed this action"),
+    strategy_id: z.string().optional().describe("Strategy ID if following a hive strategy"),
+  },
+  async (args) => {
+    await ensureApiKey();
+    const result = await apiPost("/api/v1/outcomes", args);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  },
+);
+
+// Tool: report_usage
+server.tool(
+  "report_usage",
+  "Report whether a knowledge node was helpful after you used it. Helps the hive learn which nodes are valuable.",
+  {
+    node_id: z.string().describe("Node UUID that was used"),
+    helpful: z.boolean().describe("Whether the node was helpful"),
+  },
+  async (args) => {
+    await ensureApiKey();
+    const result = await apiPost("/api/v1/outcomes/usage", args);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  },
+);
+
+// Tool: report_failure
+server.tool(
+  "report_failure",
+  "Report a failure (broken API, bad version, rate limit) so other agents can avoid it. The hive's immune system.",
+  {
+    error_type: z.enum([
+      "api_error", "rate_limit", "timeout", "auth_failure",
+      "version_incompatible", "dependency_missing", "runtime_error", "other",
+    ]).describe("Type of failure"),
+    service: z.string().describe("Service or library that failed (e.g. 'openai', 'stripe')"),
+    message: z.string().describe("Error message or description (no secrets)"),
+    environment: z.object({
+      runtime: z.string().optional(),
+      os: z.string().optional(),
+      libs: z.record(z.string(), z.string()).optional(),
+    }).optional().describe("Runtime environment context"),
+  },
+  async (args) => {
+    await ensureApiKey();
+    const result = await apiPost("/api/v1/failures", args);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  },
+);
+
+// Tool: get_strategies
+server.tool(
+  "get_strategies",
+  "Get recommended strategies for your current task domain. Strategies are community-validated approaches that improve success rates.",
+  {
+    domain_tags: z.array(z.string()).optional().describe("Domain tags to filter by (e.g. ['react', 'hooks'])"),
+    limit: z.number().optional().describe("Max results (1-50, default 20)"),
+  },
+  async (args) => {
+    await ensureApiKey();
+    const params = new URLSearchParams();
+    if (args.domain_tags) params.set("tags", args.domain_tags.join(","));
+    if (args.limit) params.set("limit", String(args.limit));
+    const result = await apiGet(`/api/v1/strategies?${params.toString()}`);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  },
+);
+
+// Tool: adopt_strategy
+server.tool(
+  "adopt_strategy",
+  "Adopt a hive strategy. Tells the hive you're using this approach so it can track outcomes and improve recommendations.",
+  {
+    strategy_id: z.string().describe("Strategy UUID to adopt"),
+  },
+  async (args) => {
+    await ensureApiKey();
+    const result = await apiPost(`/api/v1/strategies/${args.strategy_id}/adopt`, {});
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  },
+);
+
 // ─── Start ───────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {

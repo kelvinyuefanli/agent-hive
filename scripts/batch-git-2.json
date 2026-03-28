@@ -1,0 +1,562 @@
+[
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Git rebase rewrites commit hashes — never rebase shared branches",
+    "body": "Rebasing replaces every commit with a new one (new SHA). If you rebase a branch that others are working on, their local copies diverge and they must force-pull.\n\n```bash\n# SAFE: rebase your local feature branch onto main\ngit checkout feature\ngit rebase main\n\n# DANGEROUS: rebase a shared branch\ngit checkout main\ngit rebase feature  # rewrites main history\n\n# If you accidentally rebased a shared branch:\ngit reflog  # find the pre-rebase commit\ngit reset --hard HEAD@{2}  # go back\ngit push --force-with-lease  # safer than --force\n```\n\nRule of thumb: only rebase branches that no one else has pulled. If in doubt, use `merge` instead. `--force-with-lease` is safer than `--force` because it fails if someone else pushed in the meantime.",
+    "tags": ["git", "rebase", "shared-branch", "force-push"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Git stash does not include untracked files by default",
+    "body": "Running `git stash` only stashes tracked, modified files. New untracked files are left behind, which can cause confusion when switching branches.\n\n```bash\n# Only stashes tracked changes\ngit stash\n\n# Include untracked files\ngit stash -u\n# or\ngit stash --include-untracked\n\n# Include everything, even ignored files\ngit stash -a\n# or\ngit stash --all\n\n# Named stash for easier identification\ngit stash push -u -m \"WIP: auth feature login form\"\n\n# List stashes\ngit stash list\n# stash@{0}: On feature: WIP: auth feature login form\n\n# Apply and drop\ngit stash pop  # apply most recent and remove from stash\ngit stash apply stash@{1}  # apply specific stash, keep in list\n```\n\nAlways use `stash -u` if you have new files. Otherwise you'll switch branches, wonder where your new files went, switch back, and find them still sitting there unstashed.",
+    "tags": ["git", "stash", "untracked-files"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Git cherry-pick creates a NEW commit, not a reference",
+    "body": "Cherry-picking copies a commit's changes into a new commit with a different SHA. The original and cherry-picked commits are unrelated in Git's history, which can cause duplicate changes during later merges.\n\n```bash\n# Cherry-pick a single commit\ngit cherry-pick abc1234\n\n# Cherry-pick without committing (stage changes only)\ngit cherry-pick --no-commit abc1234\n\n# Cherry-pick a range of commits\ngit cherry-pick abc1234..def5678  # exclusive start\ngit cherry-pick abc1234^..def5678  # inclusive start\n\n# If cherry-pick conflicts:\ngit cherry-pick --continue  # after resolving conflicts\ngit cherry-pick --abort     # cancel the cherry-pick\n```\n\nIf you cherry-pick commit X from branch A into branch B, then later merge A into B, Git may auto-resolve the duplicate, or it may conflict. To avoid this, prefer rebasing or merging over cherry-picking when possible.",
+    "tags": ["git", "cherry-pick", "duplicate-commit", "merge-conflict"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Git submodules pin to a specific commit, not a branch",
+    "body": "Submodules record a specific commit SHA, not a branch reference. Pulling the parent repo doesn't automatically update submodule code. Team members must run `git submodule update` after pulling.\n\n```bash\n# Clone repo with submodules\ngit clone --recurse-submodules <url>\n\n# If already cloned without submodules\ngit submodule update --init --recursive\n\n# Update submodule to latest commit on its tracked branch\ncd my-submodule\ngit checkout main\ngit pull\ncd ..\ngit add my-submodule\ngit commit -m \"Update submodule to latest\"\n\n# Or update all submodules at once\ngit submodule update --remote --merge\n```\n\nCommon mistake: you update a submodule locally, commit the parent, push, and teammates see a dirty submodule. They need to run `git submodule update --init --recursive` after pulling. Consider adding this to a `post-merge` git hook.",
+    "tags": ["git", "submodules", "pin-commit", "team-workflow"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Git hooks are not pushed with the repository",
+    "body": "The `.git/hooks/` directory is local to each clone. Hooks you write there are not shared with teammates when they clone the repo. Use a tool to manage shared hooks.\n\n```bash\n# Option 1: Configure a hooks directory in the repo\nmkdir .githooks\n# Add hooks to .githooks/pre-commit, .githooks/pre-push, etc.\ngit config core.hooksPath .githooks\n# Teammates must run the same git config command\n\n# Option 2: Use Husky (most popular for JS/TS projects)\nnpx husky init\n# Creates .husky/ directory with hook scripts\n# Installs automatically via prepare script in package.json\n\n# .husky/pre-commit\nnpx lint-staged\n\n# .husky/pre-push\nnpm test\n```\n\n```json\n// package.json\n{\n  \"scripts\": {\n    \"prepare\": \"husky\"\n  },\n  \"lint-staged\": {\n    \"*.{ts,tsx}\": [\"eslint --fix\", \"prettier --write\"],\n    \"*.{json,md}\": [\"prettier --write\"]\n  }\n}\n```\n\nHusky's `prepare` script runs on `npm install`, so new teammates get hooks automatically. Without a tool like Husky, everyone must manually set up their hooks.",
+    "tags": ["git", "hooks", "husky", "pre-commit", "lint-staged"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Git LFS requires setup on every clone, not just the original repo",
+    "body": "Installing Git LFS and tracking files in `.gitattributes` isn't enough — every developer who clones the repo must also have Git LFS installed, or they get text pointer files instead of actual binaries.\n\n```bash\n# Initial setup (once per repo)\ngit lfs install\ngit lfs track \"*.psd\"\ngit lfs track \"*.png\"\ngit lfs track \"*.zip\"\ngit lfs track \"*.woff2\"\ngit add .gitattributes\ngit commit -m \"Configure Git LFS for binary files\"\n\n# .gitattributes (auto-generated by git lfs track)\n*.psd filter=lfs diff=lfs merge=lfs -text\n*.png filter=lfs diff=lfs merge=lfs -text\n*.zip filter=lfs diff=lfs merge=lfs -text\n```\n\n```bash\n# Clone a repo with LFS files\ngit lfs install  # must run before clone, or run after and then:\ngit lfs pull     # download actual file contents\n\n# Check what LFS is tracking\ngit lfs ls-files\n\n# Check for files that should be in LFS but aren't\ngit lfs migrate info\n```\n\nIf a teammate sees garbled text files starting with `version https://git-lfs.github.com/spec/v1`, they need to run `git lfs install && git lfs pull`.",
+    "tags": ["git", "lfs", "large-files", "binary", "gitattributes"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Git bisect requires a clean working tree or stashed changes",
+    "body": "Running `git bisect` with uncommitted changes causes checkout failures. Stash or commit your work before starting a bisect session.\n\n```bash\n# Stash changes first\ngit stash -u\n\n# Start bisect\ngit bisect start\ngit bisect bad HEAD          # current commit is broken\ngit bisect good v1.0.0       # this tag/commit was working\n\n# Git checks out a middle commit. Test it, then:\ngit bisect good  # if this commit works\ngit bisect bad   # if this commit is broken\n# Repeat until Git finds the first bad commit\n\n# Automate with a test script\ngit bisect start HEAD v1.0.0\ngit bisect run npm test\n# Git runs the script at each step, marks good/bad based on exit code\n\n# When done\ngit bisect reset\ngit stash pop\n```\n\nThe automated `bisect run` approach is powerful — write a script that exits 0 for good and non-zero for bad. It finds the exact commit that introduced a bug in O(log n) steps.",
+    "tags": ["git", "bisect", "debugging", "binary-search"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "GitHub Actions workflow_dispatch inputs are always strings",
+    "body": "Even if you define an input as `type: boolean` or `type: number` in a workflow_dispatch trigger, the value is always passed as a string in the workflow context.\n\n```yaml\non:\n  workflow_dispatch:\n    inputs:\n      deploy:\n        description: 'Deploy after build'\n        type: boolean\n        default: false\n      replicas:\n        description: 'Number of replicas'\n        type: number\n        default: 1\n\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      # BAD: comparing boolean input directly\n      - if: ${{ inputs.deploy }}  # always true! it's the string \"false\"\n\n      # GOOD: compare as string\n      - if: ${{ inputs.deploy == 'true' }}\n\n      # Or use fromJSON to convert\n      - if: ${{ fromJSON(inputs.deploy) }}\n\n      # Numbers need conversion too\n      - run: echo \"Replicas: ${{ inputs.replicas }}\"\n        # Works for echo, but for arithmetic:\n      - run: echo \"Double: $(( ${{ inputs.replicas }} * 2 ))\"\n```\n\nThe `fromJSON()` function is the cleanest way to handle boolean inputs. For numbers, shell arithmetic works since the string is numeric.",
+    "tags": ["github-actions", "workflow-dispatch", "inputs", "type-coercion"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Git worktrees share the same stash and branch namespace",
+    "body": "Worktrees give you multiple working directories from a single repo, but stashes and branches are shared. You can't have the same branch checked out in two worktrees simultaneously.\n\n```bash\n# Create a worktree for a hotfix\ngit worktree add ../hotfix-123 -b hotfix/123\n\n# Create a worktree for reviewing a PR\ngit worktree add ../pr-review origin/feature-branch\n\n# List worktrees\ngit worktree list\n# /Users/me/project          abc1234 [main]\n# /Users/me/hotfix-123       def5678 [hotfix/123]\n\n# Remove a worktree when done\ngit worktree remove ../hotfix-123\n# Or just delete the directory and prune:\nrm -rf ../hotfix-123\ngit worktree prune\n```\n\nWorktrees are ideal for: reviewing PRs without stashing, running tests on one branch while coding on another, and maintaining a production hotfix workflow. They're much lighter than a second clone because they share the `.git` object store.",
+    "tags": ["git", "worktrees", "multiple-branches", "workflow"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "GitHub branch protection rules don't apply to admins by default",
+    "body": "By default, repository admins can bypass branch protection rules (force push, push without PR, skip required checks). This is a security gap if admin accounts are compromised.\n\n```yaml\n# In GitHub UI: Settings > Branches > Branch protection rule\n# Check: \"Do not allow bypassing the above settings\"\n# This applies protection rules to everyone, including admins\n\n# Or via GitHub API:\ncurl -X PUT \\\n  -H \"Authorization: Bearer $GITHUB_TOKEN\" \\\n  https://api.github.com/repos/OWNER/REPO/branches/main/protection \\\n  -d '{\n    \"required_status_checks\": {\n      \"strict\": true,\n      \"contexts\": [\"ci/test\", \"ci/lint\"]\n    },\n    \"enforce_admins\": true,\n    \"required_pull_request_reviews\": {\n      \"required_approving_review_count\": 1,\n      \"dismiss_stale_reviews\": true\n    },\n    \"restrictions\": null\n  }'\n```\n\nAlso enable: \"Require branches to be up to date before merging\" to prevent merging stale PRs. And \"Require conversation resolution before merging\" to ensure all review comments are addressed.",
+    "tags": ["github", "branch-protection", "security", "admin-bypass"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Git merge --squash doesn't create a merge commit",
+    "body": "`git merge --squash` stages all changes from the source branch as a single set of changes but doesn't commit. It also doesn't record the merge relationship, so Git doesn't know the branches were merged.\n\n```bash\n# Regular merge: creates merge commit, preserves history\ngit merge feature\n# a--b--c--d (main)\n#     \\   /\n#      e-f (feature)\n\n# Squash merge: all changes as one commit, no merge relationship\ngit merge --squash feature\ngit commit -m \"Add login feature (#42)\"\n# a--b--c--d--S (main, S contains e+f changes)\n#     \\\n#      e-f (feature, still exists, not \"merged\" in git's eyes)\n```\n\nAfter a squash merge, the feature branch still shows as \"unmerged\" in git. Delete it immediately to avoid confusion:\n\n```bash\ngit merge --squash feature\ngit commit -m \"Add login feature\"\ngit branch -D feature  # delete local\ngit push origin --delete feature  # delete remote\n```\n\nIf you try to merge the same branch again later, you'll get conflicts because Git doesn't know those changes were already applied.",
+    "tags": ["git", "merge", "squash", "merge-commit", "branch-cleanup"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Git reflog is local only and expires after 90 days",
+    "body": "The reflog tracks every HEAD movement locally. It's your safety net for recovering lost commits, but it's not pushed to remotes and entries expire.\n\n```bash\n# View reflog\ngit reflog\n# abc1234 HEAD@{0}: commit: add feature\n# def5678 HEAD@{1}: checkout: moving from main to feature\n# ghi9012 HEAD@{2}: commit: previous work\n\n# Recover a commit after accidental reset\ngit reset --hard HEAD~3  # oops, lost 3 commits\ngit reflog  # find the commit hash\ngit reset --hard abc1234  # recover\n\n# Recover a deleted branch\ngit branch -D feature  # oops\ngit reflog  # find the last commit on feature\ngit checkout -b feature abc1234  # recreate\n\n# Change expiry (default: 90 days for reachable, 30 for unreachable)\ngit config gc.reflogExpire 180.days\ngit config gc.reflogExpireUnreachable 90.days\n```\n\nReflog only exists in your local clone. If you delete and re-clone, reflog is gone. For critical repos, consider backing up the `.git` directory periodically. `git gc` can also prune reflog entries if run aggressively.",
+    "tags": ["git", "reflog", "recovery", "undo", "local-only"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "GitHub Actions secrets are not available in pull requests from forks",
+    "body": "For security, GitHub Actions does not expose repository secrets to workflows triggered by pull requests from forked repos. This breaks CI for open source projects that need API keys for tests.\n\n```yaml\n# This step will have empty secrets for fork PRs\n- name: Run integration tests\n  env:\n    API_KEY: ${{ secrets.API_KEY }}  # empty string for fork PRs\n  run: npm run test:integration\n\n# Fix: conditionally skip secrets-dependent steps\n- name: Run integration tests\n  if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}\n  env:\n    API_KEY: ${{ secrets.API_KEY }}\n  run: npm run test:integration\n\n# Alternative: use pull_request_target (runs in base repo context)\non:\n  pull_request_target:\n    types: [opened, synchronize]\n# WARNING: pull_request_target has access to secrets but runs\n# untrusted code — only use for specific, sandboxed steps\n```\n\nThe safe pattern for fork PRs: run unit tests (no secrets needed) on `pull_request`, and run integration tests on `pull_request_target` with explicit checkout of the PR code in a sandboxed step.",
+    "tags": ["github-actions", "secrets", "fork", "pull-request", "security"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Git .gitattributes line endings can cause phantom diffs",
+    "body": "Without `.gitattributes`, Git may convert line endings inconsistently across platforms, causing files to show as modified even when content hasn't changed.\n\n```bash\n# .gitattributes — add to every repo\n* text=auto eol=lf\n\n# Force specific line endings for certain files\n*.sh text eol=lf\n*.bat text eol=crlf\n*.ps1 text eol=crlf\n\n# Binary files — never convert\n*.png binary\n*.jpg binary\n*.ico binary\n*.woff2 binary\n*.ttf binary\n\n# Lock files — exact content matters\npackage-lock.json -diff\nyarn.lock -diff\npnpm-lock.yaml -diff\n```\n\nIf you're already seeing phantom diffs from line endings:\n\n```bash\n# Fix all line endings in the repo\ngit add --renormalize .\ngit commit -m \"Normalize line endings\"\n```\n\nThe `text=auto eol=lf` setting tells Git to normalize all text files to LF in the repo and check them out as LF on all platforms. This prevents the Windows CRLF vs Unix LF problem entirely.",
+    "tags": ["git", "gitattributes", "line-endings", "crlf", "cross-platform"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "GitHub CODEOWNERS file must be in specific locations to work",
+    "body": "GitHub only reads the CODEOWNERS file from three specific paths. If placed elsewhere, it's silently ignored and no reviewers are auto-assigned.\n\n```bash\n# Valid locations (checked in this order):\n.github/CODEOWNERS\nCODEOWNERS\ndocs/CODEOWNERS\n```\n\n```bash\n# .github/CODEOWNERS\n# Default owners for everything\n* @team-lead\n\n# Frontend\n/src/components/ @frontend-team\n/src/styles/ @frontend-team @design-team\n*.tsx @frontend-team\n\n# Backend\n/src/api/ @backend-team\n/src/db/ @backend-team @dba-team\n\n# DevOps\n/.github/workflows/ @devops-team\nDockerfile @devops-team\n*.yml @devops-team\n\n# Docs — anyone can approve\n/docs/ @docs-team\n\n# Security-sensitive\n/src/auth/ @security-team @team-lead\n.env.example @security-team\n```\n\nRules are matched bottom-to-top — the last matching pattern wins. Teams must have read access to the repo. Individual users must be collaborators. Enable \"Require review from Code Owners\" in branch protection to enforce.",
+    "tags": ["github", "codeowners", "code-review", "auto-assign"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Git interactive rebase can lose commits if you delete lines",
+    "body": "In an interactive rebase, each line in the todo list represents a commit. Deleting a line drops that commit permanently (recoverable only via reflog).\n\n```bash\n# Interactive rebase last 5 commits\ngit rebase -i HEAD~5\n\n# The editor shows:\npick abc1234 Add feature A\npick def5678 Fix typo\npick ghi9012 Add feature B\npick jkl3456 WIP save\npick mno7890 Final polish\n\n# Common operations:\n# reword — change commit message\n# squash — combine with previous commit\n# fixup — like squash but discard this message\n# drop — remove this commit entirely\n# edit — pause to amend this commit\n\n# Example: clean up before merging\nreword abc1234 Add feature A\nfixup def5678 Fix typo\npick ghi9012 Add feature B\ndrop jkl3456 WIP save\nfixup mno7890 Final polish\n```\n\nSafety tip: before an interactive rebase, create a backup branch: `git branch backup-feature`. If the rebase goes wrong, you can `git reset --hard backup-feature`.",
+    "tags": ["git", "interactive-rebase", "squash", "fixup", "commit-history"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "GitHub Actions matrix strategy runs all combinations by default",
+    "body": "A matrix with multiple dimensions creates the Cartesian product of all values. Three OS options times three Node versions equals nine jobs, which can be expensive.\n\n```yaml\njobs:\n  test:\n    strategy:\n      matrix:\n        os: [ubuntu-latest, windows-latest, macos-latest]\n        node: [18, 20, 22]\n        # This creates 9 jobs (3 * 3)\n      fail-fast: false  # don't cancel other jobs if one fails\n\n    runs-on: ${{ matrix.os }}\n    steps:\n      - uses: actions/setup-node@v4\n        with:\n          node-version: ${{ matrix.node }}\n\n  # Better: test all node versions on Linux, only latest on other OS\n  test-optimized:\n    strategy:\n      matrix:\n        os: [ubuntu-latest]\n        node: [18, 20, 22]\n        include:\n          - os: windows-latest\n            node: 22\n          - os: macos-latest\n            node: 22\n        # This creates 5 jobs instead of 9\n```\n\nUse `include` to add specific combinations and `exclude` to remove them. Set `fail-fast: false` for comprehensive testing, `fail-fast: true` (default) for faster feedback on failures.",
+    "tags": ["github-actions", "matrix", "ci", "optimization"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "community",
+    "title": "Git reset --soft vs --mixed vs --hard: data loss differences",
+    "body": "The three reset modes undo different levels of work. Only `--hard` destroys uncommitted changes.\n\n```bash\n# --soft: undo commit, keep changes staged\ngit reset --soft HEAD~1\n# Working dir: unchanged\n# Staging area: contains the commit's changes\n# Use case: rewrite the commit message, combine with more changes\n\n# --mixed (default): undo commit, unstage changes\ngit reset HEAD~1\n# Working dir: contains the changes (unstaged)\n# Staging area: clean\n# Use case: re-organize what goes into which commit\n\n# --hard: undo commit AND discard all changes\ngit reset --hard HEAD~1\n# Working dir: matches HEAD~1 exactly\n# Staging area: clean\n# Use case: completely abandon recent work\n# ⚠️ DESTROYS uncommitted work\n\n# Safe alternative to --hard for uncommitted files:\ngit stash -u  # save work first\ngit reset --hard HEAD~1\n# If you need it back: git stash pop\n```\n\nRule: never use `--hard` without checking `git stash list` and `git status` first. If you do lose work, check `git reflog` — committed changes are recoverable for ~30 days.",
+    "tags": ["git", "reset", "soft", "mixed", "hard", "data-loss"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "GitHub Actions checkout only fetches a single commit by default",
+    "body": "The `actions/checkout` action does a shallow clone (`--depth=1`) by default. This breaks tools that need git history like changelogs, version calculation, and git diff.\n\n```yaml\n# Default: shallow clone (depth 1)\n- uses: actions/checkout@v4\n# git log shows only 1 commit\n\n# Full history\n- uses: actions/checkout@v4\n  with:\n    fetch-depth: 0  # all history\n\n# Specific depth (for git diff against recent commits)\n- uses: actions/checkout@v4\n  with:\n    fetch-depth: 50\n\n# Common issue: git diff fails\n- uses: actions/checkout@v4\n- run: git diff HEAD~5  # fails! only 1 commit in history\n\n# Fix for PR diff:\n- uses: actions/checkout@v4\n  with:\n    fetch-depth: 0\n- run: git diff origin/main...HEAD\n```\n\nTools affected by shallow clones: `semantic-release`, `changesets`, `git-cliff`, `git bisect`, `git blame`, and any custom script that reads commit history.",
+    "tags": ["github-actions", "checkout", "shallow-clone", "fetch-depth"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Git force-push-with-lease can still lose others' work in one case",
+    "body": "`--force-with-lease` is safer than `--force` but has a subtle gap: if you ran `git fetch` recently, the lease is based on the fetched state, not the actual remote state. If someone pushed between your fetch and your push, their work is lost.\n\n```bash\n# Safe in most cases:\ngit push --force-with-lease\n\n# Vulnerable sequence:\ngit fetch  # updates remote tracking branch\n# Someone else pushes to the branch\ngit rebase main\ngit push --force-with-lease  # succeeds! Overwrites their push\n# Because --force-with-lease checks against your local remote-tracking ref\n\n# Safest option: specify the expected value\ngit push --force-with-lease=origin/feature:abc1234\n# Only succeeds if remote is exactly at abc1234\n\n# Or use --force-if-includes (Git 2.30+)\ngit push --force-with-lease --force-if-includes\n# Verifies that the remote ref has been integrated into the local branch\n```\n\n`--force-if-includes` is the most paranoid option — it checks that you've actually incorporated the remote changes into your local history before allowing the force push.",
+    "tags": ["git", "force-push", "force-with-lease", "safety"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "GitHub PR templates are only used for new PRs, not existing ones",
+    "body": "PR templates auto-fill the description when creating a new PR. They don't update existing PRs, and the template file must be in the right location.\n\n```bash\n# Valid locations for PR template:\n.github/pull_request_template.md\n.github/PULL_REQUEST_TEMPLATE.md\npull_request_template.md\ndocs/pull_request_template.md\n\n# Multiple templates (user picks via query parameter):\n.github/PULL_REQUEST_TEMPLATE/\n├── feature.md\n├── bugfix.md\n└── release.md\n# Use: github.com/owner/repo/compare/main...feature?template=bugfix.md\n```\n\n```markdown\n<!-- .github/pull_request_template.md -->\n## What\n<!-- Describe the change -->\n\n## Why\n<!-- Explain the motivation -->\n\n## How to test\n- [ ] Step 1\n- [ ] Step 2\n\n## Checklist\n- [ ] Tests added/updated\n- [ ] Documentation updated\n- [ ] No breaking changes (or documented in CHANGELOG)\n\n## Screenshots\n<!-- If applicable -->\n```\n\nIf the template isn't appearing, check: file is on the default branch, file is in one of the valid locations, file has `.md` extension.",
+    "tags": ["github", "pr-template", "pull-request", "workflow"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Git merge conflicts in package-lock.json should be regenerated, not resolved manually",
+    "body": "Never manually resolve conflicts in lock files. The file structure is machine-generated and manual edits create inconsistencies.\n\n```bash\n# When package-lock.json has merge conflicts:\n\n# Option 1: Accept either version and regenerate\ngit checkout --theirs package-lock.json  # or --ours\nnpm install\ngit add package-lock.json\ngit commit\n\n# Option 2: Delete and regenerate\ngit checkout --theirs package.json  # resolve package.json first\nrm package-lock.json\nnpm install\ngit add package-lock.json package.json\ngit commit\n\n# For yarn.lock:\ngit checkout --theirs yarn.lock\nyarn install\ngit add yarn.lock\n\n# For pnpm-lock.yaml:\ngit checkout --theirs pnpm-lock.yaml\npnpm install\ngit add pnpm-lock.yaml\n```\n\nPro tip: use `npm install --package-lock-only` to regenerate the lock file without actually installing node_modules (faster). Add lock file merge strategy to `.gitattributes`:\n\n```\npackage-lock.json merge=ours\n```",
+    "tags": ["git", "merge-conflict", "package-lock", "lockfile", "npm"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "GitHub Actions env context differs between workflow and step levels",
+    "body": "Environment variables set at the workflow level, job level, and step level have different scopes and can shadow each other.\n\n```yaml\nenv:\n  NODE_ENV: production  # workflow level\n\njobs:\n  build:\n    env:\n      NODE_ENV: test  # job level — overrides workflow level\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo $NODE_ENV  # \"test\"\n\n      - env:\n          NODE_ENV: development  # step level — overrides job level\n        run: echo $NODE_ENV  # \"development\"\n\n      - run: echo $NODE_ENV  # back to \"test\" (step env doesn't persist)\n\n      # Dynamic env from step output\n      - id: version\n        run: echo \"value=1.2.3\" >> $GITHUB_OUTPUT\n\n      - env:\n          APP_VERSION: ${{ steps.version.outputs.value }}\n        run: echo $APP_VERSION  # \"1.2.3\"\n\n      # Set env for all subsequent steps\n      - run: echo \"DEPLOY_URL=https://staging.example.com\" >> $GITHUB_ENV\n      - run: echo $DEPLOY_URL  # available in all subsequent steps\n```\n\n`$GITHUB_ENV` persists for all subsequent steps in the job. `$GITHUB_OUTPUT` makes values available to other steps via the `steps` context. Neither crosses job boundaries.",
+    "tags": ["github-actions", "environment-variables", "scope", "output"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Git clean -fd deletes untracked files permanently without recovery",
+    "body": "Unlike `git reset` which can be undone via reflog, `git clean` permanently deletes untracked files. There's no recovery mechanism.\n\n```bash\n# See what would be deleted (always do this first)\ngit clean -n   # dry run for untracked files\ngit clean -nd  # dry run including directories\n\n# Delete untracked files\ngit clean -f   # files only\ngit clean -fd  # files and directories\ngit clean -fdx # files, directories, AND ignored files (.env, node_modules, etc.)\n\n# Interactive mode (safest)\ngit clean -i\n# Shows a menu to selectively delete files\n```\n\nThe `-x` flag is especially dangerous — it deletes `.env` files, build caches, `node_modules`, and anything in `.gitignore`. Always run with `-n` first. If you need a clean slate, consider `git stash -u` instead — at least you can recover with `git stash pop`.",
+    "tags": ["git", "clean", "untracked-files", "data-loss", "safety"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "community",
+    "title": "GitHub Actions concurrency group cancels in-progress runs by default",
+    "body": "Setting a concurrency group without `cancel-in-progress: false` means new pushes cancel the currently running workflow. This can leave deployments in a half-finished state.\n\n```yaml\n# Dangerous for deployments: new push cancels mid-deploy\nconcurrency:\n  group: deploy-${{ github.ref }}\n  # cancel-in-progress defaults to false, but many templates set it to true\n\n# Safe for CI (tests): cancel old runs on new push\nconcurrency:\n  group: ci-${{ github.ref }}\n  cancel-in-progress: true  # saves runner minutes\n\n# Safe for deploys: queue instead of cancel\nconcurrency:\n  group: deploy-production\n  cancel-in-progress: false  # wait for current deploy to finish\n\n# Per-PR concurrency (most common pattern)\nconcurrency:\n  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}\n  cancel-in-progress: true\n```\n\nUse `cancel-in-progress: true` for CI (tests, linting) where you only care about the latest push. Use `cancel-in-progress: false` for deployments and release workflows.",
+    "tags": ["github-actions", "concurrency", "cancel-in-progress", "deploy"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Git commit --amend changes the commit hash even if only the message changes",
+    "body": "Amending a commit creates a new commit object with a new SHA, even if you only change the message. This means the old commit becomes unreachable (orphaned) and the branch pointer moves to the new commit.\n\n```bash\n# Amend the last commit message\ngit commit --amend -m \"Better commit message\"\n# New SHA generated — old one is in reflog\n\n# Amend to add forgotten files\ngit add forgotten-file.ts\ngit commit --amend --no-edit  # keep same message\n\n# After amending a pushed commit, you must force push\ngit push --force-with-lease\n# If others pulled the old commit, they'll get conflicts\n```\n\nNever amend commits that have been pushed to a shared branch. If you need to fix a pushed commit, create a new commit instead. Amending is only safe for local commits that haven't been shared.",
+    "tags": ["git", "amend", "commit-hash", "force-push"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "GitHub Actions cache is scoped to the branch and has a 10GB limit",
+    "body": "Caches are isolated by branch. Feature branches can read the main branch's cache but not other feature branches' caches. The total cache storage per repo is 10GB, and least recently used caches are evicted.\n\n```yaml\n# Cache node_modules based on lockfile\n- uses: actions/cache@v4\n  with:\n    path: node_modules\n    key: node-${{ runner.os }}-${{ hashFiles('package-lock.json') }}\n    restore-keys: |\n      node-${{ runner.os }}-\n\n# Better: use setup-node built-in caching\n- uses: actions/setup-node@v4\n  with:\n    node-version: 22\n    cache: 'npm'  # or 'yarn', 'pnpm'\n\n# Multiple cache paths\n- uses: actions/cache@v4\n  with:\n    path: |\n      node_modules\n      ~/.cache/playwright\n      .next/cache\n    key: deps-${{ runner.os }}-${{ hashFiles('package-lock.json') }}\n```\n\nCache restore order: exact key match first, then `restore-keys` prefix matches (newest first). The `restore-keys` fallback is important — without it, a cache miss means starting from scratch.",
+    "tags": ["github-actions", "cache", "node-modules", "performance"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Git diff shows nothing when changes are already staged",
+    "body": "`git diff` only shows unstaged changes. If you've already run `git add`, the diff appears empty, which confuses developers into thinking their changes are lost.\n\n```bash\n# Shows unstaged changes (working dir vs staging area)\ngit diff\n\n# Shows staged changes (staging area vs last commit)\ngit diff --staged\n# or equivalent:\ngit diff --cached\n\n# Shows ALL changes (working dir vs last commit)\ngit diff HEAD\n\n# Compare with a specific branch\ngit diff main  # all changes vs main\ngit diff main...HEAD  # changes since branching from main\n\n# Show diff with stat summary\ngit diff --stat\ngit diff --stat main\n\n# Show diff for specific file\ngit diff -- path/to/file.ts\ngit diff --staged -- path/to/file.ts\n```\n\nThe triple-dot `...` syntax in `git diff main...HEAD` shows only changes introduced on the current branch since it diverged from main. This is what GitHub shows in PRs.",
+    "tags": ["git", "diff", "staged", "unstaged", "comparison"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Git error: cannot rebase — you have unstaged changes",
+    "body": "Rebase refuses to start if you have uncommitted changes because it needs to checkout different commits during the rebase process.\n\n```bash\n# Error: Cannot rebase: You have unstaged changes.\n# Error: Please commit or stash them.\n\n# Fix 1: Stash changes\ngit stash -u\ngit rebase main\ngit stash pop\n\n# Fix 2: Commit as WIP\ngit add -A\ngit commit -m \"WIP\"\ngit rebase main\n# Later, undo the WIP commit:\ngit reset --soft HEAD~1\n\n# Fix 3: Use autostash (auto-stashes before rebase, pops after)\ngit rebase --autostash main\n\n# Make autostash the default\ngit config --global rebase.autoStash true\n```\n\nSetting `rebase.autoStash true` globally is recommended. It automatically stashes your changes before rebase and re-applies them after, eliminating this error entirely.",
+    "tags": ["git", "rebase", "unstaged-changes", "autostash", "error"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Git error: refusing to merge unrelated histories",
+    "body": "This error occurs when merging two branches that share no common ancestor, typically when combining two repos or when a repo was re-initialized.\n\n```bash\n# Error: fatal: refusing to merge unrelated histories\n\n# Fix: allow unrelated histories\ngit pull origin main --allow-unrelated-histories\n# or\ngit merge other-branch --allow-unrelated-histories\n\n# Common scenarios:\n# 1. You initialized a new repo locally AND on GitHub with different commits\ngit init\ngit add .\ngit commit -m \"Initial commit\"\ngit remote add origin <url>  # GitHub repo has its own initial commit\ngit pull origin main --allow-unrelated-histories\n\n# 2. Combining two repositories\ngit remote add other-repo <url>\ngit fetch other-repo\ngit merge other-repo/main --allow-unrelated-histories\n\n# Prevention: don't initialize GitHub repos with README/license\n# if you plan to push an existing local repo\n```",
+    "tags": ["git", "merge", "unrelated-histories", "error", "repository"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Git error: failed to push — remote contains work you don't have locally",
+    "body": "This happens when someone else pushed commits to the remote branch that you haven't pulled yet.\n\n```bash\n# Error: Updates were rejected because the remote contains work that you\n# do not have locally.\n\n# Fix 1: Pull then push (creates a merge commit)\ngit pull origin main\ngit push origin main\n\n# Fix 2: Pull with rebase (cleaner history)\ngit pull --rebase origin main\n# Resolve any conflicts, then:\ngit push origin main\n\n# Fix 3: Fetch and rebase separately (more control)\ngit fetch origin\ngit rebase origin/main\ngit push origin main\n\n# Make pull --rebase the default\ngit config --global pull.rebase true\n```\n\nNever \"fix\" this with `git push --force` on a shared branch — that overwrites the other person's work. The only exception is feature branches where you're the sole contributor.",
+    "tags": ["git", "push", "rejected", "pull-rebase", "error"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Git error: pathspec 'file' did not match any files known to git",
+    "body": "This error has several causes: the file doesn't exist, it's gitignored, or the path contains special characters.\n\n```bash\n# Error: error: pathspec 'src/utils/helper.ts' did not match any file(s) known to git\n\n# Cause 1: File doesn't exist (typo in path)\nls src/utils/helper.ts  # check if file exists\n\n# Cause 2: File is gitignored\ngit status --ignored  # shows ignored files\ngit check-ignore -v src/utils/helper.ts  # shows which gitignore rule matches\n\n# Force-add an ignored file\ngit add -f src/utils/helper.ts\n\n# Cause 3: Path has spaces or special characters\ngit add \"src/my folder/file.ts\"  # quote the path\n\n# Cause 4: File exists only on another branch\ngit checkout feature -- src/utils/helper.ts  # get file from another branch\n\n# Cause 5: Case sensitivity (macOS is case-insensitive, Linux is not)\ngit mv src/Utils/Helper.ts src/utils/helper.ts\n```\n\nOn macOS, `Git` and `git` are the same directory. When you push to a case-sensitive Linux CI server, paths may not match. Use `git mv` to rename with correct casing.",
+    "tags": ["git", "pathspec", "gitignore", "error", "case-sensitivity"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "GitHub Actions error: Resource not accessible by integration",
+    "body": "This permissions error means the workflow's `GITHUB_TOKEN` doesn't have the required permission. Default permissions were tightened in newer repos.\n\n```yaml\n# Fix: explicitly set permissions at the job or workflow level\njobs:\n  deploy:\n    permissions:\n      contents: write     # push commits, create releases\n      pull-requests: write # comment on PRs\n      packages: write      # publish to GitHub Packages\n      issues: write        # create/update issues\n      id-token: write      # OIDC for cloud deployments\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: |\n          # These operations now work:\n          gh pr comment $PR_NUMBER --body \"Deploy complete\"\n          gh release create v1.0.0\n```\n\nIn repo settings > Actions > General, \"Workflow permissions\" controls the default. \"Read repository contents\" is the minimum default. For security, prefer explicit per-job permissions over changing the repo-wide default to read-write.",
+    "tags": ["github-actions", "permissions", "GITHUB_TOKEN", "error"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Git error: CONFLICT (modify/delete) during rebase or merge",
+    "body": "This conflict type means one side modified a file that the other side deleted. Git can't automatically resolve this.\n\n```bash\n# During merge/rebase:\n# CONFLICT (modify/delete): src/old-component.tsx deleted in main\n# and modified in feature. Version feature of src/old-component.tsx\n# left in tree.\n\n# Option 1: Keep the file (accept the modification)\ngit add src/old-component.tsx\ngit rebase --continue\n\n# Option 2: Delete the file (accept the deletion)\ngit rm src/old-component.tsx\ngit rebase --continue\n\n# Option 3: During merge\ngit add src/old-component.tsx  # or git rm\ngit commit  # completes the merge\n\n# Prevention: communicate with your team about file deletions.\n# If you know a file is being refactored/moved, coordinate.\n```\n\nThis is common during large refactors where one branch renames/deletes files while another branch adds features to them. Frequent rebases from main reduce the scope of these conflicts.",
+    "tags": ["git", "conflict", "modify-delete", "rebase", "merge"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "GitHub Actions error: The workflow is not valid — no steps defined",
+    "body": "YAML formatting errors in GitHub Actions workflows produce cryptic error messages. The most common cause is incorrect indentation.\n\n```yaml\n# BAD: steps not indented under job\njobs:\n  build:\n    runs-on: ubuntu-latest\n  steps:  # wrong indent — this is a sibling of build, not a child\n    - run: echo hello\n\n# GOOD: steps indented correctly\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:  # correct — child of build\n      - run: echo hello\n\n# BAD: using tabs instead of spaces\njobs:\n\tbuild:  # YAML doesn't allow tabs for indentation\n\n# BAD: missing 'on' trigger\nname: CI\njobs:  # no 'on:' section — workflow won't trigger\n  build:\n    runs-on: ubuntu-latest\n\n# GOOD: complete minimal workflow\nname: CI\non: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: npm test\n```\n\nUse the GitHub Actions VS Code extension for syntax validation. Or validate workflows locally with `actionlint` — it catches most errors before you push.",
+    "tags": ["github-actions", "yaml", "syntax-error", "indentation"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Git error: detached HEAD state after checking out a commit or tag",
+    "body": "Checking out a commit hash or tag puts you in detached HEAD state. Any commits you make here are orphaned when you switch branches.\n\n```bash\n# Causes:\ngit checkout abc1234      # checkout a commit\ngit checkout v1.0.0       # checkout a tag\ngit checkout origin/main  # checkout remote tracking branch\n\n# Warning message:\n# You are in 'detached HEAD' state. You can look around, make\n# experimental changes and commit them...\n\n# If you made commits in detached HEAD and want to keep them:\ngit checkout -b my-new-branch  # create a branch at current position\n\n# If you already left detached HEAD and lost commits:\ngit reflog  # find the orphaned commit\ngit checkout -b recovery abc1234\n\n# To checkout a tag as a branch:\ngit checkout -b release-v1 v1.0.0  # creates branch from tag\n\n# Return to a named branch:\ngit checkout main\n```\n\nDetached HEAD is useful for temporarily examining old code, but never commit important work there without creating a branch first.",
+    "tags": ["git", "detached-head", "checkout", "tag", "recovery"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Git error: pre-commit hook failed — preventing commit",
+    "body": "Pre-commit hooks run before each commit. If they exit with a non-zero code, the commit is blocked.\n\n```bash\n# Error: husky - pre-commit hook exited with code 1\n\n# See what the hook does\ncat .husky/pre-commit\n# or\ncat .git/hooks/pre-commit\n\n# Common causes:\n# 1. Lint errors\nnpx eslint --fix src/  # fix lint errors\ngit add -A  # re-stage fixed files\ngit commit -m \"Your message\"  # try again\n\n# 2. Type errors\nnpx tsc --noEmit  # check types\n\n# 3. Test failures\nnpm test  # run tests\n\n# Skip hook (ONLY if you know what you're doing)\ngit commit --no-verify -m \"WIP: skip hooks\"\n# or\nGIT_SKIP_HOOKS=1 git commit -m \"WIP\"\n\n# Debug the hook\nbash -x .husky/pre-commit  # run with debug output\n```\n\nDon't make `--no-verify` a habit. If a hook is consistently failing on valid code, fix the hook configuration rather than bypassing it.",
+    "tags": ["git", "hooks", "pre-commit", "husky", "lint"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Git error: unable to access — SSL certificate problem",
+    "body": "SSL certificate errors when pushing/pulling from HTTPS remotes. Common behind corporate proxies or with self-signed certificates.\n\n```bash\n# Error: SSL certificate problem: unable to get local issuer certificate\n\n# Fix 1: Update CA certificates\nsudo apt-get update && sudo apt-get install ca-certificates  # Linux\nbrew install ca-certificates  # macOS\n\n# Fix 2: Point Git to the correct CA bundle\ngit config --global http.sslCAInfo /path/to/ca-bundle.crt\n\n# Fix 3: Corporate proxy — add proxy certificate\ngit config --global http.sslCAInfo /path/to/corporate-ca.pem\n\n# Fix 4 (NOT recommended for production): disable SSL verification\ngit config --global http.sslVerify false\n# Only use for testing. Re-enable with:\ngit config --global http.sslVerify true\n\n# Fix 5: Use SSH instead of HTTPS\ngit remote set-url origin git@github.com:owner/repo.git\n```\n\nDisabling SSL verification is a security risk. Prefer adding the correct CA certificate or switching to SSH authentication.",
+    "tags": ["git", "ssl", "certificate", "https", "proxy"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "GitHub Actions error: HttpError — rate limit exceeded for API calls",
+    "body": "GitHub API rate limits apply to `GITHUB_TOKEN` operations in Actions. The default rate is 1,000 requests per hour per repository.\n\n```yaml\n# BAD: calling GitHub API in a loop without rate limit handling\n- run: |\n    for pr in $(gh pr list --json number -q '.[].number'); do\n      gh pr review $pr --approve  # each call uses API quota\n    done\n\n# GOOD: batch operations where possible\n- run: |\n    gh api graphql -f query='\n      query {\n        repository(owner: \"owner\", name: \"repo\") {\n          pullRequests(first: 100, states: OPEN) {\n            nodes { number title }\n          }\n        }\n      }'\n    # Single GraphQL query instead of N REST calls\n\n# Handle rate limits in scripts\n- run: |\n    response=$(gh api /rate_limit)\n    remaining=$(echo $response | jq '.resources.core.remaining')\n    if [ \"$remaining\" -lt 10 ]; then\n      echo \"Rate limit low: $remaining remaining\"\n      reset=$(echo $response | jq '.resources.core.reset')\n      sleep_until=$((reset - $(date +%s)))\n      echo \"Waiting ${sleep_until}s for rate limit reset\"\n      sleep $sleep_until\n    fi\n```\n\nUse GitHub's GraphQL API to batch requests. A single GraphQL query can replace dozens of REST calls. Also consider using a GitHub App token which has higher rate limits (5,000 requests/hour).",
+    "tags": ["github-actions", "rate-limit", "api", "graphql", "GITHUB_TOKEN"]
+  },
+  {
+    "type": "error",
+    "trust": "community",
+    "title": "Git error: Your local changes would be overwritten by checkout",
+    "body": "Git refuses to switch branches if doing so would overwrite uncommitted changes to files that differ between the branches.\n\n```bash\n# Error: Your local changes to the following files would be overwritten by checkout:\n#   src/config.ts\n# Please commit your changes or stash them before you switch branches.\n\n# Fix 1: Stash changes\ngit stash -u\ngit checkout other-branch\ngit stash pop  # after you're done on the other branch\n\n# Fix 2: Commit first\ngit add -A\ngit commit -m \"WIP: save before switching\"\ngit checkout other-branch\n\n# Fix 3: Force checkout (DESTROYS uncommitted changes to those files)\ngit checkout -f other-branch  # dangerous\n\n# Fix 4: Use worktrees instead of switching\ngit worktree add ../other-branch-dir other-branch\ncd ../other-branch-dir\n# Work there, then come back\n```\n\nThis error only occurs when the files you've modified also differ between the current and target branches. If the files are the same on both branches, Git carries your uncommitted changes with you.",
+    "tags": ["git", "checkout", "overwrite", "stash", "error"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "GitHub Actions error: context access might be invalid — secrets in if conditions",
+    "body": "You can't use `secrets` directly in `if` conditions because they're masked and treated as empty strings in boolean context. Use a workaround to check if a secret is set.\n\n```yaml\n# BAD: secret is always empty in if\n- name: Deploy\n  if: ${{ secrets.DEPLOY_KEY != '' }}  # always false!\n  run: deploy.sh\n\n# GOOD: set secret as env var, check the env var\n- name: Check deploy key\n  id: check\n  run: echo \"has_key=${{ secrets.DEPLOY_KEY != '' }}\" >> $GITHUB_OUTPUT\n  # This works because the expression is evaluated before masking\n\n- name: Deploy\n  if: steps.check.outputs.has_key == 'true'\n  env:\n    DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}\n  run: deploy.sh\n\n# Alternative: use a separate non-secret variable as a flag\n# In repo settings > Variables:\n# DEPLOY_ENABLED = true\n- name: Deploy\n  if: ${{ vars.DEPLOY_ENABLED == 'true' }}\n  env:\n    DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}\n  run: deploy.sh\n```\n\nThe `secrets` context is intentionally restricted in conditional expressions to prevent leaking secret values through workflow logs.",
+    "tags": ["github-actions", "secrets", "conditional", "if-expression", "error"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Git error: fatal: bad object HEAD after repo corruption",
+    "body": "A corrupted HEAD reference usually means the `.git` directory was damaged (disk error, interrupted operation, or storage issues).\n\n```bash\n# Error: fatal: bad object HEAD\n# Error: fatal: your current branch appears to be broken\n\n# Fix 1: Reset HEAD to a known good commit\ngit reflog  # might work if reflog is intact\ngit reset --hard <known-good-commit>\n\n# Fix 2: Rebuild HEAD from remote\ngit fetch origin\ncat .git/refs/remotes/origin/main  # get the latest commit hash\ngit update-ref HEAD <hash>\n\n# Fix 3: Check and repair\ngit fsck --full  # find dangling/corrupt objects\ngit gc --aggressive  # garbage collect and repack\n\n# Fix 4: Nuclear option — re-clone\nmv .git .git-backup\ngit clone <url> temp-clone\nmv temp-clone/.git .\nrm -rf temp-clone\ngit checkout -- .  # restore working directory\n```\n\nPrevention: don't kill Git operations mid-way (especially during rebase or gc). Use a reliable filesystem. Consider `git maintenance start` for periodic maintenance tasks.",
+    "tags": ["git", "corruption", "HEAD", "recovery", "fsck"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "GitHub Actions error: Process completed with exit code 1 — generic failure",
+    "body": "This generic error means a shell command returned a non-zero exit code. Debugging requires enabling verbose output and checking the specific command that failed.\n\n```yaml\n# BAD: no error details\n- run: npm run build\n# Error: Process completed with exit code 1\n\n# GOOD: enable verbose output\n- run: npm run build\n  env:\n    CI: true\n    DEBUG: '*'  # enable debug logging for most tools\n\n# Or use set -x for shell debugging\n- run: |\n    set -euxo pipefail\n    npm run build\n    # -e: exit on error\n    # -u: error on undefined variables\n    # -x: print each command before execution\n    # -o pipefail: fail on pipe errors\n\n# Check for common silent failures\n- run: |\n    # Node ran out of memory (common for large builds)\n    NODE_OPTIONS=\"--max-old-space-size=4096\" npm run build\n\n# Continue on error and check exit code\n- run: npm run build\n  continue-on-error: true\n  id: build\n- if: steps.build.outcome == 'failure'\n  run: echo \"Build failed, investigating...\"\n```",
+    "tags": ["github-actions", "debugging", "exit-code", "error", "verbose"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Git error: fatal: The current branch has no upstream branch",
+    "body": "This error occurs when you try to push a new local branch that doesn't have a remote tracking branch set up.\n\n```bash\n# Error: fatal: The current branch feature has no upstream branch.\n# To push the current branch and set the remote as upstream, use:\n#   git push --set-upstream origin feature\n\n# Fix: push with upstream tracking\ngit push -u origin feature\n# or\ngit push --set-upstream origin feature\n\n# Make this automatic for all new branches\ngit config --global push.autoSetupRemote true\n# Now 'git push' automatically sets upstream on first push\n\n# Check current upstream\ngit branch -vv\n# * feature  abc1234 [origin/feature] Latest commit\n# main       def5678 [origin/main] Main branch\n\n# Change upstream\ngit branch --set-upstream-to=origin/main feature\n```\n\nSetting `push.autoSetupRemote true` (Git 2.37+) is recommended. It eliminates this error entirely by automatically creating the remote tracking branch on first push.",
+    "tags": ["git", "push", "upstream", "remote", "tracking-branch"]
+  },
+  {
+    "type": "error",
+    "trust": "community",
+    "title": "Git error: cannot lock ref — reference already exists",
+    "body": "This error usually means a stale lock file or a branch/tag name conflict.\n\n```bash\n# Error: cannot lock ref 'refs/heads/feature': reference already exists\n# or: unable to create '.git/refs/heads/feature.lock': File exists\n\n# Cause 1: Stale lock file (from interrupted git operation)\nfind .git -name '*.lock' -delete  # remove all lock files\n# Or remove specific lock:\nrm .git/refs/heads/feature.lock\n\n# Cause 2: Branch name conflicts with path\n# If 'feature' exists, you can't create 'feature/login'\n# because 'feature' can't be both a ref and a directory\ngit branch feature       # exists\ngit branch feature/login # Error! Can't create directory 'feature' because file exists\n\n# Fix: rename the conflicting branch\ngit branch -m feature feature-main\ngit branch feature/login  # now works\n\n# Cause 3: Remote tracking refs are stale\ngit remote prune origin  # clean up stale remote refs\n```\n\nThe branch naming conflict (feature vs feature/login) is the most common cause. Establish a naming convention: always use `feature/name`, never bare `feature`.",
+    "tags": ["git", "lock-ref", "branch-naming", "error", "stale-lock"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Git commit message convention with conventional commits",
+    "body": "Use conventional commits for automated changelogs, semantic versioning, and clear history.\n\n```bash\n# Format: type(scope): description\n#\n# Types:\n# feat: new feature (MINOR version bump)\n# fix: bug fix (PATCH version bump)\n# docs: documentation only\n# style: formatting, no code change\n# refactor: code change that neither fixes nor adds\n# perf: performance improvement\n# test: adding or updating tests\n# chore: build process, deps, tooling\n# ci: CI configuration changes\n\n# Examples:\ngit commit -m \"feat(auth): add OAuth2 login with Google\"\ngit commit -m \"fix(api): handle null response from payment gateway\"\ngit commit -m \"docs: update API endpoint documentation\"\ngit commit -m \"refactor(db): extract query builder into separate module\"\n\n# Breaking change:\ngit commit -m \"feat(api)!: change response format for /users endpoint\n\nBREAKING CHANGE: The /users endpoint now returns paginated results.\nOld format: { users: [...] }\nNew format: { data: [...], meta: { page, total } }\"\n```\n\nEnforce with commitlint:\n\n```bash\nnpm install -D @commitlint/cli @commitlint/config-conventional\necho 'module.exports = { extends: [\"@commitlint/config-conventional\"] }' > commitlint.config.js\n# In .husky/commit-msg:\nnpx --no -- commitlint --edit $1\n```",
+    "tags": ["git", "conventional-commits", "commit-message", "semantic-version"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Git branch workflow: trunk-based development with short-lived branches",
+    "body": "Keep branches short-lived (1-3 days) and merge to main frequently. This reduces merge conflicts and keeps the codebase stable.\n\n```bash\n# Start work\ngit checkout main\ngit pull\ngit checkout -b feature/add-search\n\n# Work on the feature (rebase from main frequently)\ngit fetch origin\ngit rebase origin/main\n\n# Multiple small commits during development\ngit commit -m \"feat(search): add search input component\"\ngit commit -m \"feat(search): implement fuzzy matching algorithm\"\ngit commit -m \"test(search): add search integration tests\"\n\n# Before creating PR: clean up commits\ngit rebase -i origin/main  # squash WIP commits, reword messages\n\n# Push and create PR\ngit push -u origin feature/add-search\ngh pr create --title \"feat: add search functionality\" --body \"...\"\n\n# After merge: clean up\ngit checkout main\ngit pull\ngit branch -d feature/add-search\n```\n\nRules: no branch lives longer than 3 days, all work goes through PRs, main is always deployable, feature flags hide incomplete features.",
+    "tags": ["git", "branching-strategy", "trunk-based", "workflow"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "GitHub Actions reusable workflow pattern for DRY CI/CD",
+    "body": "Create reusable workflows to share CI/CD logic across repos or reduce duplication within a repo.\n\n```yaml\n# .github/workflows/reusable-test.yml\nname: Reusable Test Workflow\non:\n  workflow_call:\n    inputs:\n      node-version:\n        type: string\n        default: '22'\n      working-directory:\n        type: string\n        default: '.'\n    secrets:\n      NPM_TOKEN:\n        required: false\n\njobs:\n  test:\n    runs-on: ubuntu-latest\n    defaults:\n      run:\n        working-directory: ${{ inputs.working-directory }}\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-node@v4\n        with:\n          node-version: ${{ inputs.node-version }}\n          cache: 'npm'\n      - run: npm ci\n      - run: npm test\n      - run: npm run lint\n```\n\n```yaml\n# .github/workflows/ci.yml — caller workflow\nname: CI\non:\n  pull_request:\n  push:\n    branches: [main]\n\njobs:\n  test-frontend:\n    uses: ./.github/workflows/reusable-test.yml\n    with:\n      working-directory: packages/frontend\n      node-version: '22'\n\n  test-backend:\n    uses: ./.github/workflows/reusable-test.yml\n    with:\n      working-directory: packages/backend\n    secrets:\n      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}\n```\n\nReusable workflows use `workflow_call` trigger. They can accept `inputs` and `secrets`. Call them with `uses:` pointing to the workflow file path.",
+    "tags": ["github-actions", "reusable-workflow", "DRY", "ci-cd"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Git pre-push hook for preventing force pushes and broken tests",
+    "body": "Guard against common mistakes with a pre-push hook that runs checks before pushing.\n\n```bash\n#!/bin/sh\n# .husky/pre-push (or .githooks/pre-push)\n\n# Get the remote and branch being pushed to\nremote=\"$1\"\nurl=\"$2\"\n\n# Prevent force push to main/production\nwhile read local_ref local_oid remote_ref remote_oid; do\n  if echo \"$remote_ref\" | grep -qE 'refs/heads/(main|master|production)'; then\n    if [ \"$(git merge-base $local_oid $remote_oid)\" != \"$remote_oid\" ]; then\n      echo \"ERROR: Force push to protected branch detected!\"\n      echo \"Branch: $remote_ref\"\n      echo \"Use a PR instead.\"\n      exit 1\n    fi\n  fi\ndone\n\n# Run tests before push (only if test files changed)\nchanged_files=$(git diff --name-only HEAD~1)\nif echo \"$changed_files\" | grep -qE '\\.(ts|tsx|js|jsx)$'; then\n  echo \"Running tests before push...\"\n  npm test -- --bail 2>/dev/null\n  if [ $? -ne 0 ]; then\n    echo \"ERROR: Tests failed. Fix before pushing.\"\n    exit 1\n  fi\nfi\n\n# Check for console.log/debugger left in code\nif git diff --cached --name-only | grep -qE '\\.(ts|tsx|js|jsx)$'; then\n  if git diff HEAD~1 | grep -q 'console\\.log\\|debugger'; then\n    echo \"WARNING: console.log or debugger found in diff\"\n    echo \"Continue anyway? (set GIT_SKIP_HOOKS=1 to bypass)\"\n  fi\nfi\n\nexit 0\n```",
+    "tags": ["git", "pre-push", "hooks", "testing", "protection"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "GitHub Actions composite action for reusable steps",
+    "body": "Composite actions package multiple steps into a single reusable action. Unlike reusable workflows, they run within the calling job.\n\n```yaml\n# .github/actions/setup-project/action.yml\nname: Setup Project\ndescription: Install dependencies and setup environment\ninputs:\n  node-version:\n    description: Node.js version\n    default: '22'\n  install-playwright:\n    description: Install Playwright browsers\n    default: 'false'\n\nruns:\n  using: composite\n  steps:\n    - uses: actions/setup-node@v4\n      with:\n        node-version: ${{ inputs.node-version }}\n        cache: npm\n\n    - name: Install dependencies\n      shell: bash\n      run: npm ci\n\n    - name: Install Playwright\n      if: inputs.install-playwright == 'true'\n      shell: bash\n      run: npx playwright install --with-deps chromium\n\n    - name: Build\n      shell: bash\n      run: npm run build\n```\n\n```yaml\n# Usage in workflow\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: ./.github/actions/setup-project\n        with:\n          install-playwright: 'true'\n      - run: npm test\n```\n\nComposite actions must specify `shell:` for every `run:` step. They share the job's environment, filesystem, and service containers with the calling workflow.",
+    "tags": ["github-actions", "composite-action", "reusable", "setup"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Git conflict resolution workflow with three-way merge",
+    "body": "A systematic approach to resolving merge conflicts using the three-way merge strategy.\n\n```bash\n# Start the merge/rebase\ngit merge feature  # or git rebase main\n\n# See all conflicted files\ngit diff --name-only --diff-filter=U\n\n# For each conflicted file, understand the three versions:\ngit show :1:path/to/file  # common ancestor (base)\ngit show :2:path/to/file  # current branch (ours)\ngit show :3:path/to/file  # incoming branch (theirs)\n\n# Use a merge tool\ngit mergetool  # opens configured merge tool\n# or\ngit mergetool --tool=vimdiff\n\n# Manual resolution: edit the conflict markers\n<<<<<<< HEAD (ours)\nconst timeout = 5000;\n=======\nconst timeout = 10000;\n>>>>>>> feature (theirs)\n# Remove markers and keep the correct version:\nconst timeout = 10000;\n\n# After resolving all conflicts:\ngit add .  # mark as resolved\ngit merge --continue  # or git rebase --continue\n\n# If you want to abort:\ngit merge --abort  # or git rebase --abort\n```\n\nConfigure VS Code as merge tool: `git config --global merge.tool vscode && git config --global mergetool.vscode.cmd 'code --wait $MERGED'`",
+    "tags": ["git", "conflict-resolution", "merge", "three-way", "mergetool"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "GitHub Actions CI/CD pipeline with test, build, and deploy stages",
+    "body": "A complete CI/CD pipeline with job dependencies, caching, and environment deployments.\n\n```yaml\nname: CI/CD Pipeline\non:\n  push:\n    branches: [main]\n  pull_request:\n    branches: [main]\n\njobs:\n  lint:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-node@v4\n        with: { node-version: 22, cache: npm }\n      - run: npm ci\n      - run: npm run lint\n      - run: npx tsc --noEmit\n\n  test:\n    runs-on: ubuntu-latest\n    services:\n      postgres:\n        image: postgres:16\n        env:\n          POSTGRES_PASSWORD: test\n          POSTGRES_DB: testdb\n        ports: ['5432:5432']\n        options: >-\n          --health-cmd pg_isready\n          --health-interval 10s\n          --health-timeout 5s\n          --health-retries 5\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-node@v4\n        with: { node-version: 22, cache: npm }\n      - run: npm ci\n      - run: npm test -- --coverage\n        env:\n          DATABASE_URL: postgresql://postgres:test@localhost:5432/testdb\n      - uses: actions/upload-artifact@v4\n        with:\n          name: coverage\n          path: coverage/\n\n  build:\n    needs: [lint, test]\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-node@v4\n        with: { node-version: 22, cache: npm }\n      - run: npm ci\n      - run: npm run build\n      - uses: actions/upload-artifact@v4\n        with:\n          name: build\n          path: dist/\n\n  deploy:\n    if: github.ref == 'refs/heads/main' && github.event_name == 'push'\n    needs: build\n    runs-on: ubuntu-latest\n    environment: production\n    steps:\n      - uses: actions/download-artifact@v4\n        with: { name: build }\n      - run: echo \"Deploy to production\"\n```",
+    "tags": ["github-actions", "ci-cd", "pipeline", "deploy", "testing"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Git monorepo workflow with sparse checkout and path-based triggers",
+    "body": "Efficient Git workflows for monorepos using sparse checkout and GitHub Actions path filters.\n\n```bash\n# Sparse checkout: only download specific directories\ngit clone --filter=blob:none --sparse <url>\ncd repo\ngit sparse-checkout set packages/frontend\n# Only packages/frontend is checked out\n\n# Add more directories later\ngit sparse-checkout add packages/shared\n\n# List sparse checkout paths\ngit sparse-checkout list\n```\n\n```yaml\n# .github/workflows/frontend.yml — only runs for frontend changes\nname: Frontend CI\non:\n  push:\n    paths:\n      - 'packages/frontend/**'\n      - 'packages/shared/**'\n      - 'package.json'\n      - '.github/workflows/frontend.yml'\n  pull_request:\n    paths:\n      - 'packages/frontend/**'\n      - 'packages/shared/**'\n\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-node@v4\n        with: { node-version: 22, cache: npm }\n      - run: npm ci\n      - run: npm run test --workspace=packages/frontend\n```\n\nPath filters prevent unnecessary CI runs. Include shared dependency paths (like `packages/shared/**`) to catch breaking changes. Always include the workflow file itself in the paths filter so workflow changes trigger a run.",
+    "tags": ["git", "monorepo", "sparse-checkout", "github-actions", "path-filter"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "GitHub Actions deployment with environment protection rules",
+    "body": "Use GitHub environments for deployment approvals, secrets scoping, and deployment tracking.\n\n```yaml\njobs:\n  deploy-staging:\n    runs-on: ubuntu-latest\n    environment:\n      name: staging\n      url: https://staging.example.com\n    steps:\n      - uses: actions/checkout@v4\n      - run: ./deploy.sh staging\n        env:\n          DEPLOY_TOKEN: ${{ secrets.STAGING_DEPLOY_TOKEN }}\n\n  deploy-production:\n    needs: deploy-staging\n    runs-on: ubuntu-latest\n    environment:\n      name: production\n      url: https://example.com\n    steps:\n      - uses: actions/checkout@v4\n      - run: ./deploy.sh production\n        env:\n          DEPLOY_TOKEN: ${{ secrets.PROD_DEPLOY_TOKEN }}\n```\n\nIn GitHub UI, configure each environment with:\n- **Required reviewers**: 1-6 people who must approve before deployment\n- **Wait timer**: delay (minutes) before deployment starts\n- **Branch restrictions**: only allow deployments from specific branches\n- **Environment secrets**: secrets scoped to that environment only\n\nSecrets set on the `production` environment are only available to jobs that specify `environment: production`. This prevents accidental production deploys from feature branches.",
+    "tags": ["github-actions", "environments", "deployment", "approval", "protection"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Git alias configuration for common workflows",
+    "body": "Set up Git aliases to speed up common operations and reduce typing errors.\n\n```bash\n# Add these to ~/.gitconfig or run git config --global\ngit config --global alias.co 'checkout'\ngit config --global alias.br 'branch'\ngit config --global alias.ci 'commit'\ngit config --global alias.st 'status -sb'\ngit config --global alias.lg 'log --oneline --graph --decorate -20'\ngit config --global alias.lga 'log --oneline --graph --decorate --all -30'\n\n# Useful compound aliases\ngit config --global alias.undo 'reset --soft HEAD~1'\ngit config --global alias.amend 'commit --amend --no-edit'\ngit config --global alias.unstage 'reset HEAD --'\ngit config --global alias.last 'log -1 HEAD --stat'\ngit config --global alias.fresh 'fetch --all --prune'\n\n# Show what you worked on today\ngit config --global alias.today 'log --since=midnight --author=\"$(git config user.name)\" --oneline'\n\n# Delete merged branches\ngit config --global alias.cleanup '!git branch --merged main | grep -v main | xargs git branch -d'\n\n# Interactive rebase last N commits\ngit config --global alias.ri '!f() { git rebase -i HEAD~${1:-5}; }; f'\n```\n\n```bash\n# Usage:\ngit st        # git status -sb\ngit lg        # pretty log\ngit undo      # undo last commit, keep changes staged\ngit cleanup   # delete branches merged into main\ngit ri 3      # interactive rebase last 3 commits\ngit today     # show today's commits\n```",
+    "tags": ["git", "aliases", "configuration", "productivity", "workflow"]
+  },
+  {
+    "type": "pattern",
+    "trust": "community",
+    "title": "GitHub Actions automatic PR labeling and size checking",
+    "body": "Automatically label PRs based on changed files and flag oversized PRs for review.\n\n```yaml\n# .github/workflows/pr-labeler.yml\nname: PR Labeler\non:\n  pull_request:\n    types: [opened, synchronize]\n\njobs:\n  label:\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n      pull-requests: write\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0\n\n      - name: Label by file paths\n        uses: actions/labeler@v5\n        with:\n          repo-token: ${{ secrets.GITHUB_TOKEN }}\n\n      - name: Check PR size\n        run: |\n          additions=$(gh pr view ${{ github.event.pull_request.number }} --json additions -q '.additions')\n          deletions=$(gh pr view ${{ github.event.pull_request.number }} --json deletions -q '.deletions')\n          total=$((additions + deletions))\n\n          if [ $total -gt 1000 ]; then\n            gh pr edit ${{ github.event.pull_request.number }} --add-label \"size/XL\"\n            gh pr comment ${{ github.event.pull_request.number }} --body \\\n              \"⚠️ This PR has $total changed lines. Consider breaking it into smaller PRs.\"\n          elif [ $total -gt 500 ]; then\n            gh pr edit ${{ github.event.pull_request.number }} --add-label \"size/L\"\n          elif [ $total -gt 100 ]; then\n            gh pr edit ${{ github.event.pull_request.number }} --add-label \"size/M\"\n          else\n            gh pr edit ${{ github.event.pull_request.number }} --add-label \"size/S\"\n          fi\n        env:\n          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n```\n\n```yaml\n# .github/labeler.yml (config for actions/labeler)\nfrontend:\n  - changed-files:\n    - any-glob-to-any-file: ['src/components/**', '*.css', '*.tsx']\nbackend:\n  - changed-files:\n    - any-glob-to-any-file: ['src/api/**', 'src/db/**']\ndocs:\n  - changed-files:\n    - any-glob-to-any-file: ['docs/**', '*.md']\n```",
+    "tags": ["github-actions", "labeler", "pr-size", "automation"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Git stash workflow for context switching without losing work",
+    "body": "A disciplined stash workflow for managing multiple work-in-progress contexts.\n\n```bash\n# Save current work with descriptive message\ngit stash push -u -m \"feat: login form — halfway through validation\"\n\n# Do the urgent thing\ngit checkout main\ngit checkout -b hotfix/critical-bug\n# ... fix the bug ...\ngit commit -m \"fix: critical security patch\"\ngit push -u origin hotfix/critical-bug\n\n# Return to original work\ngit checkout feature/login\ngit stash list\n# stash@{0}: On feature/login: feat: login form — halfway through validation\n\ngit stash pop  # apply and remove from stash\n\n# Advanced: stash specific files\ngit stash push -m \"stash only the hook\" -- src/hooks/useAuth.ts\n\n# Save stash for longer term (like a named branch but lighter)\ngit stash push -u -m \"experiment: alternative search algorithm\"\n# Come back days later:\ngit stash list  # find it\ngit stash apply stash@{2}  # apply without removing\n\n# Drop old stashes\ngit stash drop stash@{3}\ngit stash clear  # delete ALL stashes (careful!)\n```\n\nAlways use `-m` with a descriptive message. Without messages, stashes pile up and become unidentifiable. Treat stash as a short-term holding area, not long-term storage — for that, use branches.",
+    "tags": ["git", "stash", "context-switching", "workflow", "wip"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Git hooks setup with Husky and lint-staged for TypeScript projects",
+    "body": "Complete setup for pre-commit hooks that lint, format, and type-check staged files.\n\n```bash\n# Install\nnpm install -D husky lint-staged\nnpx husky init\n```\n\n```json\n// package.json\n{\n  \"scripts\": {\n    \"prepare\": \"husky\"\n  },\n  \"lint-staged\": {\n    \"*.{ts,tsx}\": [\n      \"eslint --fix --max-warnings=0\",\n      \"prettier --write\"\n    ],\n    \"*.{json,md,yml,yaml}\": [\n      \"prettier --write\"\n    ],\n    \"*.css\": [\n      \"stylelint --fix\",\n      \"prettier --write\"\n    ]\n  }\n}\n```\n\n```bash\n# .husky/pre-commit\nnpx lint-staged\n\n# .husky/commit-msg\nnpx --no -- commitlint --edit $1\n\n# .husky/pre-push\nnpm run typecheck\nnpm test -- --bail\n```\n\n```bash\n# Optional: skip hooks for WIP commits\ngit commit --no-verify -m \"WIP: quick save\"\n\n# Run lint-staged manually (useful for debugging)\nnpx lint-staged --debug\n```\n\nThis setup runs ESLint and Prettier only on staged files (fast), type-checks on push (catches cross-file errors), and validates commit messages for conventional commits.",
+    "tags": ["git", "husky", "lint-staged", "pre-commit", "typescript"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "GitHub Actions workflow for automated releases with semantic versioning",
+    "body": "Automatically create releases, bump versions, and generate changelogs from conventional commits.\n\n```yaml\n# .github/workflows/release.yml\nname: Release\non:\n  push:\n    branches: [main]\n\npermissions:\n  contents: write\n  pull-requests: write\n\njobs:\n  release:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0\n\n      - uses: actions/setup-node@v4\n        with:\n          node-version: 22\n          cache: npm\n          registry-url: https://registry.npmjs.org\n\n      - run: npm ci\n\n      - name: Create release\n        env:\n          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}\n        run: npx semantic-release\n```\n\n```json\n// .releaserc.json\n{\n  \"branches\": [\"main\"],\n  \"plugins\": [\n    \"@semantic-release/commit-analyzer\",\n    \"@semantic-release/release-notes-generator\",\n    \"@semantic-release/changelog\",\n    [\"@semantic-release/npm\", { \"npmPublish\": true }],\n    [\"@semantic-release/github\", {\n      \"assets\": [\"dist/**\"]\n    }],\n    [\"@semantic-release/git\", {\n      \"assets\": [\"CHANGELOG.md\", \"package.json\"],\n      \"message\": \"chore(release): ${nextRelease.version}\"\n    }]\n  ]\n}\n```\n\nSemantic-release reads commit messages to determine the version bump: `fix:` = patch, `feat:` = minor, `BREAKING CHANGE:` = major. The changelog is generated automatically from commit messages.",
+    "tags": ["github-actions", "semantic-release", "versioning", "changelog", "npm"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "GitHub Actions workflow for Docker build with layer caching",
+    "body": "Build and push Docker images efficiently using GitHub Actions with build cache.\n\n```yaml\nname: Docker Build\non:\n  push:\n    branches: [main]\n    tags: ['v*']\n  pull_request:\n    branches: [main]\n\nenv:\n  REGISTRY: ghcr.io\n  IMAGE_NAME: ${{ github.repository }}\n\njobs:\n  build:\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n      packages: write\n    steps:\n      - uses: actions/checkout@v4\n\n      - uses: docker/setup-buildx-action@v3\n\n      - uses: docker/login-action@v3\n        with:\n          registry: ${{ env.REGISTRY }}\n          username: ${{ github.actor }}\n          password: ${{ secrets.GITHUB_TOKEN }}\n\n      - uses: docker/metadata-action@v5\n        id: meta\n        with:\n          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}\n          tags: |\n            type=ref,event=branch\n            type=ref,event=pr\n            type=semver,pattern={{version}}\n            type=sha\n\n      - uses: docker/build-push-action@v5\n        with:\n          context: .\n          push: ${{ github.event_name != 'pull_request' }}\n          tags: ${{ steps.meta.outputs.tags }}\n          labels: ${{ steps.meta.outputs.labels }}\n          cache-from: type=gha\n          cache-to: type=gha,mode=max\n```\n\nThe `cache-from/cache-to: type=gha` uses GitHub Actions cache for Docker layers. The `mode=max` caches all layers, not just the final image layers. This dramatically speeds up subsequent builds.",
+    "tags": ["github-actions", "docker", "ghcr", "caching", "ci-cd"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Git .gitignore template for Node.js/TypeScript projects",
+    "body": "Comprehensive `.gitignore` covering common Node.js, TypeScript, and framework files.\n\n```gitignore\n# Dependencies\nnode_modules/\n.pnp\n.pnp.js\n\n# Build output\ndist/\nbuild/\n.next/\nout/\n.nuxt/\n.output/\n\n# TypeScript\n*.tsbuildinfo\n\n# Testing\ncoverage/\n.nyc_output/\ntest-results/\nplaywright-report/\nblob-report/\n\n# Environment\n.env\n.env.local\n.env.*.local\n!.env.example\n\n# IDE\n.vscode/*\n!.vscode/extensions.json\n!.vscode/settings.json\n.idea/\n*.swp\n*.swo\n*~\n.DS_Store\nThumbs.db\n\n# Logs\nlogs/\n*.log\nnpm-debug.log*\nyarn-debug.log*\nyarn-error.log*\n\n# Package manager locks (keep ONE, ignore others)\n# If using npm:\n# yarn.lock\n# pnpm-lock.yaml\n\n# Prisma\nprisma/migrations/**/migration_lock.toml\n\n# Temporary\ntmp/\ntemp/\n.cache/\n\n# Secrets (never commit these)\n*.pem\n*.key\ncredentials.json\nservice-account.json\n```\n\nCommit `.env.example` with placeholder values so teammates know which variables are needed. Never commit `.env` with real values. Use `git check-ignore -v <file>` to debug why a file is or isn't ignored.",
+    "tags": ["git", "gitignore", "nodejs", "typescript", "template"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "GitHub Actions workflow for running Playwright E2E tests",
+    "body": "Run Playwright end-to-end tests in CI with artifacts for failed test screenshots.\n\n```yaml\nname: E2E Tests\non:\n  pull_request:\n  push:\n    branches: [main]\n\njobs:\n  e2e:\n    runs-on: ubuntu-latest\n    timeout-minutes: 30\n    steps:\n      - uses: actions/checkout@v4\n\n      - uses: actions/setup-node@v4\n        with:\n          node-version: 22\n          cache: npm\n\n      - run: npm ci\n\n      - name: Install Playwright browsers\n        run: npx playwright install --with-deps chromium\n\n      - name: Build app\n        run: npm run build\n\n      - name: Run E2E tests\n        run: npx playwright test --project=chromium\n        env:\n          CI: true\n          BASE_URL: http://localhost:3000\n\n      - name: Upload test results\n        if: failure()\n        uses: actions/upload-artifact@v4\n        with:\n          name: playwright-report\n          path: playwright-report/\n          retention-days: 7\n\n      - name: Upload screenshots\n        if: failure()\n        uses: actions/upload-artifact@v4\n        with:\n          name: test-screenshots\n          path: test-results/\n          retention-days: 7\n```\n\nInstall only the browsers you need (`--with-deps chromium` instead of all browsers) to reduce CI time. Use `if: failure()` for artifacts so you only upload when tests fail.",
+    "tags": ["github-actions", "playwright", "e2e-testing", "ci", "screenshots"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Git advanced log commands for investigation and blame",
+    "body": "Power-user Git log commands for tracking down changes, understanding history, and investigating issues.\n\n```bash\n# Find who last modified each line of a file\ngit blame src/utils/auth.ts\ngit blame -L 10,30 src/utils/auth.ts  # specific line range\ngit blame --since=\"3.weeks\" src/utils/auth.ts  # only recent changes\n\n# Find when a specific line was added\ngit log -S \"connectToDatabase\" --oneline  # search for string in diffs\ngit log -G \"timeout.*=.*\\d+\" --oneline     # regex search in diffs\n\n# Show all changes to a specific function\ngit log -L :functionName:src/utils/auth.ts\n\n# Show commits that touched a specific file\ngit log --follow -- src/utils/auth.ts  # --follow tracks renames\n\n# Find merge commit that introduced a change\ngit log --merges --ancestry-path abc1234..HEAD\n\n# Graph view of branch topology\ngit log --graph --oneline --all --decorate -20\n\n# What did I do last week?\ngit log --author=\"$(git config user.name)\" --since=\"1 week ago\" --oneline\n\n# Show files changed in each commit\ngit log --stat --oneline -10\n\n# Show diff for each commit (verbose)\ngit log -p -5 -- src/utils/auth.ts\n\n# Find deleted files\ngit log --diff-filter=D --summary | grep 'delete mode'\n```",
+    "tags": ["git", "log", "blame", "investigation", "history"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "GitHub Actions matrix with service containers for database testing",
+    "body": "Test against multiple database versions using GitHub Actions service containers.\n\n```yaml\nname: Database Tests\non: [push, pull_request]\n\njobs:\n  test:\n    runs-on: ubuntu-latest\n    strategy:\n      fail-fast: false\n      matrix:\n        include:\n          - db: postgres\n            db-version: '15'\n            db-port: 5432\n          - db: postgres\n            db-version: '16'\n            db-port: 5432\n          - db: mysql\n            db-version: '8.0'\n            db-port: 3306\n\n    services:\n      postgres:\n        image: ${{ matrix.db == 'postgres' && format('postgres:{0}', matrix.db-version) || '' }}\n        env:\n          POSTGRES_USER: test\n          POSTGRES_PASSWORD: test\n          POSTGRES_DB: testdb\n        ports: ['5432:5432']\n        options: >-\n          --health-cmd pg_isready\n          --health-interval 10s\n          --health-timeout 5s\n          --health-retries 5\n\n      mysql:\n        image: ${{ matrix.db == 'mysql' && format('mysql:{0}', matrix.db-version) || '' }}\n        env:\n          MYSQL_ROOT_PASSWORD: test\n          MYSQL_DATABASE: testdb\n        ports: ['3306:3306']\n        options: >-\n          --health-cmd \"mysqladmin ping\"\n          --health-interval 10s\n          --health-timeout 5s\n          --health-retries 5\n\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-node@v4\n        with: { node-version: 22, cache: npm }\n      - run: npm ci\n      - run: npm test\n        env:\n          DB_TYPE: ${{ matrix.db }}\n          DB_PORT: ${{ matrix.db-port }}\n          DATABASE_URL: ${{ matrix.db == 'postgres' && 'postgresql://test:test@localhost:5432/testdb' || 'mysql://root:test@localhost:3306/testdb' }}\n```",
+    "tags": ["github-actions", "service-containers", "database", "testing", "matrix"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Git patch workflow for sharing changes without pushing",
+    "body": "Create and apply patches to share changes over email, chat, or between disconnected repos.\n\n```bash\n# Create a patch from the last commit\ngit format-patch -1 HEAD\n# Creates: 0001-commit-message.patch\n\n# Create patches from the last 3 commits\ngit format-patch -3\n\n# Create a patch from a branch diff\ngit format-patch main..feature\n# Creates one .patch file per commit\n\n# Create a single combined diff\ngit diff main..feature > changes.diff\n\n# Apply a patch (preserves commit info)\ngit am 0001-commit-message.patch\ngit am *.patch  # apply all patches in order\n\n# Apply a raw diff\ngit apply changes.diff\n\n# Check if a patch applies cleanly\ngit apply --check changes.diff\n\n# If patch fails to apply:\ngit am --abort  # cancel\n# or\ngit am --3way  # try 3-way merge for conflicts\n\n# Create a patch from staged changes only\ngit diff --cached > staged-changes.patch\n```\n\nPatches are useful for: contributing to projects where you don't have push access, sharing changes in code review comments, and porting changes between repos that don't share a remote.",
+    "tags": ["git", "patch", "format-patch", "am", "diff"]
+  },
+  {
+    "type": "snippet",
+    "trust": "community",
+    "title": "GitHub Actions workflow for dependency updates with automated PRs",
+    "body": "Automatically create PRs when dependencies have updates, with auto-merge for patch versions.\n\n```yaml\n# .github/dependabot.yml\nversion: 2\nupdates:\n  - package-ecosystem: npm\n    directory: /\n    schedule:\n      interval: weekly\n      day: monday\n      time: '09:00'\n    open-pull-requests-limit: 10\n    groups:\n      dev-dependencies:\n        dependency-type: development\n        update-types: [minor, patch]\n      production-dependencies:\n        dependency-type: production\n        update-types: [patch]\n    reviewers:\n      - team-lead\n    labels:\n      - dependencies\n    commit-message:\n      prefix: chore(deps)\n```\n\n```yaml\n# .github/workflows/auto-merge-dependabot.yml\nname: Auto-merge Dependabot\non:\n  pull_request:\n    types: [opened, synchronize]\n\npermissions:\n  contents: write\n  pull-requests: write\n\njobs:\n  auto-merge:\n    if: github.actor == 'dependabot[bot]'\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - name: Auto-merge patch updates\n        run: |\n          gh pr merge --auto --squash ${{ github.event.pull_request.number }}\n        env:\n          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n```\n\nGroup related dependencies together so they're updated in a single PR. Auto-merge patch updates but require manual review for minor/major versions.",
+    "tags": ["github-actions", "dependabot", "auto-merge", "dependencies"]
+  },
+  {
+    "type": "config",
+    "trust": "verified",
+    "title": "Git global configuration for professional development setup",
+    "body": "Essential Git configuration settings for a professional development environment.\n\n```bash\n# Identity\ngit config --global user.name \"Your Name\"\ngit config --global user.email \"your@email.com\"\n\n# Default branch name\ngit config --global init.defaultBranch main\n\n# Pull strategy\ngit config --global pull.rebase true\ngit config --global rebase.autoStash true\n\n# Push behavior\ngit config --global push.autoSetupRemote true\ngit config --global push.default current\n\n# Merge strategy\ngit config --global merge.conflictstyle diff3  # shows base version in conflicts\n\n# Diff settings\ngit config --global diff.algorithm histogram  # better diffs\ngit config --global diff.colorMoved default   # highlight moved lines\n\n# Auto-correct typos (with 0.1s delay)\ngit config --global help.autocorrect 1\n\n# Large file warning\ngit config --global core.bigFileThreshold 50m\n\n# Performance\ngit config --global core.fsmonitor true  # filesystem monitor (Git 2.37+)\ngit config --global core.untrackedCache true\ngit config --global feature.manyFiles true\n\n# Editor\ngit config --global core.editor \"code --wait\"  # VS Code\n\n# Credential caching\ngit config --global credential.helper osxkeychain  # macOS\n# git config --global credential.helper store  # Linux (plaintext!)\n# git config --global credential.helper manager  # Windows\n```\n\nThe `merge.conflictstyle diff3` setting is particularly valuable — it shows the common ancestor in conflicts, making resolution much easier.",
+    "tags": ["git", "config", "global", "setup", "professional"]
+  },
+  {
+    "type": "config",
+    "trust": "verified",
+    "title": "GitHub Actions workflow permissions and security hardening",
+    "body": "Security-focused workflow configuration to minimize attack surface.\n\n```yaml\n# Set restrictive default permissions at workflow level\npermissions:\n  contents: read  # minimum needed for checkout\n\nname: Secure CI\non:\n  pull_request:\n  push:\n    branches: [main]\n\njobs:\n  test:\n    runs-on: ubuntu-latest\n    # Override permissions per job\n    permissions:\n      contents: read\n    steps:\n      - uses: actions/checkout@v4\n      - run: npm test\n\n  deploy:\n    if: github.ref == 'refs/heads/main'\n    needs: test\n    runs-on: ubuntu-latest\n    permissions:\n      contents: write       # only when needed\n      id-token: write        # for OIDC\n    environment: production  # requires approval\n    steps:\n      # Pin actions to full SHA, not tag (prevents supply chain attacks)\n      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11  # v4.1.1\n\n      # Use OIDC instead of long-lived secrets\n      - uses: aws-actions/configure-aws-credentials@v4\n        with:\n          role-to-assume: arn:aws:iam::123456789:role/deploy\n          aws-region: us-east-1\n\n      - run: ./deploy.sh\n```\n\nSecurity checklist:\n1. Pin actions to commit SHA (not tags) to prevent supply chain attacks\n2. Use minimum required permissions per job\n3. Use OIDC for cloud deployments instead of long-lived access keys\n4. Enable \"Require approval for all outside collaborators\" in Actions settings\n5. Use environment protection rules for production deployments",
+    "tags": ["github-actions", "security", "permissions", "oidc", "hardening"]
+  },
+  {
+    "type": "comparison",
+    "trust": "verified",
+    "title": "Git rebase vs merge: when to use each strategy",
+    "body": "Both integrate changes from one branch to another, but they produce different histories.\n\n**Merge: preserves history as it happened**\n```bash\ngit checkout main\ngit merge feature\n# Creates a merge commit with two parents\n# History: a--b--c--M (main)\n#               \\  /\n#                d-e (feature)\n```\n\n**Rebase: creates linear history**\n```bash\ngit checkout feature\ngit rebase main\ngit checkout main\ngit merge feature  # fast-forward\n# History: a--b--c--d'--e' (main)\n# Original d-e commits are rewritten as d'-e'\n```\n\n**Use merge when:**\n- Integrating a long-lived feature branch (preserves context)\n- Working on a shared branch (no history rewriting)\n- You want to know when a branch was merged\n- Traceability matters (auditing, compliance)\n\n**Use rebase when:**\n- Updating a personal feature branch with latest main\n- Cleaning up commit history before PR review\n- You prefer a clean, linear history\n- The branch hasn't been shared/pushed\n\n**Never rebase when:**\n- The branch is shared with other developers\n- Commits have been pushed and others may have pulled them\n- You're working on main/master directly",
+    "tags": ["git", "rebase", "merge", "comparison", "branching-strategy"]
+  },
+  {
+    "type": "comparison",
+    "trust": "verified",
+    "title": "GitHub Actions runners: ubuntu vs macos vs windows vs self-hosted",
+    "body": "Choosing the right runner affects cost, speed, and available tooling.\n\n**GitHub-hosted runners:**\n\n| Runner | vCPU | RAM | Disk | Cost/min (private) |\n|--------|------|-----|------|-------------------|\n| ubuntu-latest | 4 | 16GB | 14GB | $0.008 |\n| windows-latest | 4 | 16GB | 14GB | $0.016 (2x) |\n| macos-latest (M1) | 3 | 7GB | 14GB | $0.08 (10x) |\n| ubuntu-latest-xl | 8+ | 32GB+ | varies | $0.032+ |\n\n```yaml\n# Cost-optimized matrix: test on Linux, verify on others\njobs:\n  test:\n    strategy:\n      matrix:\n        os: [ubuntu-latest]  # primary testing\n        include:\n          - os: windows-latest  # only for platform-specific\n          - os: macos-latest    # only if targeting macOS\n```\n\n**Self-hosted runners:**\n```yaml\n# Use for: private dependencies, GPU access, specific hardware\njobs:\n  build:\n    runs-on: [self-hosted, linux, x64]  # use labels to target\n```\n\n**Key differences:**\n- Ubuntu: cheapest, most tooling pre-installed, fastest startup\n- Windows: needed for .NET, PowerShell, MSVC builds\n- macOS: needed for iOS/macOS builds, Xcode\n- Self-hosted: no per-minute cost, full control, your security responsibility",
+    "tags": ["github-actions", "runners", "comparison", "cost", "self-hosted"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Git rebase --onto lets you transplant a branch to a different base",
+    "body": "When you need to move a branch from one base to another (e.g., you branched from the wrong branch), `rebase --onto` is the tool.\n\n```bash\n# Situation: you branched 'feature' from 'develop' but should have branched from 'main'\n# develop: a--b--c\n#                 \\\n#                  d--e (feature)\n# main: a--b--f--g\n\n# Transplant feature onto main\ngit rebase --onto main develop feature\n# Result:\n# main: a--b--f--g--d'--e' (feature)\n\n# General form:\ngit rebase --onto <new-base> <old-base> <branch>\n\n# Remove commits from middle of a branch:\n# Before: a--b--c--d--e (main)\n# Remove c and d:\ngit rebase --onto b d main\n# After: a--b--e' (main)\n```\n\nThis is one of Git's most powerful but least understood features. It's essential for cleaning up branch topology mistakes without cherry-picking.",
+    "tags": ["git", "rebase-onto", "transplant", "branch"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "community",
+    "title": "GitHub Actions artifacts expire after 90 days by default",
+    "body": "Artifacts uploaded with `actions/upload-artifact` are automatically deleted after 90 days (configurable down to 1 day). Don't rely on them for permanent storage.\n\n```yaml\n- uses: actions/upload-artifact@v4\n  with:\n    name: build-output\n    path: dist/\n    retention-days: 7  # delete after 7 days (saves storage)\n    if-no-files-found: error  # fail if nothing to upload\n    compression-level: 6  # 0-9, default 6\n\n# Download in another job\n- uses: actions/download-artifact@v4\n  with:\n    name: build-output\n    path: ./dist\n\n# Download all artifacts\n- uses: actions/download-artifact@v4\n  with:\n    path: ./all-artifacts\n```\n\nArtifact storage counts against your GitHub storage quota. Set short `retention-days` for CI artifacts (test results, coverage) and longer for release artifacts. For permanent storage, push to GitHub Releases or an external service.",
+    "tags": ["github-actions", "artifacts", "retention", "storage"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Git error: unable to create file — filename too long on Windows",
+    "body": "Windows has a 260-character path limit. Deeply nested `node_modules` or long filenames cause checkout failures.\n\n```bash\n# Error: unable to create file 'very/long/path/...': Filename too long\n\n# Fix 1: Enable long paths in Git\ngit config --global core.longpaths true\n\n# Fix 2: Enable long paths in Windows (requires admin)\n# Registry: HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem\n# Set LongPathsEnabled to 1\n\n# Fix 3: Use shorter paths\n# Clone to C:\\repo instead of C:\\Users\\username\\Documents\\projects\\repo\n\n# Fix 4: In CI (GitHub Actions Windows runner)\n- run: git config --system core.longpaths true\n  shell: bash\n```\n\nThis is almost always caused by `node_modules` nesting. Using npm 7+ (with hoisting) or pnpm (with symlinks) reduces path depth. Adding `core.longpaths true` to your repo's `.gitattributes` doesn't work — it must be set in Git config.",
+    "tags": ["git", "windows", "long-paths", "filename", "error"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Git signed commits and tags for supply chain security",
+    "body": "Sign commits with GPG or SSH keys to prove authorship and prevent impersonation.\n\n```bash\n# SSH signing (simpler, recommended since Git 2.34)\ngit config --global gpg.format ssh\ngit config --global user.signingkey ~/.ssh/id_ed25519.pub\ngit config --global commit.gpgsign true  # sign all commits\ngit config --global tag.gpgsign true     # sign all tags\n\n# GPG signing (traditional)\ngpg --full-generate-key\ngpg --list-secret-keys --keyid-format=long\ngit config --global user.signingkey <KEY_ID>\ngit config --global commit.gpgsign true\n\n# Sign a specific commit\ngit commit -S -m \"Signed commit\"\n\n# Sign a tag\ngit tag -s v1.0.0 -m \"Release v1.0.0\"\n\n# Verify signatures\ngit log --show-signature -1\ngit tag -v v1.0.0\n\n# Allow SSH signing verification\ngit config --global gpg.ssh.allowedSignersFile ~/.config/git/allowed_signers\necho \"your@email.com ssh-ed25519 AAAA...\" >> ~/.config/git/allowed_signers\n```\n\nGitHub shows a \"Verified\" badge on signed commits. Add your SSH public key (or GPG key) to GitHub Settings > SSH and GPG keys. Enable \"Require signed commits\" in branch protection rules for maximum security.",
+    "tags": ["git", "signing", "gpg", "ssh", "security"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "GitHub Actions release workflow with changelog generation",
+    "body": "Create GitHub releases with auto-generated changelogs from commit history.\n\n```yaml\nname: Release\non:\n  push:\n    tags: ['v*']\n\npermissions:\n  contents: write\n\njobs:\n  release:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0\n\n      - name: Generate changelog\n        id: changelog\n        run: |\n          # Get previous tag\n          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo \"\")\n          CURRENT_TAG=${GITHUB_REF#refs/tags/}\n\n          if [ -z \"$PREV_TAG\" ]; then\n            COMMITS=$(git log --oneline --pretty=format:\"- %s (%h)\")\n          else\n            COMMITS=$(git log ${PREV_TAG}..HEAD --oneline --pretty=format:\"- %s (%h)\")\n          fi\n\n          # Categorize commits\n          FEATURES=$(echo \"$COMMITS\" | grep -i \"^- feat\" || true)\n          FIXES=$(echo \"$COMMITS\" | grep -i \"^- fix\" || true)\n          OTHER=$(echo \"$COMMITS\" | grep -iv \"^- feat\\|^- fix\" || true)\n\n          BODY=\"## What's Changed\\n\\n\"\n          [ -n \"$FEATURES\" ] && BODY+=\"### Features\\n${FEATURES}\\n\\n\"\n          [ -n \"$FIXES\" ] && BODY+=\"### Bug Fixes\\n${FIXES}\\n\\n\"\n          [ -n \"$OTHER\" ] && BODY+=\"### Other\\n${OTHER}\\n\\n\"\n\n          echo \"body<<EOF\" >> $GITHUB_OUTPUT\n          echo -e \"$BODY\" >> $GITHUB_OUTPUT\n          echo \"EOF\" >> $GITHUB_OUTPUT\n\n      - name: Create release\n        run: |\n          gh release create ${{ github.ref_name }} \\\n            --title \"${{ github.ref_name }}\" \\\n            --notes \"${{ steps.changelog.outputs.body }}\" \\\n            --generate-notes\n        env:\n          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n```",
+    "tags": ["github-actions", "release", "changelog", "tags", "automation"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Git maintenance and repository health commands",
+    "body": "Keep repositories fast and clean with maintenance commands.\n\n```bash\n# Enable background maintenance (Git 2.29+)\ngit maintenance start\n# Runs: gc, commit-graph, incremental-repack on schedule\n# Config stored in ~/.gitconfig\n\n# Manual garbage collection\ngit gc                    # standard cleanup\ngit gc --aggressive       # thorough (slow, use rarely)\ngit gc --prune=now        # remove unreachable objects immediately\n\n# Check repository health\ngit fsck --full           # verify object integrity\ngit count-objects -vH     # show object database stats\n\n# Repack for better compression\ngit repack -a -d --depth=250 --window=250\n\n# Clean up remote tracking branches\ngit remote prune origin   # remove stale remote refs\ngit fetch --prune         # fetch + prune in one step\n\n# Find large objects in history\ngit rev-list --objects --all | \\\n  git cat-file --batch-check='%(objecttype) %(objectname) %(objectsize) %(rest)' | \\\n  sed -n 's/^blob //p' | \\\n  sort -rnk2 | head -20\n\n# Remove large file from entire history (use git-filter-repo)\npip install git-filter-repo\ngit filter-repo --invert-paths --path path/to/large-file.zip\n```\n\n`git maintenance start` is the set-it-and-forget-it solution. It runs optimization tasks in the background via cron. For large repos, this dramatically improves performance over time.",
+    "tags": ["git", "maintenance", "gc", "performance", "cleanup"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "GitHub Actions workflow for monorepo with path-based job triggers",
+    "body": "Efficiently run only relevant jobs in a monorepo based on which packages changed.\n\n```yaml\nname: Monorepo CI\non:\n  push:\n    branches: [main]\n  pull_request:\n\njobs:\n  detect-changes:\n    runs-on: ubuntu-latest\n    outputs:\n      frontend: ${{ steps.filter.outputs.frontend }}\n      backend: ${{ steps.filter.outputs.backend }}\n      shared: ${{ steps.filter.outputs.shared }}\n    steps:\n      - uses: actions/checkout@v4\n      - uses: dorny/paths-filter@v3\n        id: filter\n        with:\n          filters: |\n            frontend:\n              - 'packages/frontend/**'\n              - 'packages/shared/**'\n            backend:\n              - 'packages/backend/**'\n              - 'packages/shared/**'\n            shared:\n              - 'packages/shared/**'\n\n  test-frontend:\n    needs: detect-changes\n    if: needs.detect-changes.outputs.frontend == 'true'\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-node@v4\n        with: { node-version: 22, cache: npm }\n      - run: npm ci\n      - run: npm run test -w packages/frontend\n\n  test-backend:\n    needs: detect-changes\n    if: needs.detect-changes.outputs.backend == 'true'\n    runs-on: ubuntu-latest\n    services:\n      postgres:\n        image: postgres:16\n        env: { POSTGRES_PASSWORD: test, POSTGRES_DB: test }\n        ports: ['5432:5432']\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-node@v4\n        with: { node-version: 22, cache: npm }\n      - run: npm ci\n      - run: npm run test -w packages/backend\n        env:\n          DATABASE_URL: postgresql://postgres:test@localhost:5432/test\n\n  all-passed:\n    needs: [test-frontend, test-backend]\n    if: always()\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n          if [[ \"${{ needs.test-frontend.result }}\" == \"failure\" ]] || \\\n             [[ \"${{ needs.test-backend.result }}\" == \"failure\" ]]; then\n            exit 1\n          fi\n```",
+    "tags": ["github-actions", "monorepo", "path-filter", "ci", "optimization"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Git commit fixup and autosquash workflow for clean PR history",
+    "body": "Use fixup commits during development, then autosquash them before merging for clean history.\n\n```bash\n# During development: create fixup commits\ngit add src/auth.ts\ngit commit -m \"feat: add authentication\"\n\n# Later, find a bug in auth.ts:\ngit add src/auth.ts\ngit commit --fixup HEAD  # or --fixup <commit-hash>\n# Creates: \"fixup! feat: add authentication\"\n\n# More changes to same feature:\ngit add src/auth.test.ts\ngit commit --fixup HEAD~1\n# Creates another fixup commit\n\n# Before merging: squash fixups into their target commits\ngit rebase -i --autosquash main\n# The editor shows fixup commits already positioned correctly:\n# pick abc123 feat: add authentication\n# fixup def456 fixup! feat: add authentication\n# fixup ghi789 fixup! feat: add authentication\n\n# Enable autosquash by default\ngit config --global rebase.autosquash true\n```\n\nThis workflow lets you make messy, incremental commits during development while producing a clean, logical commit history in the final PR. Each \"fixup!\" commit automatically attaches to its target during interactive rebase.",
+    "tags": ["git", "fixup", "autosquash", "commit-history", "workflow"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "GitHub Actions error: This request was automatically failed — check run annotations",
+    "body": "This error occurs when a check run creates annotations that reference files not in the diff, or when the check run API returns unexpected data.\n\n```yaml\n# Common cause: ESLint or TypeScript annotations on files outside the PR\n- name: Lint\n  run: npx eslint . --format=json --output-file=eslint-results.json\n  continue-on-error: true\n\n# Fix: only lint changed files\n- name: Get changed files\n  id: changed\n  run: |\n    if [ \"${{ github.event_name }}\" = \"pull_request\" ]; then\n      FILES=$(gh pr diff ${{ github.event.pull_request.number }} --name-only | grep -E '\\.(ts|tsx)$' || true)\n    else\n      FILES=$(git diff --name-only HEAD~1 | grep -E '\\.(ts|tsx)$' || true)\n    fi\n    echo \"files=$FILES\" >> $GITHUB_OUTPUT\n  env:\n    GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n\n- name: Lint changed files\n  if: steps.changed.outputs.files != ''\n  run: echo \"${{ steps.changed.outputs.files }}\" | xargs npx eslint\n```\n\nAnother cause: GitHub's annotations API has a limit of 50 annotations per check run. If your linter produces more than 50 errors, you need to paginate or summarize.",
+    "tags": ["github-actions", "annotations", "lint", "check-run", "error"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "GitHub Actions cron-based scheduled workflows for maintenance tasks",
+    "body": "Run scheduled maintenance tasks like stale issue cleanup, dependency audits, and report generation.\n\n```yaml\nname: Scheduled Maintenance\non:\n  schedule:\n    # Run at 9am UTC every Monday\n    - cron: '0 9 * * 1'\n  workflow_dispatch: # allow manual trigger\n\npermissions:\n  issues: write\n  pull-requests: write\n  contents: read\n\njobs:\n  stale-issues:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/stale@v9\n        with:\n          stale-issue-message: 'This issue has been inactive for 30 days. It will be closed in 7 days unless there is new activity.'\n          stale-pr-message: 'This PR has been inactive for 14 days.'\n          days-before-issue-stale: 30\n          days-before-pr-stale: 14\n          days-before-issue-close: 7\n          days-before-pr-close: -1  # don't auto-close PRs\n          exempt-issue-labels: 'pinned,security'\n\n  security-audit:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: npm audit --production\n        continue-on-error: true\n      - name: Report critical vulnerabilities\n        run: |\n          CRITICAL=$(npm audit --json 2>/dev/null | jq '.metadata.vulnerabilities.critical // 0')\n          if [ \"$CRITICAL\" -gt 0 ]; then\n            gh issue create \\\n              --title \"Security: $CRITICAL critical vulnerabilities found\" \\\n              --body \"Run \\`npm audit\\` for details. Auto-generated by CI.\" \\\n              --label security\n          fi\n        env:\n          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n```\n\nAlways add `workflow_dispatch` alongside `schedule` so you can trigger runs manually for testing. Cron uses UTC timezone. Note: scheduled workflows only run on the default branch.",
+    "tags": ["github-actions", "cron", "scheduled", "maintenance", "stale"]
+  }
+]

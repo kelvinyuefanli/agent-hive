@@ -1,0 +1,1300 @@
+[
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Rust borrow checker rejects code that looks correct with multiple mutable references",
+    "body": "The borrow checker enforces that you can have either one mutable reference OR any number of immutable references, but not both simultaneously. This catches real bugs but surprises newcomers.\n\n```rust\nlet mut v = vec![1, 2, 3];\nlet first = &v[0]; // immutable borrow\nv.push(4);         // ERROR: mutable borrow while immutable borrow exists\nprintln!(\"{}\", first);\n```\n\nThe fix is to limit the scope of the immutable borrow so it doesn't overlap with the mutable operation:\n\n```rust\nlet mut v = vec![1, 2, 3];\nlet first = v[0]; // copy the value instead of borrowing\nv.push(4);        // fine now\nprintln!(\"{}\", first);\n```\n\nThis is actually protecting you: `push` may reallocate the Vec's backing memory, which would invalidate the reference `first`. Rust prevents the dangling pointer at compile time.",
+    "tags": [
+      "rust",
+      "borrow-checker",
+      "ownership",
+      "references"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Rust lifetime annotations required when returning references from functions",
+    "body": "When a function returns a reference, Rust needs to know which input lifetime it's tied to. The compiler cannot always infer this.\n\n```rust\n// ERROR: missing lifetime specifier\nfn longest(x: &str, y: &str) -> &str {\n    if x.len() > y.len() { x } else { y }\n}\n\n// FIX: explicit lifetime annotation\nfn longest<'a>(x: &'a str, y: &'a str) -> &'a str {\n    if x.len() > y.len() { x } else { y }\n}\n```\n\nThe `'a` annotation tells Rust: the returned reference lives at least as long as the shorter of the two input lifetimes. Without this, the compiler cannot verify the reference won't dangle. Lifetime elision rules handle simple cases (one input reference, or `&self`), but multi-reference returns always need explicit annotations.",
+    "tags": [
+      "rust",
+      "lifetimes",
+      "references",
+      "functions"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Rust trait objects require dyn keyword and have vtable overhead",
+    "body": "Trait objects (`dyn Trait`) use dynamic dispatch via a vtable, while generics (`impl Trait` or `<T: Trait>`) use static dispatch with monomorphization. Choosing wrong impacts performance and binary size.\n\n```rust\n// Static dispatch \u2014 monomorphized, zero-cost abstraction\nfn process(item: &impl Display) {\n    println!(\"{}\", item);\n}\n\n// Dynamic dispatch \u2014 vtable lookup at runtime\nfn process_dyn(item: &dyn Display) {\n    println!(\"{}\", item);\n}\n\n// Trait objects are required for heterogeneous collections\nlet items: Vec<Box<dyn Display>> = vec![\n    Box::new(42),\n    Box::new(\"hello\"),\n    Box::new(3.14),\n];\n```\n\nUse generics when you need maximum performance and know types at compile time. Use `dyn Trait` when you need heterogeneous collections or want to reduce binary size from monomorphization bloat. Not all traits are object-safe \u2014 traits with associated types or `Self` in return position cannot be used as `dyn Trait`.",
+    "tags": [
+      "rust",
+      "traits",
+      "dynamic-dispatch",
+      "generics",
+      "performance"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Rust async functions cannot be called in synchronous contexts without a runtime",
+    "body": "Async functions in Rust return a `Future` that does nothing until polled by an async runtime. You cannot just `.await` from `main()` without setting up tokio or async-std.\n\n```rust\n// ERROR: `await` is only allowed inside `async` functions\nasync fn fetch_data() -> String { \"data\".to_string() }\n\nfn main() {\n    let data = fetch_data().await; // compile error\n}\n\n// FIX: use tokio runtime\n#[tokio::main]\nasync fn main() {\n    let data = fetch_data().await;\n    println!(\"{}\", data);\n}\n\n// Or manually create runtime (useful in library code)\nfn main() {\n    let rt = tokio::runtime::Runtime::new().unwrap();\n    let data = rt.block_on(fetch_data());\n    println!(\"{}\", data);\n}\n```\n\nA common gotcha is calling `block_on` from within an async context \u2014 tokio will panic with \"cannot block inside async runtime\". Use `tokio::task::spawn_blocking` to bridge sync code inside async, and `Runtime::block_on` only from truly synchronous contexts.",
+    "tags": [
+      "rust",
+      "async",
+      "tokio",
+      "runtime",
+      "futures"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Rust closures capture variables differently depending on usage",
+    "body": "Rust closures infer whether to capture by reference, mutable reference, or by value based on how captured variables are used inside the closure body.\n\n```rust\nlet name = String::from(\"Alice\");\n\n// Captures by immutable reference (&name) \u2014 implements Fn\nlet greet = || println!(\"Hello, {}\", name);\ngreet();\nprintln!(\"{}\", name); // name still accessible\n\n// Captures by mutable reference (&mut name) \u2014 implements FnMut\nlet mut count = 0;\nlet mut increment = || { count += 1; };\nincrement();\n\n// Captures by value (moves name) \u2014 implements FnOnce\nlet consume = move || {\n    println!(\"Taking ownership: {}\", name);\n    drop(name);\n};\nconsume();\n// println!(\"{}\", name); // ERROR: name was moved\n```\n\nThe `move` keyword forces capture by value \u2014 essential when the closure outlives the current scope (e.g., spawning threads or returning closures). Without `move`, a closure sent to `thread::spawn` would hold references to stack variables that get dropped.",
+    "tags": [
+      "rust",
+      "closures",
+      "move-semantics",
+      "ownership",
+      "capture"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Rust String vs &str vs Cow \u2014 choosing the right string type",
+    "body": "Rust has multiple string types. Using the wrong one causes unnecessary allocations or confusing lifetime errors.\n\n```rust\nuse std::borrow::Cow;\n\n// &str \u2014 borrowed, immutable, zero-cost slice into existing data\nfn greet(name: &str) { println!(\"Hello, {name}\"); }\n\n// String \u2014 owned, heap-allocated, growable\nlet owned: String = \"hello\".to_string();\nlet also_owned: String = String::from(\"hello\");\n\n// Cow<str> \u2014 clone-on-write, avoids allocation when not needed\nfn maybe_uppercase(s: &str) -> Cow<str> {\n    if s.chars().any(|c| c.is_lowercase()) {\n        Cow::Owned(s.to_uppercase()) // allocates only when needed\n    } else {\n        Cow::Borrowed(s) // zero-cost borrow\n    }\n}\n```\n\nRules of thumb: accept `&str` in function parameters (works with both `String` and `&str`). Return `String` when the function creates new data. Use `Cow<str>` when you sometimes need to allocate and sometimes don't \u2014 common in parsing, normalization, and escaping functions. Never store `&str` in structs unless you're prepared to deal with lifetime annotations.",
+    "tags": [
+      "rust",
+      "string",
+      "str",
+      "cow",
+      "types"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Rust unsafe blocks don't disable the borrow checker",
+    "body": "A common misconception is that `unsafe` turns off Rust's safety guarantees. It only unlocks five specific capabilities \u2014 the rest of Rust's rules still apply.\n\n```rust\nunsafe {\n    // These five things are allowed in unsafe blocks:\n    // 1. Dereference raw pointers\n    let ptr = &42 as *const i32;\n    let val = *ptr;\n\n    // 2. Call unsafe functions\n    libc::getpid();\n\n    // 3. Access/modify mutable static variables\n    static mut COUNTER: i32 = 0;\n    COUNTER += 1;\n\n    // 4. Implement unsafe traits\n    // 5. Access fields of unions\n}\n\n// The borrow checker STILL applies inside unsafe:\nunsafe {\n    let mut v = vec![1, 2, 3];\n    let r = &v[0];\n    v.push(4); // STILL AN ERROR \u2014 borrow checker is active\n}\n```\n\nUnsafe is a contract: you promise the compiler that the operations you perform uphold Rust's safety invariants even though the compiler cannot verify them. Minimize unsafe surface area \u2014 wrap unsafe code in safe abstractions with well-defined invariants.",
+    "tags": [
+      "rust",
+      "unsafe",
+      "borrow-checker",
+      "raw-pointers",
+      "safety"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Rust Pin prevents moving values that have self-referential pointers",
+    "body": "Pin is required for async/await because Futures may contain self-referential fields. Moving a pinned value would invalidate internal pointers.\n\n```rust\nuse std::pin::Pin;\nuse std::future::Future;\n\n// Futures are !Unpin by default \u2014 they cannot be moved after polling\nasync fn example() {\n    let data = vec![1, 2, 3];\n    some_async_fn(&data).await; // Future holds reference to `data`\n    // If the Future moved in memory, &data would dangle\n}\n\n// Pin<Box<dyn Future>> is the heap-pinned pattern\nfn returns_future() -> Pin<Box<dyn Future<Output = i32>>> {\n    Box::pin(async { 42 })\n}\n\n// Most types are Unpin (moveable) \u2014 Pin has no effect on them\n// Only self-referential types (like async Futures) need Pin\nlet mut x = 5;\nlet pinned = Pin::new(&mut x); // fine, i32: Unpin\n```\n\nYou rarely construct `Pin` manually. `Box::pin()` and `tokio::pin!()` handle it. The key insight: if a type implements `Unpin`, pinning is a no-op. Most standard types are `Unpin`. Only compiler-generated Future types and explicit self-referential structs are `!Unpin`.",
+    "tags": [
+      "rust",
+      "pin",
+      "unpin",
+      "async",
+      "self-referential"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Rust Arc<Mutex<T>> is required for shared mutable state across threads",
+    "body": "Rust's type system enforces thread safety at compile time. You cannot share mutable data across threads without wrapping it in `Arc<Mutex<T>>` or `Arc<RwLock<T>>`.\n\n```rust\nuse std::sync::{Arc, Mutex};\nuse std::thread;\n\nlet counter = Arc::new(Mutex::new(0));\nlet mut handles = vec![];\n\nfor _ in 0..10 {\n    let counter = Arc::clone(&counter);\n    handles.push(thread::spawn(move || {\n        let mut num = counter.lock().unwrap();\n        *num += 1;\n        // MutexGuard dropped here, lock released\n    }));\n}\n\nfor handle in handles {\n    handle.join().unwrap();\n}\nprintln!(\"Result: {}\", *counter.lock().unwrap()); // 10\n```\n\nGotcha: holding a `MutexGuard` across an `.await` point will cause the lock to be held across a suspension point, potentially deadlocking. Use `tokio::sync::Mutex` for async code instead of `std::sync::Mutex`. For read-heavy workloads, prefer `RwLock` which allows concurrent readers.",
+    "tags": [
+      "rust",
+      "arc",
+      "mutex",
+      "concurrency",
+      "threads"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Rust macro_rules hygiene \u2014 variables inside macros don't leak into caller scope",
+    "body": "Rust macros are hygienic: variables defined inside a macro invocation don't collide with variables in the calling scope. But metavariable behavior has surprises.\n\n```rust\nmacro_rules! make_var {\n    () => {\n        let x = 42; // This x is in the macro's hygiene context\n    };\n}\n\nfn main() {\n    make_var!();\n    // println!(\"{}\", x); // ERROR: x not found in this scope\n}\n\n// Fix: pass the identifier from the caller\nmacro_rules! make_var {\n    ($name:ident) => {\n        let $name = 42; // Uses caller's hygiene context\n    };\n}\n\nfn main() {\n    make_var!(x);\n    println!(\"{}\", x); // works: 42\n}\n```\n\nAnother gotcha: `macro_rules!` uses the scope where the macro is defined, not where it's invoked, for resolving types and paths. If your macro references a type like `Vec`, it must be in scope at the definition site. Use `$crate::` prefix for paths in library macros to ensure correct resolution regardless of the caller's imports.",
+    "tags": [
+      "rust",
+      "macros",
+      "macro-rules",
+      "hygiene",
+      "metaprogramming"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Rust iterator adaptors are lazy \u2014 nothing happens without a consumer",
+    "body": "Iterator adaptors like `map`, `filter`, and `take` are lazy. They build up a chain of transformations but don't execute until a consuming method is called.\n\n```rust\nlet v = vec![1, 2, 3, 4, 5];\n\n// BUG: this does nothing!\nv.iter().map(|x| {\n    println!(\"Processing {}\", x); // never prints\n    x * 2\n});\n// warning: unused `Map` that must be used\n\n// FIX: consume the iterator\nlet doubled: Vec<_> = v.iter().map(|x| x * 2).collect();\n\n// Or use for_each for side effects\nv.iter().for_each(|x| println!(\"Processing {}\", x));\n\n// Common consumers: collect(), sum(), count(), any(), all(),\n// find(), fold(), for_each()\n```\n\nThis laziness is intentional \u2014 it enables zero-cost abstractions. The compiler fuses the entire iterator chain into a single loop with no intermediate allocations. But forgetting to consume is a frequent source of bugs, especially when using `map` for side effects instead of `for_each`.",
+    "tags": [
+      "rust",
+      "iterators",
+      "lazy-evaluation",
+      "map",
+      "collect"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Rust pattern matching must be exhaustive or the compiler rejects it",
+    "body": "Rust `match` expressions must cover every possible variant. This is a feature, not a bug \u2014 the compiler catches unhandled cases at compile time.\n\n```rust\nenum Command {\n    Start,\n    Stop,\n    Pause,\n}\n\n// ERROR: non-exhaustive patterns: `Pause` not covered\nmatch cmd {\n    Command::Start => println!(\"Starting\"),\n    Command::Stop => println!(\"Stopping\"),\n}\n\n// FIX: cover all variants\nmatch cmd {\n    Command::Start => println!(\"Starting\"),\n    Command::Stop => println!(\"Stopping\"),\n    Command::Pause => println!(\"Pausing\"),\n}\n\n// Or use a wildcard (but you lose compile-time exhaustiveness)\nmatch cmd {\n    Command::Start => println!(\"Starting\"),\n    _ => println!(\"Other\"),\n}\n```\n\nThe real power shows when you add a new variant to the enum \u2014 every `match` without a wildcard will fail to compile, forcing you to handle the new case everywhere. This is why `_ =>` wildcards should be used sparingly \u2014 they silence the compiler's help. Use `#[non_exhaustive]` on public enums to force downstream crates to include a wildcard arm.",
+    "tags": [
+      "rust",
+      "pattern-matching",
+      "enums",
+      "exhaustiveness",
+      "match"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Rust serde rename and default attributes for robust JSON handling",
+    "body": "Serde's derive macros handle most serialization, but real-world JSON rarely matches Rust's naming conventions. Missing fields or renamed keys cause silent failures without the right attributes.\n\n```rust\nuse serde::{Deserialize, Serialize};\n\n#[derive(Serialize, Deserialize, Debug)]\n#[serde(rename_all = \"camelCase\")] // converts snake_case fields to camelCase\nstruct ApiResponse {\n    user_name: String,         // serialized as \"userName\"\n    #[serde(rename = \"type\")]  // Rust keyword, must rename\n    item_type: String,\n    #[serde(default)]          // uses Default::default() if missing\n    is_active: bool,\n    #[serde(skip_serializing_if = \"Option::is_none\")]\n    email: Option<String>,     // omitted from JSON if None\n    #[serde(default = \"default_page_size\")]\n    page_size: u32,\n}\n\nfn default_page_size() -> u32 { 20 }\n\n// Handles: {\"userName\": \"alice\", \"type\": \"admin\"}\n// Missing is_active defaults to false, missing email becomes None\n```\n\nGotcha: `#[serde(deny_unknown_fields)]` rejects JSON with extra keys \u2014 useful for strict APIs but breaks forward compatibility. Use `#[serde(flatten)]` to capture extra fields into a `HashMap` for flexible schemas.",
+    "tags": [
+      "rust",
+      "serde",
+      "json",
+      "serialization",
+      "attributes"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Rust cargo features are additive \u2014 you cannot disable a feature enabled by another dependency",
+    "body": "Cargo features are purely additive. If crate A enables feature X on crate C, and crate B also depends on C without feature X, crate C is compiled with feature X enabled for both.\n\n```toml\n# Cargo.toml\n[dependencies]\ntokio = { version = \"1\", features = [\"rt-multi-thread\", \"macros\"] }\n\n# Optional features for your crate\n[features]\ndefault = [\"json\"]\njson = [\"dep:serde_json\"]\nfull = [\"json\", \"dep:reqwest\"]\n\n[dependencies]\nserde_json = { version = \"1\", optional = true }\nreqwest = { version = \"0.12\", optional = true }\n```\n\n```bash\n# Build with specific features\ncargo build --features \"json\"\ncargo build --no-default-features --features \"full\"\ncargo build --all-features # for testing\n```\n\nThe gotcha: you cannot write `#[cfg(not(feature = \"X\"))]` and expect it to work reliably, because any dependency in the tree can enable feature X. Design features as additive capabilities, never as mutually exclusive modes. Use separate crates if you need truly exclusive behavior.",
+    "tags": [
+      "rust",
+      "cargo",
+      "features",
+      "dependencies",
+      "conditional-compilation"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Rust tokio select! macro drops unfinished futures when one branch completes",
+    "body": "When using `tokio::select!`, all branches race concurrently but only one completes. The other futures are dropped, which means any work they started is cancelled.\n\n```rust\nuse tokio::time::{sleep, Duration};\n\n#[tokio::main]\nasync fn main() {\n    tokio::select! {\n        _ = sleep(Duration::from_secs(1)) => {\n            println!(\"timeout\");\n        }\n        result = fetch_data() => {\n            println!(\"got data: {}\", result);\n        }\n    }\n    // If fetch_data() completes first, the sleep future is dropped\n    // If sleep completes first, fetch_data() is CANCELLED mid-execution\n}\n\n// DANGER: database writes inside a cancellable future\nasync fn save_and_notify(db: &Pool) {\n    db.execute(\"INSERT INTO logs ...\").await; // might complete\n    send_notification().await;                 // might get cancelled here!\n    // If cancelled between these two, you have inconsistent state\n}\n```\n\nTo handle cancellation safely, use `tokio::spawn` to run critical operations in their own task (which won't be cancelled by `select!`), or wrap the critical section in `tokio::task::unconstrained` to prevent yielding at await points.",
+    "tags": [
+      "rust",
+      "tokio",
+      "select",
+      "cancellation",
+      "async"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Rust error: cannot move out of borrowed content",
+    "body": "This error occurs when you try to take ownership of a value through a reference. References only borrow \u2014 they don't own.\n\n```rust\nstruct User { name: String }\n\nfn get_name(user: &User) -> String {\n    user.name // ERROR: cannot move out of `user.name` which is behind a shared reference\n}\n\n// Fix 1: Clone the value\nfn get_name(user: &User) -> String {\n    user.name.clone()\n}\n\n// Fix 2: Return a reference instead\nfn get_name(user: &User) -> &str {\n    &user.name\n}\n\n// Fix 3: Take ownership of the struct\nfn get_name(user: User) -> String {\n    user.name\n}\n```\n\nThis error is especially common when iterating over a collection by reference and trying to return owned elements. Use `.cloned()` or `.to_owned()` on iterators, or restructure to use references throughout. If you see this with `Option` or `Result`, use `.as_ref()` to borrow the inner value instead of moving it.",
+    "tags": [
+      "rust",
+      "ownership",
+      "move",
+      "borrow",
+      "error"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Rust error: the trait bound `T: Send` is not satisfied",
+    "body": "This error appears when you try to send a non-`Send` type across thread boundaries, commonly when spawning async tasks.\n\n```rust\nuse std::rc::Rc;\n\n#[tokio::main]\nasync fn main() {\n    let data = Rc::new(42);\n    tokio::spawn(async move {\n        println!(\"{}\", data); // ERROR: Rc<i32> cannot be sent between threads safely\n    });\n}\n\n// FIX: Use Arc instead of Rc for cross-thread sharing\nuse std::sync::Arc;\nlet data = Arc::new(42);\ntokio::spawn(async move {\n    println!(\"{}\", data); // works\n});\n```\n\nCommon non-`Send` types: `Rc`, `Cell`, `RefCell` (without additional wrapping), raw pointers, and MutexGuards held across await points. The fix is usually: replace `Rc` with `Arc`, replace `RefCell` with `Mutex`, and ensure `MutexGuard` is dropped before `.await`. If using `std::sync::MutexGuard` across await, switch to `tokio::sync::Mutex`.",
+    "tags": [
+      "rust",
+      "send",
+      "threads",
+      "async",
+      "tokio"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Rust error: lifetime may not live long enough in closure or async block",
+    "body": "This error occurs when a closure or async block captures a reference that doesn't live long enough for the context it's used in.\n\n```rust\nfn make_greeting(name: &str) -> impl Fn() -> String + '_ {\n    move || format!(\"Hello, {}\", name) // ERROR without '_ lifetime bound\n}\n\n// The returned closure borrows `name`, so the caller must ensure\n// `name` outlives the closure. The '_ tells Rust to infer the lifetime.\n\n// Common in async:\nasync fn process(data: &[u8]) {\n    tokio::spawn(async {\n        // ERROR: borrowed data might not live long enough\n        println!(\"{:?}\", data);\n    });\n}\n\n// FIX: clone/own the data before spawning\nasync fn process(data: &[u8]) {\n    let owned = data.to_vec();\n    tokio::spawn(async move {\n        println!(\"{:?}\", owned); // works \u2014 owned data moved into task\n    });\n}\n```\n\n`tokio::spawn` requires `'static` lifetime because the spawned task may outlive the calling function. Convert borrowed data to owned data before spawning. This is the most common cause of this error in async Rust.",
+    "tags": [
+      "rust",
+      "lifetimes",
+      "closures",
+      "async",
+      "error"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Rust error: expected type `X`, found type `Y` with Result and Option",
+    "body": "Type mismatches with `Result` and `Option` usually come from forgetting to unwrap, using `?` in the wrong context, or mixing error types.\n\n```rust\n// ERROR: expected `String`, found `Result<String, Error>`\nfn read_config() -> String {\n    std::fs::read_to_string(\"config.toml\") // returns Result, not String\n}\n\n// FIX 1: propagate the error\nfn read_config() -> Result<String, std::io::Error> {\n    std::fs::read_to_string(\"config.toml\")\n}\n\n// FIX 2: use ? operator (requires compatible return type)\nfn read_config() -> anyhow::Result<String> {\n    let content = std::fs::read_to_string(\"config.toml\")?;\n    Ok(content)\n}\n\n// ERROR: ? on different error types\nfn process() -> Result<(), std::io::Error> {\n    let n: i32 = \"42\".parse()?; // ParseIntError != io::Error\n}\n\n// FIX: use anyhow or implement From\nfn process() -> anyhow::Result<()> {\n    let n: i32 = \"42\".parse()?; // anyhow accepts any error type\n    Ok(())\n}\n```\n\nUse `anyhow::Result` for applications (flexible, any error type). Use `thiserror` for libraries (custom error enums with `From` impls). The `?` operator calls `From::from()` to convert between error types automatically.",
+    "tags": [
+      "rust",
+      "error-handling",
+      "result",
+      "option",
+      "anyhow"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Rust error: value used after being moved",
+    "body": "Rust enforces single ownership. After moving a value, the original variable is invalid. This error catches use-after-move bugs at compile time.\n\n```rust\nlet s = String::from(\"hello\");\nlet s2 = s;        // s is moved to s2\nprintln!(\"{}\", s);  // ERROR: value used after move\n\n// Types that implement Copy (integers, bools, chars) are duplicated, not moved\nlet x = 42;\nlet y = x;\nprintln!(\"{}\", x); // fine \u2014 i32 implements Copy\n\n// Fix 1: Clone\nlet s = String::from(\"hello\");\nlet s2 = s.clone();\nprintln!(\"{}\", s);  // fine\n\n// Fix 2: Borrow instead of move\nlet s = String::from(\"hello\");\nlet s2 = &s;\nprintln!(\"{}\", s);  // fine\n\n// Common in loops:\nlet name = String::from(\"Alice\");\nfor _ in 0..3 {\n    greet(name); // ERROR: moved in first iteration\n}\n// FIX: pass &name or clone inside loop\n```\n\nThis is fundamental to Rust's memory safety. Move semantics prevent double-free bugs. If you need shared ownership without borrowing, use `Rc<T>` (single-threaded) or `Arc<T>` (multi-threaded).",
+    "tags": [
+      "rust",
+      "move-semantics",
+      "ownership",
+      "error",
+      "copy"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Rust error: implementation of `Fn` is not general enough (closure lifetime issues)",
+    "body": "This cryptic error appears when a closure's inferred lifetime is too restrictive for how it's being used, often in higher-order functions.\n\n```rust\n// ERROR: implementation of `Fn` is not general enough\nfn apply_to_str(f: impl Fn(&str) -> &str) -> String {\n    f(\"hello\").to_string()\n}\n\nlet result = apply_to_str(|s| &s[0..3]); // lifetime mismatch\n\n// FIX: use explicit higher-ranked trait bounds (HRTB)\nfn apply_to_str(f: impl for<'a> Fn(&'a str) -> &'a str) -> String {\n    f(\"hello\").to_string()\n}\n```\n\nThe `for<'a>` syntax means \"this function works for any lifetime `'a`\". Without it, the compiler may infer a specific lifetime that's too narrow. This error is most common when passing closures that borrow from their arguments to generic functions. If the closure doesn't need to return a reference, restructure to return an owned type instead.",
+    "tags": [
+      "rust",
+      "closures",
+      "lifetimes",
+      "hrtb",
+      "error"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Rust error: future cannot be sent between threads safely (async + non-Send)",
+    "body": "This error occurs when an async task holds a non-Send type across an await point, making the entire Future non-Send.\n\n```rust\nuse std::sync::MutexGuard;\n\nasync fn bad_example(mutex: &std::sync::Mutex<Vec<i32>>) {\n    let guard: MutexGuard<_> = mutex.lock().unwrap();\n    // guard is held across this await point\n    some_async_op().await; // ERROR when used with tokio::spawn\n    println!(\"{:?}\", *guard);\n}\n\n// FIX: drop the guard before awaiting\nasync fn good_example(mutex: &std::sync::Mutex<Vec<i32>>) {\n    {\n        let guard = mutex.lock().unwrap();\n        println!(\"{:?}\", *guard);\n    } // guard dropped here\n    some_async_op().await; // safe now\n}\n\n// Or use tokio::sync::Mutex which is Send-safe across await\nasync fn also_good(mutex: &tokio::sync::Mutex<Vec<i32>>) {\n    let guard = mutex.lock().await;\n    some_async_op().await; // fine \u2014 tokio MutexGuard is Send\n    println!(\"{:?}\", *guard);\n}\n```\n\nThe fix depends on context: scope the guard so it's dropped before await, use `tokio::sync::Mutex`, or restructure to avoid holding locks across suspension points.",
+    "tags": [
+      "rust",
+      "async",
+      "send",
+      "mutex",
+      "error"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Rust error: cannot infer type \u2014 turbofish syntax for disambiguation",
+    "body": "When the compiler cannot infer a generic type, you need to provide it explicitly using turbofish (`::<>`) syntax or type annotations.\n\n```rust\n// ERROR: cannot infer type for type parameter `T`\nlet parsed = \"42\".parse(); // parse into what?\n\n// FIX 1: turbofish on the method\nlet parsed = \"42\".parse::<i32>().unwrap();\n\n// FIX 2: type annotation on the binding\nlet parsed: i32 = \"42\".parse().unwrap();\n\n// Common with collect()\nlet nums = vec![\"1\", \"2\", \"3\"];\nlet parsed = nums.iter().map(|s| s.parse().unwrap()).collect(); // ERROR\nlet parsed: Vec<i32> = nums.iter().map(|s| s.parse().unwrap()).collect(); // OK\nlet parsed = nums.iter().map(|s| s.parse::<i32>().unwrap()).collect::<Vec<_>>(); // Also OK\n```\n\nTurbofish is required when the type cannot be inferred from context. It's especially common with `collect()`, `parse()`, `default()`, and `into()`. The `_` placeholder lets the compiler infer part of a type while you specify the rest.",
+    "tags": [
+      "rust",
+      "type-inference",
+      "turbofish",
+      "generics",
+      "error"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Rust error: trait bound `X: Deserialize<'de>` not satisfied for serde",
+    "body": "Serde derive macros must be enabled, and all fields in a struct must implement the required traits. This error usually means a missing derive or an incompatible field type.\n\n```rust\n// ERROR: the trait bound `MyStruct: Deserialize<'_>` is not satisfied\n#[derive(Debug)] // missing Deserialize!\nstruct MyStruct {\n    name: String,\n}\n\n// FIX: add serde derives\nuse serde::{Serialize, Deserialize};\n\n#[derive(Debug, Serialize, Deserialize)]\nstruct MyStruct {\n    name: String,\n    #[serde(with = \"chrono::serde::ts_seconds\")] // custom serializer for non-serde types\n    created_at: chrono::DateTime<chrono::Utc>,\n}\n\n// Cargo.toml \u2014 must enable derive feature\n// serde = { version = \"1\", features = [\"derive\"] }\n```\n\nIf a field type doesn't implement `Serialize`/`Deserialize`, you have three options: (1) add a `#[serde(with = \"...\")]` custom serializer, (2) wrap the type in a newtype and implement the traits, or (3) use `#[serde(skip)]` to exclude the field. Check that `features = [\"derive\"]` is enabled in Cargo.toml.",
+    "tags": [
+      "rust",
+      "serde",
+      "deserialize",
+      "derive",
+      "error"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Rust error: use of undeclared crate or module \u2014 Cargo.toml vs use statements",
+    "body": "This error means the crate is not in Cargo.toml, the feature isn't enabled, or the module path is wrong.\n\n```rust\n// ERROR: use of undeclared crate or module `tokio`\nuse tokio::fs;\n\n// Check 1: Is it in Cargo.toml?\n// [dependencies]\n// tokio = { version = \"1\", features = [\"full\"] }\n\n// Check 2: Is the required feature enabled?\n// tokio = { version = \"1\" }  // missing \"fs\" feature!\n// FIX: tokio = { version = \"1\", features = [\"fs\"] }\n\n// Check 3: Module path correct?\n// ERROR: use of undeclared module `models`\n// Make sure you have:\n// src/models.rs OR src/models/mod.rs\n// AND in src/main.rs or src/lib.rs:\nmod models;\nuse crate::models::User;\n\n// Check 4: For 2021 edition, extern crate is usually not needed\n// But for proc macros, you may still need:\nextern crate proc_macro;\n```\n\nThe Rust 2021 edition auto-imports crates listed in `[dependencies]`. If you renamed a crate with `package = \"original-name\"`, use the renamed key, not the package name. Run `cargo check` after adding dependencies to verify resolution.",
+    "tags": [
+      "rust",
+      "cargo",
+      "modules",
+      "imports",
+      "error"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Rust error handling with thiserror for libraries and anyhow for applications",
+    "body": "The Rust ecosystem has converged on `thiserror` for library error types and `anyhow` for application error handling. They complement each other.\n\n```rust\n// Library code \u2014 thiserror for structured, typed errors\nuse thiserror::Error;\n\n#[derive(Error, Debug)]\npub enum DatabaseError {\n    #[error(\"connection failed: {0}\")]\n    ConnectionFailed(String),\n    #[error(\"query error: {source}\")]\n    QueryFailed {\n        #[from]\n        source: sqlx::Error,\n    },\n    #[error(\"record not found: {table}/{id}\")]\n    NotFound { table: String, id: i64 },\n}\n\n// Application code \u2014 anyhow for ergonomic error propagation\nuse anyhow::{Context, Result};\n\nasync fn bootstrap() -> Result<()> {\n    let config = load_config()\n        .context(\"failed to load configuration\")?; // adds context to any error\n    let db = connect_db(&config.database_url)\n        .await\n        .context(\"database connection failed\")?;\n    let user = db.find_user(1)\n        .await\n        .context(\"failed to find admin user\")?;\n    Ok(())\n}\n```\n\nUse `thiserror` when callers need to match on error variants (libraries). Use `anyhow` when you just want to propagate errors with context (applications). The `.context()` method adds human-readable breadcrumbs to error chains \u2014 invaluable for debugging.",
+    "tags": [
+      "rust",
+      "error-handling",
+      "thiserror",
+      "anyhow",
+      "pattern"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Rust builder pattern for constructing complex structs",
+    "body": "The builder pattern provides a fluent API for constructing structs with many optional fields, avoiding constructors with dozens of parameters.\n\n```rust\n#[derive(Debug)]\npub struct HttpClient {\n    base_url: String,\n    timeout_ms: u64,\n    max_retries: u32,\n    headers: Vec<(String, String)>,\n}\n\npub struct HttpClientBuilder {\n    base_url: String,\n    timeout_ms: u64,\n    max_retries: u32,\n    headers: Vec<(String, String)>,\n}\n\nimpl HttpClientBuilder {\n    pub fn new(base_url: impl Into<String>) -> Self {\n        Self {\n            base_url: base_url.into(),\n            timeout_ms: 30_000,\n            max_retries: 3,\n            headers: vec![],\n        }\n    }\n\n    pub fn timeout_ms(mut self, ms: u64) -> Self {\n        self.timeout_ms = ms;\n        self\n    }\n\n    pub fn max_retries(mut self, n: u32) -> Self {\n        self.max_retries = n;\n        self\n    }\n\n    pub fn header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {\n        self.headers.push((key.into(), value.into()));\n        self\n    }\n\n    pub fn build(self) -> HttpClient {\n        HttpClient {\n            base_url: self.base_url,\n            timeout_ms: self.timeout_ms,\n            max_retries: self.max_retries,\n            headers: self.headers,\n        }\n    }\n}\n\n// Usage\nlet client = HttpClientBuilder::new(\"https://api.example.com\")\n    .timeout_ms(5000)\n    .max_retries(5)\n    .header(\"Authorization\", \"Bearer token\")\n    .build();\n```\n\nFor less boilerplate, use the `derive_builder` or `typed-builder` crates. The builder pattern is idiomatic in Rust because the language lacks default parameter values and function overloading.",
+    "tags": [
+      "rust",
+      "builder-pattern",
+      "structs",
+      "design-patterns",
+      "api-design"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Rust newtype pattern for type safety and trait implementations",
+    "body": "The newtype pattern wraps an existing type in a single-field tuple struct to gain type safety and enable trait implementations on foreign types.\n\n```rust\n// Without newtype: easy to mix up arguments\nfn transfer(from: u64, to: u64, amount: f64) { /* ... */ }\ntransfer(to_id, from_id, amount); // compiles but wrong!\n\n// With newtype: compiler catches mistakes\nstruct UserId(u64);\nstruct Amount(f64);\n\nfn transfer(from: UserId, to: UserId, amount: Amount) { /* ... */ }\n// transfer(amount, from, to); // ERROR: type mismatch\n\n// Implement Display for a foreign type\nstruct Wrapper(Vec<String>);\n\nimpl std::fmt::Display for Wrapper {\n    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {\n        write!(f, \"[{}]\", self.0.join(\", \"))\n    }\n}\n\n// Use Deref for transparent access to inner type\nuse std::ops::Deref;\nimpl Deref for UserId {\n    type Target = u64;\n    fn deref(&self) -> &u64 { &self.0 }\n}\n\nlet id = UserId(42);\nprintln!(\"ID: {}\", *id); // Deref to u64\n```\n\nNewtypes have zero runtime cost \u2014 the wrapper is erased at compile time. Use them for: domain-specific types (UserId, Email, Url), implementing orphan rule traits, and preventing parameter mixups. The `derive_more` crate auto-derives common traits for newtypes.",
+    "tags": [
+      "rust",
+      "newtype",
+      "type-safety",
+      "design-patterns",
+      "traits"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Rust tokio task spawning and structured concurrency patterns",
+    "body": "Tokio provides multiple ways to run concurrent work. Choosing the right one depends on whether the work is CPU-bound, I/O-bound, or needs to be cancelled.\n\n```rust\nuse tokio::task;\n\n// Spawn independent async task (I/O bound)\nlet handle = tokio::spawn(async {\n    fetch_data().await\n});\nlet result = handle.await?; // JoinHandle returns Result\n\n// Run multiple tasks concurrently, collect all results\nlet (a, b, c) = tokio::join!(\n    fetch_users(),\n    fetch_orders(),\n    fetch_products(),\n);\n\n// Race tasks \u2014 first to complete wins, others cancelled\ntokio::select! {\n    result = fetch_primary() => handle_primary(result),\n    result = fetch_fallback() => handle_fallback(result),\n}\n\n// CPU-bound work \u2014 use spawn_blocking to avoid starving the async runtime\nlet hash = task::spawn_blocking(move || {\n    compute_expensive_hash(&data) // runs on dedicated thread pool\n}).await?;\n\n// Fan-out pattern with bounded concurrency\nuse futures::stream::{self, StreamExt};\nlet urls: Vec<String> = get_urls();\nlet results: Vec<_> = stream::iter(urls)\n    .map(|url| async move { reqwest::get(&url).await })\n    .buffer_unordered(10) // max 10 concurrent requests\n    .collect()\n    .await;\n```\n\nUse `tokio::spawn` for fire-and-forget tasks. Use `join!` when you need all results. Use `select!` for timeouts and fallbacks. Never run CPU-heavy work on the async runtime \u2014 always use `spawn_blocking`.",
+    "tags": [
+      "rust",
+      "tokio",
+      "concurrency",
+      "async",
+      "spawn"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Rust type-state pattern for compile-time state machine enforcement",
+    "body": "The type-state pattern uses phantom type parameters to encode state transitions in the type system. Invalid state transitions become compile errors.\n\n```rust\nuse std::marker::PhantomData;\n\n// State types (zero-sized)\nstruct Draft;\nstruct Review;\nstruct Published;\n\nstruct Document<State> {\n    content: String,\n    _state: PhantomData<State>,\n}\n\nimpl Document<Draft> {\n    fn new(content: String) -> Self {\n        Document { content, _state: PhantomData }\n    }\n\n    fn submit_for_review(self) -> Document<Review> {\n        Document { content: self.content, _state: PhantomData }\n    }\n}\n\nimpl Document<Review> {\n    fn approve(self) -> Document<Published> {\n        Document { content: self.content, _state: PhantomData }\n    }\n\n    fn reject(self) -> Document<Draft> {\n        Document { content: self.content, _state: PhantomData }\n    }\n}\n\nimpl Document<Published> {\n    fn url(&self) -> String {\n        format!(\"https://docs.example.com/{}\", self.content)\n    }\n}\n\n// Usage \u2014 invalid transitions are compile errors\nlet doc = Document::new(\"Hello\".into());\nlet reviewed = doc.submit_for_review();\n// doc.submit_for_review(); // ERROR: doc was moved\n// reviewed.url();          // ERROR: no method `url` on Document<Review>\nlet published = reviewed.approve();\nprintln!(\"{}\", published.url()); // works\n```\n\nThis pattern is zero-cost at runtime (PhantomData is zero-sized) and catches state machine violations at compile time. Used extensively in embedded Rust for GPIO pin states and protocol implementations.",
+    "tags": [
+      "rust",
+      "type-state",
+      "state-machine",
+      "phantom-data",
+      "design-patterns"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Rust CLI argument parsing with clap derive macros",
+    "body": "Clap is the standard Rust CLI argument parser. The derive API generates the parser from struct definitions.\n\n```rust\nuse clap::{Parser, Subcommand, ValueEnum};\n\n#[derive(Parser, Debug)]\n#[command(name = \"myapp\", version, about = \"A sample CLI tool\")]\nstruct Cli {\n    /// Input file path\n    #[arg(short, long)]\n    input: String,\n\n    /// Output format\n    #[arg(short, long, default_value = \"json\")]\n    format: OutputFormat,\n\n    /// Verbosity level (-v, -vv, -vvv)\n    #[arg(short, long, action = clap::ArgAction::Count)]\n    verbose: u8,\n\n    #[command(subcommand)]\n    command: Commands,\n}\n\n#[derive(Subcommand, Debug)]\nenum Commands {\n    /// Process the input file\n    Process {\n        #[arg(long, default_value_t = 4)]\n        threads: usize,\n    },\n    /// Validate the input file\n    Validate,\n}\n\n#[derive(ValueEnum, Clone, Debug)]\nenum OutputFormat {\n    Json,\n    Csv,\n    Table,\n}\n\nfn main() {\n    let cli = Cli::parse();\n    match cli.command {\n        Commands::Process { threads } => {\n            println!(\"Processing {} with {} threads\", cli.input, threads);\n        }\n        Commands::Validate => {\n            println!(\"Validating {}\", cli.input);\n        }\n    }\n}\n```\n\nClap auto-generates `--help`, `--version`, shell completions, and man pages. Use `#[arg(env = \"MY_VAR\")]` to read from environment variables as fallback. Add `clap = { version = \"4\", features = [\"derive\"] }` to Cargo.toml.",
+    "tags": [
+      "rust",
+      "clap",
+      "cli",
+      "argument-parsing",
+      "snippet"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Rust axum web server with extractors, middleware, and shared state",
+    "body": "Axum is the leading Rust web framework, built on tokio and tower. It uses extractors to parse requests and tower middleware for cross-cutting concerns.\n\n```rust\nuse axum::{\n    extract::{Path, Query, State, Json},\n    http::StatusCode,\n    middleware,\n    routing::{get, post},\n    Router,\n};\nuse serde::{Deserialize, Serialize};\nuse std::sync::Arc;\nuse tokio::sync::RwLock;\n\n#[derive(Clone)]\nstruct AppState {\n    db: Arc<RwLock<Vec<User>>>,\n}\n\n#[derive(Serialize, Deserialize, Clone)]\nstruct User {\n    id: u64,\n    name: String,\n}\n\n#[derive(Deserialize)]\nstruct Pagination {\n    page: Option<u32>,\n    per_page: Option<u32>,\n}\n\nasync fn list_users(\n    State(state): State<AppState>,\n    Query(pagination): Query<Pagination>,\n) -> Json<Vec<User>> {\n    let users = state.db.read().await;\n    let page = pagination.page.unwrap_or(1);\n    let per_page = pagination.per_page.unwrap_or(20);\n    let start = ((page - 1) * per_page) as usize;\n    Json(users[start..].iter().take(per_page as usize).cloned().collect())\n}\n\nasync fn create_user(\n    State(state): State<AppState>,\n    Json(user): Json<User>,\n) -> (StatusCode, Json<User>) {\n    state.db.write().await.push(user.clone());\n    (StatusCode::CREATED, Json(user))\n}\n\n#[tokio::main]\nasync fn main() {\n    let state = AppState { db: Arc::new(RwLock::new(vec![])) };\n    let app = Router::new()\n        .route(\"/users\", get(list_users).post(create_user))\n        .with_state(state);\n    let listener = tokio::net::TcpListener::bind(\"0.0.0.0:3000\").await.unwrap();\n    axum::serve(listener, app).await.unwrap();\n}\n```\n\nAxum handlers are regular async functions. Extractors (`State`, `Json`, `Path`, `Query`) parse the request. The order of extractors matters \u2014 `Json` must be last because it consumes the body. Use tower middleware for logging, auth, and CORS.",
+    "tags": [
+      "rust",
+      "axum",
+      "web",
+      "api",
+      "tokio"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Rust sqlx compile-time verified SQL queries",
+    "body": "SQLx verifies SQL queries against your database schema at compile time. Queries with typos or wrong column types fail to compile.\n\n```rust\nuse sqlx::{PgPool, FromRow};\n\n#[derive(FromRow, Debug)]\nstruct User {\n    id: i64,\n    email: String,\n    name: Option<String>,\n    created_at: chrono::DateTime<chrono::Utc>,\n}\n\nasync fn find_user(pool: &PgPool, id: i64) -> sqlx::Result<Option<User>> {\n    // Compile-time verified against live database!\n    sqlx::query_as!(User,\n        \"SELECT id, email, name, created_at FROM users WHERE id = $1\",\n        id\n    )\n    .fetch_optional(pool)\n    .await\n}\n\nasync fn create_user(pool: &PgPool, email: &str, name: &str) -> sqlx::Result<User> {\n    sqlx::query_as!(User,\n        r#\"INSERT INTO users (email, name)\n           VALUES ($1, $2)\n           RETURNING id, email, name, created_at\"#,\n        email, name\n    )\n    .fetch_one(pool)\n    .await\n}\n\n// Setup\n#[tokio::main]\nasync fn main() -> anyhow::Result<()> {\n    let pool = PgPool::connect(&std::env::var(\"DATABASE_URL\")?).await?;\n    sqlx::migrate!().run(&pool).await?; // run migrations\n    Ok(())\n}\n```\n\nSet `DATABASE_URL` in `.env` for compile-time checking. Use `sqlx prepare` to generate offline query metadata for CI builds without a live database. The `query_as!` macro maps columns to struct fields by name \u2014 column count and types must match exactly.",
+    "tags": [
+      "rust",
+      "sqlx",
+      "database",
+      "postgresql",
+      "compile-time"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Rust serde JSON serialization with custom formats and enums",
+    "body": "Serde handles most JSON serialization automatically, but real-world APIs need custom enum representations, date formats, and field transformations.\n\n```rust\nuse serde::{Serialize, Deserialize};\nuse chrono::{DateTime, Utc};\n\n// Tag enums for clean JSON representation\n#[derive(Serialize, Deserialize, Debug)]\n#[serde(tag = \"type\", content = \"data\")]\nenum Event {\n    #[serde(rename = \"user.created\")]\n    UserCreated { id: u64, email: String },\n    #[serde(rename = \"order.placed\")]\n    OrderPlaced { id: u64, total: f64 },\n}\n// Serializes as: {\"type\": \"user.created\", \"data\": {\"id\": 1, \"email\": \"a@b.com\"}}\n\n// Custom date format\nmod rfc2822_format {\n    use chrono::{DateTime, Utc};\n    use serde::{self, Deserialize, Deserializer, Serializer};\n\n    pub fn serialize<S>(date: &DateTime<Utc>, serializer: S) -> Result<S::Ok, S::Error>\n    where S: Serializer {\n        serializer.serialize_str(&date.to_rfc2822())\n    }\n\n    pub fn deserialize<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>\n    where D: Deserializer<'de> {\n        let s = String::deserialize(deserializer)?;\n        DateTime::parse_from_rfc2822(&s)\n            .map(|dt| dt.with_timezone(&Utc))\n            .map_err(serde::de::Error::custom)\n    }\n}\n\n#[derive(Serialize, Deserialize)]\nstruct ApiResponse {\n    #[serde(with = \"rfc2822_format\")]\n    timestamp: DateTime<Utc>,\n}\n```\n\nEnum representations: `#[serde(untagged)]` for union types, `#[serde(tag = \"type\")]` for internally tagged, `#[serde(tag = \"type\", content = \"data\")]` for adjacently tagged. Use `#[serde(with = \"...\")]` for custom field serialization without implementing Serialize/Deserialize on the type itself.",
+    "tags": [
+      "rust",
+      "serde",
+      "json",
+      "enums",
+      "serialization"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Rust iterator chain for data transformation pipelines",
+    "body": "Rust iterators compose into zero-cost data pipelines. The compiler fuses the entire chain into a single loop \u2014 no intermediate collections.\n\n```rust\nuse std::collections::HashMap;\n\nstruct LogEntry {\n    level: String,\n    message: String,\n    timestamp: u64,\n}\n\nfn analyze_logs(logs: &[LogEntry]) -> HashMap<String, Vec<&str>> {\n    logs.iter()\n        .filter(|log| log.timestamp > 1000)\n        .filter(|log| log.level == \"ERROR\" || log.level == \"WARN\")\n        .fold(HashMap::new(), |mut acc, log| {\n            acc.entry(log.level.clone())\n                .or_default()\n                .push(&log.message);\n            acc\n        })\n}\n\n// Chaining with flat_map, enumerate, and windows\nlet data = vec![vec![1, 2], vec![3, 4], vec![5, 6]];\nlet result: Vec<(usize, i32)> = data.iter()\n    .flat_map(|inner| inner.iter().copied())  // flatten nested vecs\n    .enumerate()                               // add index\n    .filter(|(_, val)| val % 2 == 0)          // keep evens\n    .collect();\n// [(1, 2), (3, 4), (5, 6)]\n\n// Partition into two collections\nlet (evens, odds): (Vec<i32>, Vec<i32>) = (0..10)\n    .partition(|x| x % 2 == 0);\n\n// Scan \u2014 like fold but yields intermediate values\nlet running_sum: Vec<i32> = vec![1, 2, 3, 4]\n    .iter()\n    .scan(0, |state, x| { *state += x; Some(*state) })\n    .collect(); // [1, 3, 6, 10]\n```\n\nKey methods: `map`, `filter`, `flat_map` for transformation; `fold`, `reduce`, `scan` for accumulation; `take`, `skip`, `step_by` for windowing; `chain`, `zip`, `enumerate` for combination; `partition`, `unzip` for splitting.",
+    "tags": [
+      "rust",
+      "iterators",
+      "functional",
+      "data-pipeline",
+      "zero-cost"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Rust tracing for structured async-aware logging",
+    "body": "The `tracing` crate is the standard for structured, async-aware logging in Rust. It provides spans that track logical operations across async tasks.\n\n```rust\nuse tracing::{info, warn, error, instrument, Level};\nuse tracing_subscriber::{fmt, EnvFilter};\n\n#[tokio::main]\nasync fn main() {\n    // Initialize subscriber with env filter\n    tracing_subscriber::fmt()\n        .with_env_filter(\n            EnvFilter::try_from_default_env()\n                .unwrap_or_else(|_| EnvFilter::new(\"info,my_app=debug\"))\n        )\n        .json() // structured JSON output\n        .init();\n\n    info!(version = env!(\"CARGO_PKG_VERSION\"), \"starting server\");\n    process_request(42).await;\n}\n\n// #[instrument] auto-creates a span with function name and arguments\n#[instrument(skip(db), fields(user_id = %id))]\nasync fn process_request(id: u64) {\n    info!(\"processing request\");\n\n    match fetch_user(id).await {\n        Ok(user) => info!(name = %user.name, \"user found\"),\n        Err(e) => error!(error = %e, \"failed to fetch user\"),\n    }\n}\n\n// Outputs structured JSON:\n// {\"timestamp\":\"...\",\"level\":\"INFO\",\"target\":\"my_app\",\n//  \"span\":{\"name\":\"process_request\",\"user_id\":\"42\"},\n//  \"fields\":{\"message\":\"processing request\"}}\n```\n\nUse `#[instrument]` on async functions for automatic span creation. Use `skip` to avoid logging sensitive fields. Spans propagate across await points, so you get full request traces through concurrent async operations. Pair with `tracing-opentelemetry` for distributed tracing.",
+    "tags": [
+      "rust",
+      "tracing",
+      "logging",
+      "structured",
+      "async"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Rust anyhow vs thiserror \u2014 when to use each for error handling",
+    "body": "Both crates are by the same author (dtolnay) and are designed to be used together \u2014 thiserror for libraries, anyhow for applications.\n\n```rust\n// thiserror \u2014 define structured error types for libraries\nuse thiserror::Error;\n\n#[derive(Error, Debug)]\npub enum ApiError {\n    #[error(\"not found: {0}\")]\n    NotFound(String),\n    #[error(\"unauthorized\")]\n    Unauthorized,\n    #[error(transparent)]\n    Database(#[from] sqlx::Error),\n}\n\n// Callers can match on specific variants\nmatch api_call().await {\n    Err(ApiError::NotFound(id)) => /* handle 404 */,\n    Err(ApiError::Unauthorized) => /* handle 401 */,\n    _ => {}\n}\n\n// anyhow \u2014 ergonomic error propagation for applications\nuse anyhow::{Context, Result, bail, ensure};\n\nasync fn run() -> Result<()> {\n    ensure!(config.port > 0, \"port must be positive\"); // like assert but returns Err\n    let db = connect(&config.db_url)\n        .await\n        .context(\"database connection failed\")?;\n    if db.is_read_only() {\n        bail!(\"database is in read-only mode\"); // return Err immediately\n    }\n    Ok(())\n}\n```\n\n| Feature | thiserror | anyhow |\n|---------|-----------|--------|\n| Custom error types | Yes (derive) | No (Box<dyn Error>) |\n| Pattern matching | Yes | No |\n| Error context | Manual | .context() method |\n| Use case | Libraries | Applications |\n| Overhead | Zero-cost | One allocation per error |",
+    "tags": [
+      "rust",
+      "error-handling",
+      "thiserror",
+      "anyhow",
+      "comparison"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Rust Box vs Rc vs Arc \u2014 heap allocation and reference counting",
+    "body": "Rust has three main smart pointer types for heap allocation, each with different ownership semantics.\n\n```rust\nuse std::rc::Rc;\nuse std::sync::Arc;\n\n// Box<T> \u2014 single owner, heap allocated\nlet boxed: Box<i32> = Box::new(42);\n// Unique ownership, freed when box goes out of scope\n// Use for: recursive types, trait objects, large stack values\n\n// Rc<T> \u2014 multiple owners, single-threaded\nlet shared: Rc<String> = Rc::new(\"hello\".to_string());\nlet clone1 = Rc::clone(&shared); // increment reference count\nlet clone2 = Rc::clone(&shared);\nprintln!(\"refs: {}\", Rc::strong_count(&shared)); // 3\n// NOT thread-safe! Cannot Send across threads.\n\n// Arc<T> \u2014 multiple owners, thread-safe\nlet shared: Arc<String> = Arc::new(\"hello\".to_string());\nlet clone = Arc::clone(&shared);\nstd::thread::spawn(move || {\n    println!(\"{}\", clone); // safe to use across threads\n});\n```\n\n| Type | Ownership | Thread-safe | Overhead | Use case |\n|------|-----------|-------------|----------|----------|\n| Box<T> | Single | Yes (if T: Send) | Allocation only | Trait objects, recursive types |\n| Rc<T> | Shared | No | Ref count (cheap) | Graph structures, single-thread sharing |\n| Arc<T> | Shared | Yes | Atomic ref count | Cross-thread sharing |\n\nRule of thumb: prefer owned values on the stack. Use `Box` for dynamic dispatch. Use `Rc` in single-threaded sharing (UI trees, graph nodes). Use `Arc` when sharing across threads. Combine `Arc` with `Mutex`/`RwLock` for shared mutable state.",
+    "tags": [
+      "rust",
+      "smart-pointers",
+      "box",
+      "rc",
+      "arc"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Go goroutine leak from unbuffered channel with no receiver",
+    "body": "A goroutine that sends to an unbuffered channel blocks forever if no goroutine reads from it. This is the most common source of goroutine leaks.\n\n```go\n// BUG: goroutine leaks if timeout fires first\nfunc fetchWithTimeout(url string) (string, error) {\n    ch := make(chan string)\n    go func() {\n        resp := fetch(url)  // slow network call\n        ch <- resp           // blocks forever if nobody reads\n    }()\n    select {\n    case result := <-ch:\n        return result, nil\n    case <-time.After(2 * time.Second):\n        return \"\", errors.New(\"timeout\")\n    }\n    // If timeout wins, the goroutine is stuck on ch <- resp forever\n}\n\n// FIX: use buffered channel so the send never blocks\nfunc fetchWithTimeout(url string) (string, error) {\n    ch := make(chan string, 1) // buffer of 1\n    go func() {\n        resp := fetch(url)\n        ch <- resp // doesn't block even if nobody reads\n    }()\n    select {\n    case result := <-ch:\n        return result, nil\n    case <-time.After(2 * time.Second):\n        return \"\", errors.New(\"timeout\")\n    }\n}\n```\n\nAnother fix is to use `context.WithTimeout` and check `ctx.Done()` in the goroutine. Use `runtime.NumGoroutine()` in tests to detect leaks, or the `goleak` package from Uber.",
+    "tags": [
+      "go",
+      "goroutine-leak",
+      "channels",
+      "concurrency",
+      "timeout"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Go nil interface is not nil \u2014 comparing interface to nil fails unexpectedly",
+    "body": "An interface in Go is a (type, value) pair. An interface holding a nil pointer is NOT equal to nil because the type information is still present.\n\n```go\ntype MyError struct {\n    Code int\n}\n\nfunc (e *MyError) Error() string {\n    return fmt.Sprintf(\"error code: %d\", e.Code)\n}\n\nfunc getError() error {\n    var err *MyError = nil\n    return err // returns interface{type: *MyError, value: nil}\n}\n\nfunc main() {\n    err := getError()\n    fmt.Println(err == nil) // false! interface is not nil\n    // err has type *MyError with nil value \u2014 the interface itself is not nil\n}\n\n// FIX: return nil directly, not a typed nil pointer\nfunc getError() error {\n    var err *MyError = nil\n    if err == nil {\n        return nil // return untyped nil\n    }\n    return err\n}\n```\n\nThis gotcha is one of the most FAQ'd Go issues. It affects any function returning an interface type. Always return bare `nil` from functions returning interfaces, never a typed nil pointer. Use `reflect.ValueOf(err).IsNil()` if you must check whether an interface holds a nil pointer at runtime.",
+    "tags": [
+      "go",
+      "nil",
+      "interfaces",
+      "gotcha",
+      "type-system"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Go defer runs at function exit, not block exit \u2014 surprises in loops",
+    "body": "Unlike Java's try-with-resources or Python's `with`, Go's `defer` runs when the enclosing function returns, not when the enclosing block ends.\n\n```go\n// BUG: all files stay open until the function returns\nfunc processFiles(paths []string) error {\n    for _, path := range paths {\n        f, err := os.Open(path)\n        if err != nil {\n            return err\n        }\n        defer f.Close() // won't close until processFiles returns!\n        // With 10000 files, you exhaust file descriptors\n    }\n    return nil\n}\n\n// FIX 1: close manually\nfor _, path := range paths {\n    f, _ := os.Open(path)\n    data, _ := io.ReadAll(f)\n    f.Close() // close immediately\n    process(data)\n}\n\n// FIX 2: extract to a function \u2014 defer runs at inner function exit\nfunc processFiles(paths []string) error {\n    for _, path := range paths {\n        if err := processOne(path); err != nil {\n            return err\n        }\n    }\n    return nil\n}\n\nfunc processOne(path string) error {\n    f, err := os.Open(path)\n    if err != nil {\n        return err\n    }\n    defer f.Close() // closes when processOne returns \u2014 correct!\n    return process(f)\n}\n```\n\nDefers are stacked (LIFO order) and evaluated when the surrounding function returns. Arguments to deferred calls are evaluated immediately. This means `defer fmt.Println(x)` captures the current value of `x`, not the value at function exit.",
+    "tags": [
+      "go",
+      "defer",
+      "resource-management",
+      "file-descriptors",
+      "gotcha"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Go slice append may or may not modify the original \u2014 capacity vs length",
+    "body": "Slices in Go are a (pointer, length, capacity) triple. Appending to a slice may or may not allocate new backing memory, leading to subtle aliasing bugs.\n\n```go\n// Surprise: modifying a sub-slice can change the original\noriginal := []int{1, 2, 3, 4, 5}\nsub := original[:3] // [1, 2, 3] \u2014 shares backing array!\nsub = append(sub, 99)\nfmt.Println(original) // [1 2 3 99 5] \u2014 original[3] was overwritten!\n\n// Because len(sub)=3, cap(sub)=5, append didn't allocate\n// It wrote into the existing backing array\n\n// FIX: use full slice expression to limit capacity\nsub := original[:3:3] // length=3, capacity=3\nsub = append(sub, 99) // forces new allocation\nfmt.Println(original) // [1 2 3 4 5] \u2014 unchanged\n\n// Also dangerous: passing slices to functions\nfunc addItem(items []int, item int) []int {\n    return append(items, item) // may or may not modify caller's backing array\n}\n\n// Rule: treat append's return value as the only valid reference\ns := []int{1, 2, 3}\ns = append(s, 4) // always reassign to s\n```\n\nThe three-index slice expression `a[low:high:max]` sets capacity to `max-low`, preventing append from writing into shared backing memory. Use it whenever you create sub-slices that might be appended to independently.",
+    "tags": [
+      "go",
+      "slices",
+      "append",
+      "capacity",
+      "aliasing"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Go channel deadlock when sender and receiver are in the same goroutine",
+    "body": "Sending and receiving on an unbuffered channel in the same goroutine deadlocks immediately because the send blocks waiting for a receiver that will never arrive.\n\n```go\n// DEADLOCK: send blocks, receive never reached\nfunc main() {\n    ch := make(chan int)\n    ch <- 42        // blocks forever waiting for receiver\n    val := <-ch     // never reached\n    fmt.Println(val)\n}\n\n// fatal error: all goroutines are asleep - deadlock!\n\n// FIX 1: buffered channel\nch := make(chan int, 1)\nch <- 42        // succeeds \u2014 buffer holds the value\nval := <-ch     // reads from buffer\n\n// FIX 2: separate goroutine for sender\nch := make(chan int)\ngo func() {\n    ch <- 42\n}()\nval := <-ch\n\n// SUBTLE DEADLOCK: waiting on a channel that gets closed incorrectly\nch := make(chan int)\nclose(ch)\nch <- 42 // panic: send on closed channel\n\n// Reading from closed channel returns zero value immediately\nval, ok := <-ch // val=0, ok=false\n```\n\nRule: unbuffered channels synchronize goroutines \u2014 send and receive must happen in different goroutines simultaneously. Use Go's race detector (`go run -race`) and the `goleak` package to catch these in tests.",
+    "tags": [
+      "go",
+      "channels",
+      "deadlock",
+      "goroutines",
+      "concurrency"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Go context cancellation must be checked \u2014 it doesn't auto-stop goroutines",
+    "body": "Cancelling a context signals intent to stop, but goroutines must explicitly check `ctx.Done()`. Context cancellation doesn't magically interrupt running code.\n\n```go\n// BUG: goroutine ignores context cancellation\nfunc longTask(ctx context.Context) error {\n    for i := 0; i < 1000000; i++ {\n        heavyComputation(i) // never checks ctx\n    }\n    return nil\n}\n\n// FIX: periodically check ctx.Done()\nfunc longTask(ctx context.Context) error {\n    for i := 0; i < 1000000; i++ {\n        select {\n        case <-ctx.Done():\n            return ctx.Err() // context.Canceled or context.DeadlineExceeded\n        default:\n        }\n        heavyComputation(i)\n    }\n    return nil\n}\n\n// For I/O operations, pass context to the call\nfunc fetchData(ctx context.Context) error {\n    req, _ := http.NewRequestWithContext(ctx, \"GET\", url, nil)\n    resp, err := http.DefaultClient.Do(req) // cancelled if ctx is done\n    if err != nil {\n        return err // returns if context cancelled\n    }\n    defer resp.Body.Close()\n    return nil\n}\n```\n\nAlways pass context as the first parameter. Always call `cancel()` with defer to prevent resource leaks: `ctx, cancel := context.WithTimeout(parentCtx, 5*time.Second); defer cancel()`. Not calling cancel leaks the goroutine monitoring the timer.",
+    "tags": [
+      "go",
+      "context",
+      "cancellation",
+      "goroutines",
+      "timeout"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Go interface satisfaction is implicit \u2014 no implements keyword",
+    "body": "Go interfaces are satisfied implicitly. There's no `implements` keyword \u2014 a type satisfies an interface if it has all the required methods. This means interface compliance can break silently.\n\n```go\ntype Writer interface {\n    Write(p []byte) (n int, err error)\n}\n\ntype MyBuffer struct {\n    data []byte\n}\n\n// MyBuffer satisfies Writer \u2014 no declaration needed\nfunc (b *MyBuffer) Write(p []byte) (int, error) {\n    b.data = append(b.data, p...)\n    return len(p), nil\n}\n\n// Compile-time check that MyBuffer satisfies Writer\nvar _ Writer = (*MyBuffer)(nil)\n\n// GOTCHA: pointer receiver vs value receiver matters\ntype Counter struct { n int }\nfunc (c *Counter) Increment() { c.n++ } // pointer receiver\n\nvar c Counter\nc.Increment() // Go auto-takes address \u2014 fine\n\nvar i interface{ Increment() }\ni = &c  // OK: *Counter has Increment\n// i = c // ERROR: Counter does not have Increment, only *Counter does\n```\n\nUse the `var _ Interface = (*Type)(nil)` pattern to verify interface satisfaction at compile time. This is especially important for interfaces defined in other packages where a method signature change would silently break your implementation.",
+    "tags": [
+      "go",
+      "interfaces",
+      "implicit-satisfaction",
+      "pointer-receiver",
+      "type-system"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Go init() functions run in dependency order \u2014 hard to reason about",
+    "body": "Go's `init()` functions run automatically before `main()`, in dependency order. Multiple `init()` functions per file and per package are allowed, making execution order confusing.\n\n```go\n// package db\nfunc init() {\n    fmt.Println(\"db init\") // runs before main\n    // Common but problematic: global database connection\n    pool, _ = sql.Open(\"postgres\", os.Getenv(\"DATABASE_URL\"))\n}\n\n// package auth \u2014 imports db\nfunc init() {\n    fmt.Println(\"auth init\") // runs after db init (depends on db)\n}\n\n// package main \u2014 imports auth\nfunc init() {\n    fmt.Println(\"main init\") // runs last\n}\n\n// Order: db init -> auth init -> main init -> main()\n```\n\nProblems with init(): (1) Hard to test \u2014 init runs before test setup. (2) Hidden dependencies \u2014 errors in init crash the whole program at startup. (3) No error return \u2014 you're forced to panic or ignore errors. (4) Order depends on import graph, which is implicit.\n\nPrefer explicit initialization functions that return errors: `func SetupDB(url string) (*DB, error)` called from `main()`. This makes dependencies visible, testable, and error-handling explicit. Reserve `init()` for truly simple tasks like registering drivers.",
+    "tags": [
+      "go",
+      "init",
+      "initialization",
+      "startup",
+      "gotcha"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Go range loop variable reuse \u2014 closure captures same variable",
+    "body": "Before Go 1.22, the range loop reused a single variable for all iterations. Closures and goroutines captured the same variable, seeing only the final value.\n\n```go\n// BUG (Go < 1.22): all goroutines print the last value\nfor _, val := range []string{\"a\", \"b\", \"c\"} {\n    go func() {\n        fmt.Println(val) // captures the loop variable, not the value\n    }()\n}\n// Prints: c c c (or similar \u2014 all see final value)\n\n// FIX (Go < 1.22): shadow the variable\nfor _, val := range []string{\"a\", \"b\", \"c\"} {\n    val := val // create new variable per iteration\n    go func() {\n        fmt.Println(val)\n    }()\n}\n\n// Or pass as function argument\nfor _, val := range []string{\"a\", \"b\", \"c\"} {\n    go func(v string) {\n        fmt.Println(v)\n    }(val)\n}\n\n// Go 1.22+: FIXED \u2014 each iteration has its own variable\n// The old behavior is gone when using go 1.22+ in go.mod\n```\n\nGo 1.22 changed loop variable semantics to create a new variable per iteration. If your `go.mod` says `go 1.22` or later, this gotcha is gone. But for codebases targeting older versions, the `val := val` shadow pattern is essential.",
+    "tags": [
+      "go",
+      "range",
+      "closures",
+      "goroutines",
+      "loop-variable"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Go JSON marshaling ignores unexported fields \u2014 must use capital letters",
+    "body": "Go's `encoding/json` package only marshals exported (capitalized) fields. Unexported fields are silently ignored, which is a common source of empty JSON output.\n\n```go\n// BUG: all fields unexported \u2014 marshals to {}\ntype user struct {\n    name  string\n    email string\n    age   int\n}\nu := user{\"Alice\", \"alice@example.com\", 30}\ndata, _ := json.Marshal(u)\nfmt.Println(string(data)) // {}\n\n// FIX: export fields and use struct tags for JSON naming\ntype User struct {\n    Name  string `json:\"name\"`\n    Email string `json:\"email\"`\n    Age   int    `json:\"age,omitempty\"` // omitted if zero value\n    // unexported fields are still ignored\n    internal string // not in JSON output\n}\n\nu := User{Name: \"Alice\", Email: \"alice@example.com\", Age: 30}\ndata, _ := json.Marshal(u)\n// {\"name\":\"Alice\",\"email\":\"alice@example.com\",\"age\":30}\n\n// GOTCHA: embedded struct fields are promoted\ntype Metadata struct {\n    CreatedAt time.Time `json:\"created_at\"`\n}\ntype Post struct {\n    Metadata        // embedded \u2014 fields promoted to Post level\n    Title    string `json:\"title\"`\n}\n// Marshals as: {\"created_at\":\"...\",\"title\":\"...\"}\n// NOT as: {\"Metadata\":{\"created_at\":\"...\"},\"title\":\"...\"}\n```\n\nUse `json:\"-\"` to explicitly exclude an exported field. Use `json:\",string\"` to marshal numbers as strings. Use `json.RawMessage` for delayed parsing of nested JSON.",
+    "tags": [
+      "go",
+      "json",
+      "marshaling",
+      "struct-tags",
+      "encoding"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Go error wrapping \u2014 fmt.Errorf %w vs %v changes errors.Is/As behavior",
+    "body": "Go 1.13 introduced error wrapping with `%w` in `fmt.Errorf`. Using `%v` instead loses the error chain, breaking `errors.Is` and `errors.As`.\n\n```go\nimport (\n    \"errors\"\n    \"fmt\"\n    \"os\"\n)\n\nvar ErrNotFound = errors.New(\"not found\")\n\n// BAD: %v formats the error as a string \u2014 chain is lost\nfunc bad() error {\n    err := os.Open(\"missing.txt\")\n    return fmt.Errorf(\"open failed: %v\", err) // wraps as string only\n}\n\n// GOOD: %w wraps the error \u2014 chain is preserved\nfunc good() error {\n    _, err := os.Open(\"missing.txt\")\n    return fmt.Errorf(\"open failed: %w\", err) // wraps with chain\n}\n\n// errors.Is traverses the chain\nerr := good()\nif errors.Is(err, os.ErrNotExist) {\n    fmt.Println(\"file not found\") // matches!\n}\n\nerr = bad()\nif errors.Is(err, os.ErrNotExist) {\n    // never reaches here \u2014 %v broke the chain\n}\n\n// errors.As for type assertion through the chain\nvar pathErr *os.PathError\nif errors.As(err, &pathErr) {\n    fmt.Println(\"path:\", pathErr.Path)\n}\n```\n\nAlways use `%w` when you want callers to inspect the underlying error. Use `%v` only when you intentionally want to hide the implementation detail. Go 1.20 added multi-error wrapping: `fmt.Errorf(\"%w and %w\", err1, err2)` wraps both.",
+    "tags": [
+      "go",
+      "errors",
+      "wrapping",
+      "errors-is",
+      "errors-as"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Go map iteration order is randomized \u2014 never depend on it",
+    "body": "Go intentionally randomizes map iteration order to prevent code from depending on it. This catches bugs that would only appear when the hash table resizes.\n\n```go\nm := map[string]int{\"a\": 1, \"b\": 2, \"c\": 3}\n\n// Each run produces a different order\nfor k, v := range m {\n    fmt.Printf(\"%s=%d \", k, v)\n}\n// Run 1: b=2 c=3 a=1\n// Run 2: a=1 b=2 c=3\n// Run 3: c=3 a=1 b=2\n\n// FIX: sort keys first for deterministic output\nkeys := make([]string, 0, len(m))\nfor k := range m {\n    keys = append(keys, k)\n}\nsort.Strings(keys)\nfor _, k := range keys {\n    fmt.Printf(\"%s=%d \", k, m[k])\n}\n// Always: a=1 b=2 c=3\n\n// For JSON output, encoding/json sorts map keys automatically\ndata, _ := json.Marshal(m) // keys always sorted\n```\n\nThis matters for: test assertions (use `reflect.DeepEqual` not string comparison), API responses (use `json.Marshal` which sorts keys), configuration generation (sort keys explicitly), and anything producing deterministic output.",
+    "tags": [
+      "go",
+      "maps",
+      "iteration-order",
+      "randomization",
+      "determinism"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Go sync.Pool objects may be garbage collected between uses",
+    "body": "sync.Pool recycles objects to reduce allocation pressure, but the GC can clear the pool at any time. Don't store state you can't afford to lose.\n\n```go\nimport \"sync\"\n\n// Correct usage: buffer pool for temporary allocations\nvar bufPool = sync.Pool{\n    New: func() any {\n        return make([]byte, 0, 4096)\n    },\n}\n\nfunc processRequest(data []byte) {\n    buf := bufPool.Get().([]byte)\n    buf = buf[:0] // reset length, keep capacity\n    defer bufPool.Put(buf)\n\n    // Use buf for temporary work...\n    buf = append(buf, data...)\n    process(buf)\n}\n\n// WRONG: using Pool for connection pooling\nvar connPool = sync.Pool{\n    New: func() any {\n        conn, _ := net.Dial(\"tcp\", \"db:5432\") // expensive!\n        return conn\n    },\n}\n// GC will close and discard connections unpredictably\n// Use a proper connection pool (database/sql, pgxpool) instead\n```\n\nsync.Pool is designed for short-lived temporary objects (buffers, encoders, decoders). Objects are kept only until the next GC cycle. For long-lived resources like database connections, use dedicated pool implementations. The New function is called whenever the pool is empty, so it must be cheap.",
+    "tags": [
+      "go",
+      "sync-pool",
+      "memory",
+      "garbage-collection",
+      "performance"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Go generics type constraints \u2014 comparable does not mean orderable",
+    "body": "Go 1.18 introduced generics, but the type constraint system has surprising limitations. `comparable` means `==` and `!=` only, not `<` or `>`.\n\n```go\n// comparable allows == and !=\nfunc Contains[T comparable](slice []T, target T) bool {\n    for _, v := range slice {\n        if v == target {\n            return true\n        }\n    }\n    return false\n}\n\n// ERROR: cannot use < with comparable\nfunc Max[T comparable](a, b T) T {\n    if a > b { return a } // compile error\n    return b\n}\n\n// FIX: use constraints package or cmp.Ordered\nimport \"cmp\"\n\nfunc Max[T cmp.Ordered](a, b T) T {\n    if a > b { return a }\n    return b\n}\n// cmp.Ordered includes: int, float64, string, etc.\n\n// Custom constraint with type union\ntype Number interface {\n    ~int | ~int32 | ~int64 | ~float32 | ~float64\n}\n\nfunc Sum[T Number](nums []T) T {\n    var total T\n    for _, n := range nums {\n        total += n\n    }\n    return total\n}\n```\n\nThe `~` prefix in type constraints means \"any type whose underlying type is X\", allowing custom types like `type UserID int` to satisfy `~int`. Use `any` (alias for `interface{}`) for unconstrained generics.",
+    "tags": [
+      "go",
+      "generics",
+      "type-constraints",
+      "comparable",
+      "ordered"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Go HTTP handler goroutine \u2014 request context cancelled after handler returns",
+    "body": "The request context (`r.Context()`) is cancelled when the HTTP handler returns. Background goroutines spawned from a handler that use the request context will be cancelled unexpectedly.\n\n```go\n// BUG: background work cancelled when handler returns\nfunc handleWebhook(w http.ResponseWriter, r *http.Request) {\n    var payload WebhookPayload\n    json.NewDecoder(r.Body).Decode(&payload)\n\n    go func() {\n        // r.Context() is cancelled after handleWebhook returns!\n        db.InsertWithContext(r.Context(), payload) // likely fails\n    }()\n\n    w.WriteHeader(http.StatusAccepted)\n}\n\n// FIX: create a new context for background work\nfunc handleWebhook(w http.ResponseWriter, r *http.Request) {\n    var payload WebhookPayload\n    json.NewDecoder(r.Body).Decode(&payload)\n\n    // Use a separate context with its own timeout\n    bgCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)\n    go func() {\n        defer cancel()\n        db.InsertWithContext(bgCtx, payload)\n    }()\n\n    w.WriteHeader(http.StatusAccepted)\n}\n```\n\nFor production, use a work queue (channel + worker pool) instead of spawning unbounded goroutines per request. The request context should only be used for work that must complete within the request lifecycle.",
+    "tags": [
+      "go",
+      "http",
+      "context",
+      "goroutines",
+      "request-lifecycle"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Go modules replace directive for local development and forks",
+    "body": "Go modules' `replace` directive lets you point a dependency to a local path or a fork. Forgetting to remove it before pushing causes CI failures.\n\n```go\n// go.mod\nmodule myapp\n\ngo 1.22\n\nrequire (\n    github.com/some/library v1.2.3\n)\n\n// Local development \u2014 point to local checkout\nreplace github.com/some/library => ../library\n\n// Fork \u2014 point to your fork\nreplace github.com/some/library => github.com/myfork/library v1.2.4-patch1\n```\n\n```bash\n# Common commands\ngo mod tidy          # clean up go.mod and go.sum\ngo mod download      # download all dependencies\ngo mod verify        # verify checksums\ngo mod vendor        # copy deps into vendor/\ngo get -u ./...      # update all dependencies\ngo get github.com/some/library@v1.3.0  # update specific dep\n```\n\nGotcha: `replace` directives in library modules are ignored by consumers. Only the main module's `replace` takes effect. This means libraries cannot force replacements on their users. Use a `.ci-check` or pre-commit hook to flag `replace` directives pointing to local paths before merging.",
+    "tags": [
+      "go",
+      "modules",
+      "replace",
+      "dependencies",
+      "go-mod"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Go error: all goroutines are asleep \u2014 deadlock detected",
+    "body": "The Go runtime detects when all goroutines are blocked and no progress can be made. This is a hard deadlock.\n\n```go\n// Classic deadlock: main goroutine blocks on channel with no sender\nfunc main() {\n    ch := make(chan int)\n    val := <-ch // blocks \u2014 no goroutine will ever send\n}\n// fatal error: all goroutines are asleep - deadlock!\n\n// Mutual deadlock with two channels\nfunc main() {\n    ch1 := make(chan int)\n    ch2 := make(chan int)\n    go func() {\n        <-ch1       // waits for ch1\n        ch2 <- 42   // then sends to ch2\n    }()\n    <-ch2           // waits for ch2\n    ch1 <- 1        // then sends to ch1\n    // Both goroutines waiting on each other\n}\n\n// Mutex deadlock\nvar mu1, mu2 sync.Mutex\ngo func() {\n    mu1.Lock()\n    mu2.Lock() // blocks\n}()\nmu2.Lock()\nmu1.Lock() // blocks \u2014 deadlock\n```\n\nThe runtime only detects full deadlocks (all goroutines blocked). Partial deadlocks where some goroutines are still running won't be detected. Use `go vet` and the race detector (`-race` flag) to find these. For complex channel patterns, draw the dependency graph to spot cycles.",
+    "tags": [
+      "go",
+      "deadlock",
+      "goroutines",
+      "channels",
+      "runtime"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Go error: concurrent map writes \u2014 maps are not thread-safe",
+    "body": "Go maps are not safe for concurrent read/write. The runtime detects concurrent map access and crashes with a fatal error (not a panic \u2014 cannot be recovered).\n\n```go\n// FATAL: concurrent map writes\nm := make(map[string]int)\nfor i := 0; i < 100; i++ {\n    go func(n int) {\n        m[fmt.Sprintf(\"key%d\", n)] = n // concurrent write\n    }(i)\n}\n// fatal error: concurrent map writes\n\n// FIX 1: sync.Mutex\nvar mu sync.Mutex\nm := make(map[string]int)\nfor i := 0; i < 100; i++ {\n    go func(n int) {\n        mu.Lock()\n        m[fmt.Sprintf(\"key%d\", n)] = n\n        mu.Unlock()\n    }(i)\n}\n\n// FIX 2: sync.Map (better for read-heavy workloads)\nvar sm sync.Map\nfor i := 0; i < 100; i++ {\n    go func(n int) {\n        sm.Store(fmt.Sprintf(\"key%d\", n), n)\n    }(i)\n}\nval, ok := sm.Load(\"key42\")\n\n// FIX 3: channel-based serialization\ntype mapOp struct {\n    key string\n    val int\n}\nops := make(chan mapOp, 100)\ngo func() {\n    m := make(map[string]int)\n    for op := range ops {\n        m[op.key] = op.val\n    }\n}()\n```\n\nUse `sync.RWMutex` when reads vastly outnumber writes. Use `sync.Map` when keys are stable (read-heavy, few deletes). Run with `-race` flag to detect concurrent map access during testing.",
+    "tags": [
+      "go",
+      "maps",
+      "concurrency",
+      "sync-mutex",
+      "race-condition"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Go error: cannot use X as type Y in assignment \u2014 interface mismatch",
+    "body": "This error occurs when a type doesn't satisfy an interface, often because the method is defined on a pointer receiver but you're passing a value.\n\n```go\ntype Stringer interface {\n    String() string\n}\n\ntype MyType struct {\n    Name string\n}\n\n// Method on pointer receiver\nfunc (m *MyType) String() string {\n    return m.Name\n}\n\n// ERROR: MyType does not implement Stringer (String method has pointer receiver)\nvar s Stringer = MyType{Name: \"test\"}\n\n// FIX: use pointer\nvar s Stringer = &MyType{Name: \"test\"} // works\n\n// This also breaks with slices\ntype Handler interface {\n    Handle()\n}\n\ntype ConcreteHandler struct{}\nfunc (c *ConcreteHandler) Handle() {}\n\n// ERROR: []ConcreteHandler does not implement []Handler\nhandlers := []ConcreteHandler{{}, {}}\n// var iface []Handler = handlers // doesn't work \u2014 Go has no covariance\n\n// FIX: build the interface slice explicitly\niface := make([]Handler, len(handlers))\nfor i := range handlers {\n    iface[i] = &handlers[i]\n}\n```\n\nGo has no implicit type covariance. A `[]ConcreteType` cannot be assigned to `[]InterfaceType`. This is intentional \u2014 it prevents type safety violations that occur with covariant arrays in Java.",
+    "tags": [
+      "go",
+      "interfaces",
+      "pointer-receiver",
+      "type-assertion",
+      "error"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Go error: panic \u2014 runtime error: index out of range",
+    "body": "Go panics on out-of-bounds slice/array access at runtime. Unlike Rust, this isn't caught at compile time.\n\n```go\n// PANIC: index out of range [5] with length 3\ns := []int{1, 2, 3}\nfmt.Println(s[5])\n\n// PANIC: index out of range [0] with length 0\nvar empty []int\nfmt.Println(empty[0])\n\n// Safe access patterns\nfunc safeGet(s []int, i int) (int, bool) {\n    if i < 0 || i >= len(s) {\n        return 0, false\n    }\n    return s[i], true\n}\n\n// Recover from panic (use sparingly)\nfunc safeDivide(a, b int) (result int, err error) {\n    defer func() {\n        if r := recover(); r != nil {\n            err = fmt.Errorf(\"recovered: %v\", r)\n        }\n    }()\n    return a / b, nil // panics if b == 0\n}\n\n// Common pattern: check length before access\nif len(results) > 0 {\n    first := results[0]\n}\n\n// Nil map read is safe (returns zero), but nil map write panics\nvar m map[string]int\nv := m[\"key\"]     // v = 0, no panic\nm[\"key\"] = 1      // PANIC: assignment to entry in nil map\nm = make(map[string]int) // always initialize maps\n```\n\nUse `recover()` in deferred functions to catch panics, but only at API boundaries (HTTP handlers, worker loops). Don't use panic/recover for normal error handling \u2014 that's what error return values are for.",
+    "tags": [
+      "go",
+      "panic",
+      "index-out-of-range",
+      "nil-map",
+      "error"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Go error: context deadline exceeded \u2014 tracing timeout sources",
+    "body": "\"context deadline exceeded\" means an operation took longer than the context's timeout. The hard part is identifying which operation in the chain actually timed out.\n\n```go\n// Three levels of timeouts \u2014 which one fired?\nfunc handler(w http.ResponseWriter, r *http.Request) {\n    // Level 1: HTTP server timeout (e.g., ReadTimeout: 10s)\n\n    // Level 2: request-scoped timeout\n    ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)\n    defer cancel()\n\n    // Level 3: database query timeout\n    dbCtx, dbCancel := context.WithTimeout(ctx, 2*time.Second)\n    defer dbCancel()\n\n    result, err := db.QueryContext(dbCtx, \"SELECT ...\")\n    if err != nil {\n        // err is \"context deadline exceeded\" but WHICH context?\n        if errors.Is(err, context.DeadlineExceeded) {\n            // Check which context was cancelled\n            if dbCtx.Err() != nil {\n                log.Println(\"database timeout\")\n            } else if ctx.Err() != nil {\n                log.Println(\"request timeout\")\n            }\n        }\n    }\n}\n\n// Add timeout info to errors for debugging\nfunc fetchWithTimeout(ctx context.Context) error {\n    deadline, ok := ctx.Deadline()\n    if ok {\n        remaining := time.Until(deadline)\n        if remaining < 100*time.Millisecond {\n            return fmt.Errorf(\"context nearly expired, %v remaining\", remaining)\n        }\n    }\n    // ... do work\n    return nil\n}\n```\n\nLayer timeouts from outermost (largest) to innermost (smallest). Always check `ctx.Err()` to determine if a context was cancelled vs timed out (`context.Canceled` vs `context.DeadlineExceeded`). Log remaining time at the start of operations to diagnose timeout cascades.",
+    "tags": [
+      "go",
+      "context",
+      "timeout",
+      "deadline",
+      "debugging"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Go error: data race detected \u2014 using -race flag to find concurrency bugs",
+    "body": "Go's race detector instruments memory accesses at runtime to find data races. It catches bugs that compile successfully but corrupt data.\n\n```go\n// DATA RACE: concurrent read and write on shared variable\nvar count int\nfor i := 0; i < 1000; i++ {\n    go func() {\n        count++ // unsynchronized read-modify-write\n    }()\n}\n\n// Run with: go test -race ./...\n// WARNING: DATA RACE\n// Write at 0x00c0000a4010 by goroutine 8:\n// Previous read at 0x00c0000a4010 by goroutine 7:\n\n// FIX 1: atomic operations\nimport \"sync/atomic\"\nvar count int64\nfor i := 0; i < 1000; i++ {\n    go func() {\n        atomic.AddInt64(&count, 1)\n    }()\n}\n\n// FIX 2: mutex\nvar mu sync.Mutex\nvar count int\nfor i := 0; i < 1000; i++ {\n    go func() {\n        mu.Lock()\n        count++\n        mu.Unlock()\n    }()\n}\n\n// FIX 3: channel serialization\ncountCh := make(chan int)\ngo func() {\n    total := 0\n    for delta := range countCh {\n        total += delta\n    }\n}()\n```\n\nAlways run `go test -race` in CI. The race detector adds ~2-10x overhead, so it's for testing, not production. It catches reads and writes to the same memory location from different goroutines without synchronization. Use `atomic` for simple counters, `sync.Mutex` for complex state.",
+    "tags": [
+      "go",
+      "race-detector",
+      "concurrency",
+      "atomic",
+      "data-race"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Go error: import cycle not allowed \u2014 circular dependency between packages",
+    "body": "Go forbids circular imports. If package A imports B, B cannot import A. This forces clean dependency hierarchies.\n\n```go\n// package user\nimport \"myapp/order\" // user depends on order\n\ntype User struct { ... }\nfunc (u *User) GetOrders() []order.Order { ... }\n\n// package order\nimport \"myapp/user\" // order depends on user \u2014 CYCLE!\n\ntype Order struct { ... }\nfunc (o *Order) GetBuyer() user.User { ... }\n\n// FIX 1: Extract shared types into a third package\n// package models\ntype User struct { ... }\ntype Order struct { ... }\n\n// FIX 2: Use interfaces to break the dependency\n// package order\ntype Buyer interface {\n    ID() int64\n    Name() string\n}\ntype Order struct {\n    buyer Buyer // interface, no import needed\n}\n\n// FIX 3: Dependency injection\n// package user\ntype OrderFetcher func(userID int64) []Order\ntype UserService struct {\n    fetchOrders OrderFetcher // injected, no import needed\n}\n```\n\nGo's import cycle restriction promotes better architecture. Common patterns: extract shared types to a `types` or `models` package, use interfaces at package boundaries, or use dependency injection. The `internal/` directory convention keeps extracted packages private.",
+    "tags": [
+      "go",
+      "import-cycle",
+      "packages",
+      "architecture",
+      "dependency-injection"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Go error: invalid memory address or nil pointer dereference",
+    "body": "The most common Go runtime panic. It occurs when calling a method on a nil pointer or accessing a field of a nil struct pointer.\n\n```go\n// PANIC: nil pointer dereference\ntype Config struct {\n    Database struct {\n        Host string\n    }\n}\n\nvar cfg *Config // nil\nfmt.Println(cfg.Database.Host) // panic!\n\n// PANIC: nil map\nvar m map[string]int\nm[\"key\"] = 1 // panic: assignment to entry in nil map\n\n// PANIC: nil function call\nvar fn func()\nfn() // panic\n\n// Safe patterns\nfunc getHost(cfg *Config) string {\n    if cfg == nil {\n        return \"localhost\"\n    }\n    return cfg.Database.Host\n}\n\n// Initialize maps in constructors\nfunc NewService() *Service {\n    return &Service{\n        cache: make(map[string]int), // always initialize\n        mu:    sync.Mutex{},\n    }\n}\n\n// Nil-safe method calls (check receiver)\nfunc (c *Config) GetHost() string {\n    if c == nil {\n        return \"localhost\"\n    }\n    return c.Database.Host\n}\n```\n\nPrevent nil panics by: (1) always initializing maps with `make()`, (2) checking pointers before dereferencing, (3) returning non-nil values from constructors, (4) using the comma-ok idiom for map access. Go doesn't have Rust-style Option types, so nil checks are manual.",
+    "tags": [
+      "go",
+      "nil-pointer",
+      "panic",
+      "nil-dereference",
+      "error"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Go error: missing return at end of function \u2014 all code paths must return",
+    "body": "Go requires explicit returns on all code paths. The compiler doesn't consider that an `os.Exit()` or a panic means the code after won't execute.\n\n```go\n// ERROR: missing return at end of function\nfunc classify(n int) string {\n    if n > 0 {\n        return \"positive\"\n    } else if n < 0 {\n        return \"negative\"\n    }\n    // compiler doesn't know the else case is impossible\n}\n\n// FIX: add explicit return for all paths\nfunc classify(n int) string {\n    if n > 0 {\n        return \"positive\"\n    } else if n < 0 {\n        return \"negative\"\n    }\n    return \"zero\"\n}\n\n// Switch must cover all cases or have default\nfunc describe(day time.Weekday) string {\n    switch day {\n    case time.Monday:\n        return \"start of week\"\n    case time.Friday:\n        return \"end of week\"\n    default:\n        return \"middle of week\" // required\n    }\n}\n\n// Named returns can help with complex functions\nfunc divide(a, b float64) (result float64, err error) {\n    if b == 0 {\n        err = errors.New(\"division by zero\")\n        return // returns named values: (0, err)\n    }\n    result = a / b\n    return // returns named values: (result, nil)\n}\n```\n\nNamed return values are initialized to their zero values, so a bare `return` always works. This is useful for complex error handling but can reduce readability. Go's simplicity means no exhaustive enum matching \u2014 always include a default case in switches.",
+    "tags": [
+      "go",
+      "return",
+      "control-flow",
+      "compiler",
+      "error"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Go context-aware worker pool for bounded concurrency",
+    "body": "A worker pool limits concurrent goroutines, preventing resource exhaustion from unbounded parallelism. This pattern combines channels, WaitGroups, and context cancellation.\n\n```go\nfunc ProcessItems(ctx context.Context, items []Item, workers int) ([]Result, error) {\n    jobs := make(chan Item, len(items))\n    results := make(chan Result, len(items))\n    var wg sync.WaitGroup\n\n    // Start workers\n    for i := 0; i < workers; i++ {\n        wg.Add(1)\n        go func() {\n            defer wg.Done()\n            for item := range jobs {\n                select {\n                case <-ctx.Done():\n                    return // stop on cancellation\n                default:\n                }\n                result, err := processItem(ctx, item)\n                if err != nil {\n                    results <- Result{Err: err}\n                    continue\n                }\n                results <- result\n            }\n        }()\n    }\n\n    // Send jobs\n    for _, item := range items {\n        select {\n        case jobs <- item:\n        case <-ctx.Done():\n            close(jobs)\n            return nil, ctx.Err()\n        }\n    }\n    close(jobs)\n\n    // Wait and collect\n    go func() {\n        wg.Wait()\n        close(results)\n    }()\n\n    var out []Result\n    for r := range results {\n        out = append(out, r)\n    }\n    return out, nil\n}\n```\n\nFor simpler cases, use `golang.org/x/sync/errgroup` which combines WaitGroup + error propagation + context cancellation in one API. Set `g.SetLimit(n)` to bound concurrency.",
+    "tags": [
+      "go",
+      "worker-pool",
+      "concurrency",
+      "channels",
+      "context"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Go functional options pattern for flexible API design",
+    "body": "The functional options pattern provides a clean API for optional configuration without bloated constructors or config structs.\n\n```go\ntype Server struct {\n    addr    string\n    port    int\n    timeout time.Duration\n    logger  *slog.Logger\n    tls     bool\n}\n\ntype Option func(*Server)\n\nfunc WithPort(port int) Option {\n    return func(s *Server) { s.port = port }\n}\n\nfunc WithTimeout(d time.Duration) Option {\n    return func(s *Server) { s.timeout = d }\n}\n\nfunc WithLogger(logger *slog.Logger) Option {\n    return func(s *Server) { s.logger = logger }\n}\n\nfunc WithTLS() Option {\n    return func(s *Server) { s.tls = true }\n}\n\nfunc NewServer(addr string, opts ...Option) *Server {\n    s := &Server{\n        addr:    addr,\n        port:    8080,                    // sensible default\n        timeout: 30 * time.Second,        // sensible default\n        logger:  slog.Default(),          // sensible default\n    }\n    for _, opt := range opts {\n        opt(s)\n    }\n    return s\n}\n\n// Clean usage\nsrv := NewServer(\"0.0.0.0\",\n    WithPort(9090),\n    WithTimeout(5*time.Second),\n    WithTLS(),\n)\n```\n\nThis pattern is used throughout the Go standard library and major libraries (gRPC, zap logger). Benefits: backward-compatible API evolution (new options don't break callers), self-documenting, and sensible defaults without requiring any options.",
+    "tags": [
+      "go",
+      "functional-options",
+      "api-design",
+      "patterns",
+      "constructor"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Go HTTP middleware chain pattern for cross-cutting concerns",
+    "body": "Go's `http.Handler` interface enables composable middleware. Each middleware wraps the next handler, forming a chain.\n\n```go\n// Middleware signature: takes and returns http.Handler\ntype Middleware func(http.Handler) http.Handler\n\n// Logging middleware\nfunc LoggingMiddleware(next http.Handler) http.Handler {\n    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n        start := time.Now()\n        // Wrap ResponseWriter to capture status code\n        wrapped := &statusWriter{ResponseWriter: w, status: 200}\n        next.ServeHTTP(wrapped, r)\n        slog.Info(\"request\",\n            \"method\", r.Method,\n            \"path\", r.URL.Path,\n            \"status\", wrapped.status,\n            \"duration\", time.Since(start),\n        )\n    })\n}\n\ntype statusWriter struct {\n    http.ResponseWriter\n    status int\n}\nfunc (w *statusWriter) WriteHeader(code int) {\n    w.status = code\n    w.ResponseWriter.WriteHeader(code)\n}\n\n// Auth middleware\nfunc AuthMiddleware(next http.Handler) http.Handler {\n    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n        token := r.Header.Get(\"Authorization\")\n        user, err := validateToken(token)\n        if err != nil {\n            http.Error(w, \"unauthorized\", http.StatusUnauthorized)\n            return // don't call next\n        }\n        ctx := context.WithValue(r.Context(), userKey, user)\n        next.ServeHTTP(w, r.WithContext(ctx))\n    })\n}\n\n// Chain helper\nfunc Chain(handler http.Handler, middlewares ...Middleware) http.Handler {\n    for i := len(middlewares) - 1; i >= 0; i-- {\n        handler = middlewares[i](handler)\n    }\n    return handler\n}\n\n// Usage\nmux := http.NewServeMux()\nmux.HandleFunc(\"GET /api/users\", listUsers)\nhandler := Chain(mux, LoggingMiddleware, AuthMiddleware)\nhttp.ListenAndServe(\":8080\", handler)\n```\n\nMiddleware executes in the order passed to Chain. The outer middleware (Logging) wraps the inner (Auth). For production, use `chi` or `echo` routers which have built-in middleware chaining and route groups.",
+    "tags": [
+      "go",
+      "http",
+      "middleware",
+      "handler",
+      "pattern"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Go table-driven tests with subtests for comprehensive coverage",
+    "body": "Table-driven tests are the idiomatic Go testing pattern. Subtests enable selective execution and parallel running.\n\n```go\nfunc TestParseSize(t *testing.T) {\n    tests := []struct {\n        name    string\n        input   string\n        want    int64\n        wantErr bool\n    }{\n        {name: \"bytes\", input: \"100B\", want: 100},\n        {name: \"kilobytes\", input: \"10KB\", want: 10240},\n        {name: \"megabytes\", input: \"5MB\", want: 5242880},\n        {name: \"gigabytes\", input: \"1GB\", want: 1073741824},\n        {name: \"empty string\", input: \"\", wantErr: true},\n        {name: \"invalid unit\", input: \"10XB\", wantErr: true},\n        {name: \"negative\", input: \"-5MB\", wantErr: true},\n    }\n\n    for _, tt := range tests {\n        t.Run(tt.name, func(t *testing.T) {\n            t.Parallel() // run subtests in parallel\n\n            got, err := ParseSize(tt.input)\n            if (err != nil) != tt.wantErr {\n                t.Errorf(\"ParseSize(%q) error = %v, wantErr %v\", tt.input, err, tt.wantErr)\n                return\n            }\n            if got != tt.want {\n                t.Errorf(\"ParseSize(%q) = %d, want %d\", tt.input, got, tt.want)\n            }\n        })\n    }\n}\n\n// Run specific test: go test -run TestParseSize/kilobytes\n// Run all: go test -v ./...\n```\n\nBenefits: adding a test case is one line in the table, test names appear in output for easy debugging, and `t.Parallel()` speeds up slow tests. For setup/teardown, use `TestMain(m *testing.M)` at the package level or `t.Cleanup()` at the test level.",
+    "tags": [
+      "go",
+      "testing",
+      "table-driven",
+      "subtests",
+      "pattern"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Go errgroup for parallel tasks with error propagation and cancellation",
+    "body": "The `errgroup` package from `golang.org/x/sync` provides a WaitGroup-like API that propagates the first error and cancels remaining work.\n\n```go\nimport \"golang.org/x/sync/errgroup\"\n\nfunc FetchAll(ctx context.Context, urls []string) ([]Response, error) {\n    g, ctx := errgroup.WithContext(ctx)\n    g.SetLimit(10) // max 10 concurrent goroutines\n\n    responses := make([]Response, len(urls))\n\n    for i, url := range urls {\n        i, url := i, url // capture for goroutine (not needed in Go 1.22+)\n        g.Go(func() error {\n            resp, err := fetchURL(ctx, url)\n            if err != nil {\n                return fmt.Errorf(\"fetch %s: %w\", url, err)\n            }\n            responses[i] = resp // safe: each goroutine writes to unique index\n            return nil\n        })\n    }\n\n    if err := g.Wait(); err != nil {\n        return nil, err // returns first error; ctx is cancelled for others\n    }\n    return responses, nil\n}\n\n// Pipeline pattern: producer -> processor -> consumer\nfunc Pipeline(ctx context.Context) error {\n    g, ctx := errgroup.WithContext(ctx)\n    items := make(chan Item, 100)\n    results := make(chan Result, 100)\n\n    // Producer\n    g.Go(func() error {\n        defer close(items)\n        return produce(ctx, items)\n    })\n\n    // Workers\n    for i := 0; i < 5; i++ {\n        g.Go(func() error {\n            for item := range items {\n                result, err := process(ctx, item)\n                if err != nil {\n                    return err\n                }\n                results <- result\n            }\n            return nil\n        })\n    }\n\n    // Close results when workers done (separate goroutine)\n    go func() { g.Wait(); close(results) }()\n\n    return g.Wait()\n}\n```\n\nerrgroup.WithContext creates a derived context that's cancelled when any goroutine returns an error. This provides automatic cancellation of in-flight work. `SetLimit` prevents spawning too many goroutines. It's the standard replacement for hand-rolled worker pools.",
+    "tags": [
+      "go",
+      "errgroup",
+      "concurrency",
+      "error-propagation",
+      "pattern"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Go structured logging with slog \u2014 the standard library logger (Go 1.21+)",
+    "body": "Go 1.21 introduced `log/slog` as the standard structured logging package, replacing `log` and third-party loggers for most use cases.\n\n```go\nimport \"log/slog\"\n\n// Configure structured JSON logging\nlogger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{\n    Level: slog.LevelDebug,\n    AddSource: true, // include file:line\n}))\nslog.SetDefault(logger)\n\n// Basic usage\nslog.Info(\"server started\", \"port\", 8080, \"env\", \"production\")\n// {\"time\":\"...\",\"level\":\"INFO\",\"msg\":\"server started\",\"port\":8080,\"env\":\"production\"}\n\n// Structured groups\nslog.Info(\"request completed\",\n    slog.Group(\"request\",\n        slog.String(\"method\", \"GET\"),\n        slog.String(\"path\", \"/api/users\"),\n    ),\n    slog.Group(\"response\",\n        slog.Int(\"status\", 200),\n        slog.Duration(\"latency\", 42*time.Millisecond),\n    ),\n)\n\n// Context-based logger \u2014 add fields once, use everywhere\nfunc handleRequest(ctx context.Context, r *http.Request) {\n    logger := slog.With(\n        \"request_id\", r.Header.Get(\"X-Request-ID\"),\n        \"user_id\", getUserID(ctx),\n    )\n    logger.Info(\"processing request\")\n    // All subsequent logs include request_id and user_id\n    result, err := doWork(ctx)\n    if err != nil {\n        logger.Error(\"processing failed\", \"error\", err)\n        return\n    }\n    logger.Info(\"request completed\", \"result_count\", len(result))\n}\n```\n\nslog replaces both `log` (unstructured) and `zap`/`zerolog` (third-party structured) for most cases. Use `slog.NewTextHandler` for human-readable development output and `slog.NewJSONHandler` for production. The `slog.With()` method creates a child logger with preset fields.",
+    "tags": [
+      "go",
+      "slog",
+      "logging",
+      "structured",
+      "observability"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Go graceful shutdown pattern for HTTP servers",
+    "body": "A production Go HTTP server must handle OS signals and drain in-flight requests before shutting down.\n\n```go\nfunc main() {\n    mux := http.NewServeMux()\n    mux.HandleFunc(\"GET /health\", func(w http.ResponseWriter, r *http.Request) {\n        w.WriteHeader(http.StatusOK)\n    })\n    mux.HandleFunc(\"GET /api/data\", handleData)\n\n    srv := &http.Server{\n        Addr:         \":8080\",\n        Handler:      mux,\n        ReadTimeout:  10 * time.Second,\n        WriteTimeout: 30 * time.Second,\n        IdleTimeout:  60 * time.Second,\n    }\n\n    // Start server in goroutine\n    go func() {\n        slog.Info(\"server starting\", \"addr\", srv.Addr)\n        if err := srv.ListenAndServe(); err != http.ErrServerClosed {\n            slog.Error(\"server error\", \"error\", err)\n            os.Exit(1)\n        }\n    }()\n\n    // Wait for interrupt signal\n    quit := make(chan os.Signal, 1)\n    signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)\n    sig := <-quit\n    slog.Info(\"shutting down\", \"signal\", sig)\n\n    // Graceful shutdown with timeout\n    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)\n    defer cancel()\n\n    if err := srv.Shutdown(ctx); err != nil {\n        slog.Error(\"forced shutdown\", \"error\", err)\n    }\n    slog.Info(\"server stopped\")\n}\n```\n\n`srv.Shutdown()` stops accepting new connections and waits for in-flight requests to complete. The timeout ensures the server doesn't hang forever on slow requests. Set the shutdown timeout longer than `WriteTimeout` to allow active responses to finish. This pattern works with Kubernetes' `preStop` hook and load balancer health checks.",
+    "tags": [
+      "go",
+      "http-server",
+      "graceful-shutdown",
+      "signals",
+      "production"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Go repository pattern with interfaces for testable database code",
+    "body": "Define repository interfaces to decouple business logic from database implementation, enabling easy testing with mocks.\n\n```go\n// Interface \u2014 defined where it's consumed, not where it's implemented\ntype UserRepository interface {\n    FindByID(ctx context.Context, id int64) (*User, error)\n    FindByEmail(ctx context.Context, email string) (*User, error)\n    Create(ctx context.Context, user *User) error\n    Update(ctx context.Context, user *User) error\n}\n\n// Real implementation\ntype PostgresUserRepo struct {\n    db *sql.DB\n}\n\nfunc (r *PostgresUserRepo) FindByID(ctx context.Context, id int64) (*User, error) {\n    var u User\n    err := r.db.QueryRowContext(ctx,\n        \"SELECT id, email, name FROM users WHERE id = $1\", id,\n    ).Scan(&u.ID, &u.Email, &u.Name)\n    if errors.Is(err, sql.ErrNoRows) {\n        return nil, ErrNotFound\n    }\n    return &u, err\n}\n\n// Service uses the interface\ntype UserService struct {\n    repo UserRepository\n}\n\nfunc (s *UserService) GetUser(ctx context.Context, id int64) (*User, error) {\n    return s.repo.FindByID(ctx, id)\n}\n\n// Test mock\ntype MockUserRepo struct {\n    users map[int64]*User\n}\n\nfunc (m *MockUserRepo) FindByID(_ context.Context, id int64) (*User, error) {\n    if u, ok := m.users[id]; ok {\n        return u, nil\n    }\n    return nil, ErrNotFound\n}\n\nfunc TestGetUser(t *testing.T) {\n    mock := &MockUserRepo{users: map[int64]*User{1: {ID: 1, Name: \"Alice\"}}}\n    svc := &UserService{repo: mock}\n    user, err := svc.GetUser(context.Background(), 1)\n    // assert...\n}\n```\n\nGo idiom: define interfaces at the consumer, not the provider. Keep interfaces small (1-3 methods). This avoids the Java pattern of creating interfaces for everything \u2014 define them only when you need substitutability (testing, multiple implementations).",
+    "tags": [
+      "go",
+      "repository-pattern",
+      "interfaces",
+      "testing",
+      "database"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Go generics for type-safe collections and utility functions (1.18+)",
+    "body": "Go generics reduce boilerplate for type-safe utility functions that previously required interface{} or code generation.\n\n```go\nimport (\n    \"cmp\"\n    \"slices\"\n)\n\n// Generic Map \u2014 transform slice elements\nfunc Map[T any, U any](items []T, fn func(T) U) []U {\n    result := make([]U, len(items))\n    for i, item := range items {\n        result[i] = fn(item)\n    }\n    return result\n}\n\n// Generic Filter\nfunc Filter[T any](items []T, predicate func(T) bool) []T {\n    var result []T\n    for _, item := range items {\n        if predicate(item) {\n            result = append(result, item)\n        }\n    }\n    return result\n}\n\n// Generic GroupBy\nfunc GroupBy[T any, K comparable](items []T, keyFn func(T) K) map[K][]T {\n    groups := make(map[K][]T)\n    for _, item := range items {\n        key := keyFn(item)\n        groups[key] = append(groups[key], item)\n    }\n    return groups\n}\n\n// Usage\ntype User struct {\n    Name string\n    Age  int\n    City string\n}\n\nusers := []User{{\"Alice\", 30, \"NYC\"}, {\"Bob\", 25, \"LA\"}, {\"Carol\", 30, \"NYC\"}}\n\nnames := Map(users, func(u User) string { return u.Name })\nadults := Filter(users, func(u User) bool { return u.Age >= 30 })\nbyCity := GroupBy(users, func(u User) string { return u.City })\n\n// Standard library generics (Go 1.21+)\nslices.Sort(names)                        // sort in place\nslices.Contains(names, \"Alice\")           // true\nidx := slices.Index(names, \"Bob\")         // find index\nmax := slices.Max([]int{3, 1, 4, 1, 5})  // 5\n```\n\nGo 1.21's `slices` and `maps` packages provide generic utilities for common operations. Prefer these over writing your own. Keep generic functions simple \u2014 Go generics don't support method-level type parameters or specialization.",
+    "tags": [
+      "go",
+      "generics",
+      "collections",
+      "utility",
+      "type-safe"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Go HTTP server with middleware, graceful shutdown, and request validation",
+    "body": "A production-ready Go HTTP server template using Go 1.22+ routing patterns.\n\n```go\npackage main\n\nimport (\n    \"encoding/json\"\n    \"log/slog\"\n    \"net/http\"\n    \"os\"\n    \"os/signal\"\n    \"syscall\"\n    \"time\"\n)\n\ntype CreateUserRequest struct {\n    Name  string `json:\"name\"`\n    Email string `json:\"email\"`\n}\n\nfunc (r CreateUserRequest) Validate() error {\n    if r.Name == \"\" {\n        return errors.New(\"name is required\")\n    }\n    if !strings.Contains(r.Email, \"@\") {\n        return errors.New(\"invalid email\")\n    }\n    return nil\n}\n\nfunc handleCreateUser(w http.ResponseWriter, r *http.Request) {\n    var req CreateUserRequest\n    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {\n        http.Error(w, \"invalid JSON\", http.StatusBadRequest)\n        return\n    }\n    if err := req.Validate(); err != nil {\n        writeJSON(w, http.StatusBadRequest, map[string]string{\"error\": err.Error()})\n        return\n    }\n    // ... create user\n    writeJSON(w, http.StatusCreated, map[string]string{\"status\": \"created\"})\n}\n\nfunc writeJSON(w http.ResponseWriter, status int, data any) {\n    w.Header().Set(\"Content-Type\", \"application/json\")\n    w.WriteHeader(status)\n    json.NewEncoder(w).Encode(data)\n}\n\nfunc main() {\n    mux := http.NewServeMux()\n    mux.HandleFunc(\"POST /api/users\", handleCreateUser)\n    mux.HandleFunc(\"GET /api/users/{id}\", handleGetUser)\n    mux.HandleFunc(\"GET /health\", func(w http.ResponseWriter, r *http.Request) {\n        w.WriteHeader(200)\n    })\n\n    srv := &http.Server{Addr: \":8080\", Handler: mux}\n    go func() { srv.ListenAndServe() }()\n\n    quit := make(chan os.Signal, 1)\n    signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)\n    <-quit\n    ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)\n    defer cancel()\n    srv.Shutdown(ctx)\n}\n```\n\nGo 1.22 added method-based routing (`GET /path`, `POST /path/{param}`) to the standard library, reducing the need for third-party routers. Use `r.PathValue(\"id\")` to extract path parameters.",
+    "tags": [
+      "go",
+      "http-server",
+      "routing",
+      "validation",
+      "snippet"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Go database access with sqlc for type-safe generated queries",
+    "body": "sqlc generates type-safe Go code from SQL queries. You write SQL, it generates Go structs and functions.\n\n```sql\n-- queries/users.sql\n-- name: GetUser :one\nSELECT id, email, name, created_at\nFROM users\nWHERE id = $1;\n\n-- name: ListUsers :many\nSELECT id, email, name, created_at\nFROM users\nORDER BY created_at DESC\nLIMIT $1 OFFSET $2;\n\n-- name: CreateUser :one\nINSERT INTO users (email, name)\nVALUES ($1, $2)\nRETURNING id, email, name, created_at;\n\n-- name: DeleteUser :exec\nDELETE FROM users WHERE id = $1;\n```\n\n```yaml\n# sqlc.yaml\nversion: \"2\"\nsql:\n  - engine: \"postgresql\"\n    queries: \"queries/\"\n    schema: \"schema/\"\n    gen:\n      go:\n        package: \"db\"\n        out: \"internal/db\"\n        sql_package: \"pgx/v5\"\n        emit_json_tags: true\n```\n\n```go\n// Generated code usage\nfunc (s *Service) GetUser(ctx context.Context, id int64) (*db.User, error) {\n    queries := db.New(s.pool)\n    user, err := queries.GetUser(ctx, id)\n    if err != nil {\n        return nil, fmt.Errorf(\"get user %d: %w\", id, err)\n    }\n    return &user, nil\n}\n\n// Transactions\nfunc (s *Service) CreateUserTx(ctx context.Context, email, name string) (*db.User, error) {\n    tx, err := s.pool.Begin(ctx)\n    if err != nil {\n        return nil, err\n    }\n    defer tx.Rollback(ctx)\n\n    queries := db.New(tx)\n    user, err := queries.CreateUser(ctx, db.CreateUserParams{Email: email, Name: name})\n    if err != nil {\n        return nil, err\n    }\n    return &user, tx.Commit(ctx)\n}\n```\n\nsqlc validates queries against your schema at code generation time. Typos in column names, wrong parameter types, and missing columns are all caught before runtime. Run `sqlc generate` after changing SQL files.",
+    "tags": [
+      "go",
+      "sqlc",
+      "database",
+      "postgresql",
+      "code-generation"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Go testing with httptest for HTTP handler unit tests",
+    "body": "The `httptest` package creates mock HTTP requests and records responses without starting a real server.\n\n```go\nimport (\n    \"net/http\"\n    \"net/http/httptest\"\n    \"strings\"\n    \"testing\"\n)\n\nfunc TestCreateUserHandler(t *testing.T) {\n    // Create request\n    body := strings.NewReader(`{\"name\":\"Alice\",\"email\":\"alice@example.com\"}`)\n    req := httptest.NewRequest(\"POST\", \"/api/users\", body)\n    req.Header.Set(\"Content-Type\", \"application/json\")\n\n    // Record response\n    rec := httptest.NewRecorder()\n    handleCreateUser(rec, req)\n\n    // Assert\n    if rec.Code != http.StatusCreated {\n        t.Errorf(\"status = %d, want %d\", rec.Code, http.StatusCreated)\n    }\n\n    var resp map[string]string\n    json.NewDecoder(rec.Body).Decode(&resp)\n    if resp[\"status\"] != \"created\" {\n        t.Errorf(\"body = %v, want status=created\", resp)\n    }\n}\n\n// Test against a full server (integration test)\nfunc TestAPIIntegration(t *testing.T) {\n    mux := http.NewServeMux()\n    mux.HandleFunc(\"POST /api/users\", handleCreateUser)\n    mux.HandleFunc(\"GET /api/users/{id}\", handleGetUser)\n\n    srv := httptest.NewServer(mux)\n    defer srv.Close()\n\n    // Use srv.URL as base URL\n    resp, err := http.Post(srv.URL+\"/api/users\",\n        \"application/json\",\n        strings.NewReader(`{\"name\":\"Bob\",\"email\":\"bob@test.com\"}`),\n    )\n    if err != nil {\n        t.Fatal(err)\n    }\n    defer resp.Body.Close()\n    if resp.StatusCode != http.StatusCreated {\n        t.Errorf(\"status = %d, want %d\", resp.StatusCode, http.StatusCreated)\n    }\n}\n```\n\n`httptest.NewRecorder()` captures the response in memory for unit tests. `httptest.NewServer()` starts an actual HTTP server on a random port for integration tests. Both are in the standard library \u2014 no third-party packages needed.",
+    "tags": [
+      "go",
+      "testing",
+      "httptest",
+      "handlers",
+      "snippet"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Go concurrent-safe cache with sync.Map and TTL expiry",
+    "body": "A thread-safe in-memory cache using sync.Map with time-to-live expiration.\n\n```go\ntype Cache[V any] struct {\n    data sync.Map\n    ttl  time.Duration\n}\n\ntype entry[V any] struct {\n    value     V\n    expiresAt time.Time\n}\n\nfunc NewCache[V any](ttl time.Duration) *Cache[V] {\n    c := &Cache[V]{ttl: ttl}\n    // Background cleanup every TTL interval\n    go func() {\n        ticker := time.NewTicker(ttl)\n        defer ticker.Stop()\n        for range ticker.C {\n            c.data.Range(func(key, value any) bool {\n                e := value.(entry[V])\n                if time.Now().After(e.expiresAt) {\n                    c.data.Delete(key)\n                }\n                return true\n            })\n        }\n    }()\n    return c\n}\n\nfunc (c *Cache[V]) Set(key string, value V) {\n    c.data.Store(key, entry[V]{\n        value:     value,\n        expiresAt: time.Now().Add(c.ttl),\n    })\n}\n\nfunc (c *Cache[V]) Get(key string) (V, bool) {\n    raw, ok := c.data.Load(key)\n    if !ok {\n        var zero V\n        return zero, false\n    }\n    e := raw.(entry[V])\n    if time.Now().After(e.expiresAt) {\n        c.data.Delete(key)\n        var zero V\n        return zero, false\n    }\n    return e.value, true\n}\n\nfunc (c *Cache[V]) GetOrSet(key string, fn func() (V, error)) (V, error) {\n    if val, ok := c.Get(key); ok {\n        return val, nil\n    }\n    val, err := fn()\n    if err != nil {\n        var zero V\n        return zero, err\n    }\n    c.Set(key, val)\n    return val, nil\n}\n\n// Usage\ncache := NewCache[User](5 * time.Minute)\ncache.Set(\"user:123\", user)\nif u, ok := cache.Get(\"user:123\"); ok {\n    fmt.Println(u.Name)\n}\n```\n\nFor production, consider `github.com/dgraph-io/ristretto` (concurrent cache with admission policy) or `github.com/jellydator/ttlcache` (full-featured TTL cache). sync.Map is best for read-heavy workloads with stable keys.",
+    "tags": [
+      "go",
+      "cache",
+      "sync-map",
+      "ttl",
+      "concurrency"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Go embed directive for bundling static files into binary",
+    "body": "Go 1.16's `//go:embed` directive bundles files into the compiled binary, eliminating external file dependencies.\n\n```go\nimport \"embed\"\n\n// Embed a single file as string\n//go:embed config/defaults.yaml\nvar defaultConfig string\n\n// Embed a single file as bytes\n//go:embed migrations/001_init.sql\nvar initMigration []byte\n\n// Embed entire directory tree\n//go:embed static/*\nvar staticFiles embed.FS\n\n// Embed multiple patterns\n//go:embed templates/*.html templates/*.tmpl\nvar templateFiles embed.FS\n\nfunc main() {\n    // Serve embedded static files\n    mux := http.NewServeMux()\n    mux.Handle(\"GET /static/\",\n        http.StripPrefix(\"/static/\",\n            http.FileServer(http.FS(staticFiles))))\n\n    // Parse embedded templates\n    tmpl := template.Must(template.ParseFS(templateFiles, \"templates/*.html\"))\n    tmpl.ExecuteTemplate(w, \"index.html\", data)\n\n    // Read embedded file\n    content, err := staticFiles.ReadFile(\"static/index.html\")\n    if err != nil {\n        log.Fatal(err)\n    }\n\n    // Walk embedded directory\n    fs.WalkDir(staticFiles, \".\", func(path string, d fs.DirEntry, err error) error {\n        fmt.Println(path)\n        return nil\n    })\n}\n```\n\nEmbed rules: the directive must be immediately above the variable. Only exported and unexported package-level variables are allowed (not local variables). Patterns are relative to the package directory. Hidden files (dot-prefix) and `_` prefix files are excluded by default \u2014 use `all:` prefix to include them (`//go:embed all:static`).",
+    "tags": [
+      "go",
+      "embed",
+      "static-files",
+      "binary",
+      "deployment"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Go sync.Mutex vs sync.RWMutex vs atomic \u2014 choosing the right synchronization",
+    "body": "Go provides three main synchronization primitives at different performance points.\n\n```go\nimport (\n    \"sync\"\n    \"sync/atomic\"\n)\n\n// sync.Mutex \u2014 exclusive access, simplest\ntype Counter struct {\n    mu    sync.Mutex\n    count int\n}\nfunc (c *Counter) Increment() {\n    c.mu.Lock()\n    defer c.mu.Unlock()\n    c.count++\n}\nfunc (c *Counter) Get() int {\n    c.mu.Lock()\n    defer c.mu.Unlock()\n    return c.count\n}\n\n// sync.RWMutex \u2014 multiple readers OR one writer\ntype Cache struct {\n    mu   sync.RWMutex\n    data map[string]string\n}\nfunc (c *Cache) Get(key string) string {\n    c.mu.RLock()         // multiple goroutines can read simultaneously\n    defer c.mu.RUnlock()\n    return c.data[key]\n}\nfunc (c *Cache) Set(key, val string) {\n    c.mu.Lock()          // exclusive write access\n    defer c.mu.Unlock()\n    c.data[key] = val\n}\n\n// atomic \u2014 lock-free, fastest for simple operations\nvar counter atomic.Int64\ncounter.Add(1)\nval := counter.Load()\ncounter.Store(0)\n\n// atomic.Value for larger types\nvar config atomic.Value\nconfig.Store(Config{Debug: true})\ncfg := config.Load().(Config)\n```\n\n| Primitive | Use case | Readers block? | Performance |\n|-----------|----------|---------------|-------------|\n| Mutex | Any shared state | Yes, all block | Baseline |\n| RWMutex | Read-heavy workloads | No, readers concurrent | Better for reads |\n| atomic | Counters, flags, config | No blocking | Fastest |\n\nRule of thumb: use `atomic` for simple values (counters, booleans, config swaps). Use `RWMutex` when reads vastly outnumber writes (10:1+). Use `Mutex` as the default when unsure.",
+    "tags": [
+      "go",
+      "mutex",
+      "rwmutex",
+      "atomic",
+      "synchronization"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Rust error: thread 'main' panicked at 'called unwrap on a None value'",
+    "body": "This panic occurs when calling `.unwrap()` on an `Option::None` or `.unwrap()` on a `Result::Err`. It's Rust's equivalent of a null pointer exception.\n\n```rust\n// PANIC: called `Option::unwrap()` on a `None` value\nlet v: Vec<i32> = vec![];\nlet first = v.first().unwrap(); // None \u2014 panics!\n\n// PANIC: called `Result::unwrap()` on an `Err` value\nlet content = std::fs::read_to_string(\"missing.txt\").unwrap();\n\n// FIX: handle the None/Err case\nlet first = v.first().unwrap_or(&0);\nlet first = v.first().copied().unwrap_or_default();\n\n// FIX: pattern match\nmatch v.first() {\n    Some(val) => println!(\"first: {}\", val),\n    None => println!(\"empty\"),\n}\n\n// FIX: if let\nif let Some(val) = v.first() {\n    println!(\"first: {}\", val);\n}\n\n// FIX: propagate with ?\nfn read_config() -> Result<Config, Error> {\n    let content = std::fs::read_to_string(\"config.toml\")?; // returns Err if fails\n    Ok(toml::from_str(&content)?)\n}\n```\n\nUse `.unwrap()` only in tests, examples, or when you've logically proven the value exists. In production code, use `?`, `.unwrap_or()`, `.unwrap_or_default()`, `.unwrap_or_else()`, or pattern matching. For a better panic message, use `.expect(\"descriptive message\")` instead of `.unwrap()`.",
+    "tags": [
+      "rust",
+      "unwrap",
+      "option",
+      "result",
+      "panic"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Rust error: temporary value dropped while borrowed \u2014 reference to local variable",
+    "body": "This error occurs when you create a temporary value and try to borrow it in a way that outlives the temporary.\n\n```rust\n// ERROR: temporary value dropped while borrowed\nfn get_name() -> &str {\n    let name = String::from(\"Alice\");\n    &name // ERROR: name is dropped at end of function\n}\n\n// ERROR: common with format!()\nfn get_greeting(name: &str) -> &str {\n    let s = format!(\"Hello, {}!\", name);\n    &s // ERROR: s is temporary, dropped here\n}\n\n// FIX: return owned value\nfn get_name() -> String {\n    String::from(\"Alice\")\n}\n\nfn get_greeting(name: &str) -> String {\n    format!(\"Hello, {}!\", name)\n}\n\n// ERROR: temporary in let binding\nlet s: &str = &String::from(\"hello\"); // ERROR in some contexts\n// FIX: bind the owned value first\nlet owned = String::from(\"hello\");\nlet s: &str = &owned; // OK: owned lives long enough\n\n// ERROR: temporary in match\nmatch &String::from(\"hello\") { // temporary dropped after match\n    s => println!(\"{}\", s),    // sometimes works, sometimes doesn't\n}\n```\n\nThe rule: a reference cannot outlive the value it points to. If the value is a temporary (created inline), it's dropped at the end of the statement. Bind temporary values to a named variable to extend their lifetime, or return owned types instead of references.",
+    "tags": [
+      "rust",
+      "lifetimes",
+      "temporary",
+      "drop",
+      "error"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "community",
+    "title": "Go error: slice bounds out of range \u2014 slicing beyond capacity",
+    "body": "Go panics when you slice beyond the current length (for reads) or capacity (for extending). This often happens when processing input of unexpected size.\n\n```go\n// PANIC: slice bounds out of range [:5] with length 3\ns := []int{1, 2, 3}\nsub := s[:5] // panic!\n\n// PANIC: runtime error when processing API response\nfunc getFirstN(items []string, n int) []string {\n    return items[:n] // panics if len(items) < n\n}\n\n// FIX: bounds check\nfunc getFirstN(items []string, n int) []string {\n    if n > len(items) {\n        n = len(items)\n    }\n    return items[:n]\n}\n\n// Using min() (Go 1.21+)\nfunc getFirstN(items []string, n int) []string {\n    return items[:min(n, len(items))]\n}\n\n// Common pattern: safe substring\nfunc truncate(s string, maxLen int) string {\n    if len(s) <= maxLen {\n        return s\n    }\n    // Be careful with Unicode!\n    runes := []rune(s)\n    if len(runes) <= maxLen {\n        return s\n    }\n    return string(runes[:maxLen]) + \"...\"\n}\n```\n\nRemember: `s[low:high]` panics if `high > len(s)` for reads. For appending to sub-slices, the limit is capacity, not length. Always validate indices from external input before slicing.",
+    "tags": [
+      "go",
+      "slices",
+      "bounds-check",
+      "panic",
+      "error"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Rust async trait methods require async-trait crate or RPITIT (Rust 1.75+)",
+    "body": "Async methods in traits were not directly supported until Rust 1.75. Older code uses the `async-trait` crate, which has performance implications.\n\n```rust\n// Before Rust 1.75: use async-trait crate\nuse async_trait::async_trait;\n\n#[async_trait]\ntrait Repository {\n    async fn find_by_id(&self, id: i64) -> Result<User, Error>;\n}\n\n#[async_trait]\nimpl Repository for PostgresRepo {\n    async fn find_by_id(&self, id: i64) -> Result<User, Error> {\n        sqlx::query_as!(User, \"SELECT * FROM users WHERE id = $1\", id)\n            .fetch_one(&self.pool)\n            .await\n    }\n}\n// async-trait uses Box<dyn Future> \u2014 heap allocation per call\n\n// Rust 1.75+: native async trait methods (RPITIT)\ntrait Repository {\n    fn find_by_id(&self, id: i64) -> impl Future<Output = Result<User, Error>> + Send;\n}\n\n// Rust 1.80+: direct async fn in trait\ntrait Repository {\n    async fn find_by_id(&self, id: i64) -> Result<User, Error>;\n}\n\nimpl Repository for PostgresRepo {\n    async fn find_by_id(&self, id: i64) -> Result<User, Error> {\n        // ... zero-cost, no Box allocation\n    }\n}\n```\n\nRust 1.75+ RPITIT (return-position impl Trait in traits) eliminates the need for `async-trait` in most cases. The native version avoids heap allocation. However, native async trait methods are not object-safe \u2014 you still need `async-trait` if you need `dyn Trait`.",
+    "tags": [
+      "rust",
+      "async",
+      "traits",
+      "async-trait",
+      "rpitit"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Rust From and Into trait conversions \u2014 implement From, get Into free",
+    "body": "Implementing `From<T>` automatically gives you `Into<U>`. Implementing `Into` directly is almost never correct.\n\n```rust\nstruct Celsius(f64);\nstruct Fahrenheit(f64);\n\n// Implement From \u2014 standard convention\nimpl From<Celsius> for Fahrenheit {\n    fn from(c: Celsius) -> Self {\n        Fahrenheit(c.0 * 9.0 / 5.0 + 32.0)\n    }\n}\n\n// You get Into for free\nlet c = Celsius(100.0);\nlet f: Fahrenheit = c.into();       // works via blanket impl\nlet f = Fahrenheit::from(Celsius(100.0)); // also works\n\n// Use Into in function bounds for flexibility\nfn set_temperature(temp: impl Into<Fahrenheit>) {\n    let f: Fahrenheit = temp.into();\n}\nset_temperature(Celsius(37.0));    // auto-converts\nset_temperature(Fahrenheit(98.6)); // works directly (From<Self>)\n\n// GOTCHA: From<T> for T is always implemented (identity)\n// So Fahrenheit::from(Fahrenheit(98.6)) works too\n\n// TryFrom for fallible conversions\nimpl TryFrom<&str> for Celsius {\n    type Error = ParseFloatError;\n    fn try_from(s: &str) -> Result<Self, Self::Error> {\n        Ok(Celsius(s.parse()?))\n    }\n}\nlet c: Celsius = \"37.5\".try_into()?;\n```\n\nAlways implement `From`, never `Into` directly. The standard library provides a blanket `impl<T, U> Into<U> for T where U: From<T>`. For conversions that can fail, implement `TryFrom` instead of `From`.",
+    "tags": [
+      "rust",
+      "from",
+      "into",
+      "conversions",
+      "traits"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "community",
+    "title": "Go defer evaluates arguments immediately, not at execution time",
+    "body": "Deferred function arguments are evaluated at the defer statement, not when the deferred function executes. This catches people who expect lazy evaluation.\n\n```go\n// SURPRISE: prints 0, not 1\nfunc main() {\n    x := 0\n    defer fmt.Println(x) // x is evaluated NOW (x = 0)\n    x = 1\n}\n// Output: 0\n\n// FIX 1: use a closure to capture the variable\nfunc main() {\n    x := 0\n    defer func() {\n        fmt.Println(x) // closure captures x by reference\n    }()\n    x = 1\n}\n// Output: 1\n\n// FIX 2: use named return values\nfunc getResult() (result int) {\n    defer func() {\n        result *= 2 // modifies named return value\n    }()\n    return 5\n}\n// Returns 10, not 5\n\n// Common mistake: logging execution time\nstart := time.Now()\ndefer fmt.Println(time.Since(start)) // evaluated NOW \u2014 always ~0\n// FIX:\ndefer func() {\n    fmt.Println(time.Since(start)) // evaluated at function exit\n}()\n```\n\nThis behavior is specified in the Go spec: \"the function value and parameters are evaluated as usual\" at the defer statement. Only the execution is deferred. Wrap in a closure for late-binding behavior.",
+    "tags": [
+      "go",
+      "defer",
+      "evaluation",
+      "closures",
+      "gotcha"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "community",
+    "title": "Go string is immutable bytes \u2014 len() returns bytes, not characters",
+    "body": "Go strings are immutable byte slices. `len()` returns bytes, not Unicode characters. Indexing gives you bytes, not runes.\n\n```go\ns := \"Hello, \u4e16\u754c\" // Chinese characters are multi-byte UTF-8\n\nfmt.Println(len(s))        // 13 bytes, NOT 9 characters\nfmt.Println(s[7])          // 228 (a byte), NOT '\u4e16'\nfmt.Println(s[7:10])       // \"\u4e16\" (3 bytes for this character)\n\n// Iterate by rune (character)\nfor i, r := range s {\n    fmt.Printf(\"%d: %c (%d bytes)\\n\", i, r, utf8.RuneLen(r))\n}\n// 0: H (1), 1: e (1), ..., 7: \u4e16 (3), 10: \u754c (3)\n\n// Count characters, not bytes\ncharCount := utf8.RuneCountInString(s) // 9\n\n// Safe substring by character\nrunes := []rune(s)\nfirst5 := string(runes[:5]) // \"Hello\" \u2014 correct\n// s[:5] also happens to work here, but only because first 5 chars are ASCII\n\n// GOTCHA: truncating mid-character produces invalid UTF-8\nbad := s[:8] // cuts '\u4e16' in the middle \u2014 invalid UTF-8\n```\n\nAlways use `[]rune` conversion or `utf8.RuneCountInString()` when working with Unicode. The `range` loop over a string already iterates by rune. For heavy string processing, the `strings` and `unicode/utf8` packages handle multi-byte characters correctly.",
+    "tags": [
+      "go",
+      "strings",
+      "unicode",
+      "utf8",
+      "gotcha"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Rust Drop order matters \u2014 struct fields drop in declaration order",
+    "body": "Rust drops struct fields in the order they are declared, and local variables in reverse order of declaration. This matters when fields reference each other.\n\n```rust\nstruct Connection {\n    pool: Pool,      // dropped first\n    session: Session, // dropped second\n}\n// If session depends on pool, this is wrong!\n// session is dropped AFTER pool, but session might need pool during drop\n\n// FIX: reorder fields so dependencies are dropped first\nstruct Connection {\n    session: Session, // dropped first (depends on pool)\n    pool: Pool,       // dropped second\n}\n\n// Local variables drop in reverse declaration order\nfn example() {\n    let a = String::from(\"first\");  // dropped last\n    let b = String::from(\"second\"); // dropped first\n}\n\n// ManuallyDrop for explicit control\nuse std::mem::ManuallyDrop;\nstruct Wrapper {\n    // Won't be dropped automatically \u2014 you must drop it manually\n    inner: ManuallyDrop<Resource>,\n}\n\nimpl Drop for Wrapper {\n    fn drop(&mut self) {\n        // Explicit cleanup order\n        println!(\"cleaning up\");\n        unsafe { ManuallyDrop::drop(&mut self.inner); }\n    }\n}\n```\n\nMost of the time drop order doesn't matter. But for types with `Drop` implementations that interact (database connections, file handles, lock guards), field declaration order determines destruction order. Use `ManuallyDrop` or `Option::take()` for explicit control.",
+    "tags": [
+      "rust",
+      "drop",
+      "destructors",
+      "ordering",
+      "memory"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Rust enum-based state machines for protocol and workflow logic",
+    "body": "Rust enums with data model state machines naturally. Each variant carries only the data relevant to that state, and pattern matching ensures all states are handled.\n\n```rust\n#[derive(Debug)]\nenum ConnectionState {\n    Disconnected,\n    Connecting { attempt: u32, started_at: Instant },\n    Connected { session_id: String, latency_ms: u64 },\n    Reconnecting { previous_session: String, attempt: u32 },\n}\n\nimpl ConnectionState {\n    fn handle_event(self, event: Event) -> Self {\n        match (self, event) {\n            (ConnectionState::Disconnected, Event::Connect) => {\n                ConnectionState::Connecting {\n                    attempt: 1,\n                    started_at: Instant::now(),\n                }\n            }\n            (ConnectionState::Connecting { attempt, .. }, Event::Success(session_id)) => {\n                ConnectionState::Connected {\n                    session_id,\n                    latency_ms: 0,\n                }\n            }\n            (ConnectionState::Connecting { attempt, .. }, Event::Failure) if attempt < 3 => {\n                ConnectionState::Connecting {\n                    attempt: attempt + 1,\n                    started_at: Instant::now(),\n                }\n            }\n            (ConnectionState::Connecting { .. }, Event::Failure) => {\n                ConnectionState::Disconnected\n            }\n            (ConnectionState::Connected { session_id, .. }, Event::Disconnect) => {\n                ConnectionState::Reconnecting {\n                    previous_session: session_id,\n                    attempt: 1,\n                }\n            }\n            (state, _) => state, // ignore invalid transitions\n        }\n    }\n}\n```\n\nThis pattern is superior to boolean flags or integer state codes because: invalid states are unrepresentable, each state carries only its relevant data, and the compiler forces you to handle all state/event combinations. The `(self, event)` tuple match makes transitions explicit and readable.",
+    "tags": [
+      "rust",
+      "enums",
+      "state-machine",
+      "pattern-matching",
+      "design-patterns"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Rust reqwest HTTP client with retry and timeout patterns",
+    "body": "Reqwest is the standard HTTP client for Rust. Production usage needs timeouts, retries, and connection pooling.\n\n```rust\nuse reqwest::{Client, StatusCode};\nuse serde::{Deserialize, Serialize};\nuse std::time::Duration;\n\n#[derive(Deserialize, Debug)]\nstruct ApiResponse {\n    data: Vec<Item>,\n    total: usize,\n}\n\n// Create a reusable client (connection pooling)\nfn build_client() -> Client {\n    Client::builder()\n        .timeout(Duration::from_secs(10))\n        .connect_timeout(Duration::from_secs(5))\n        .pool_max_idle_per_host(10)\n        .default_headers({\n            let mut h = reqwest::header::HeaderMap::new();\n            h.insert(\"User-Agent\", \"my-app/1.0\".parse().unwrap());\n            h\n        })\n        .build()\n        .expect(\"failed to build HTTP client\")\n}\n\nasync fn fetch_with_retry(client: &Client, url: &str, max_retries: u32) -> anyhow::Result<ApiResponse> {\n    let mut last_err = None;\n    for attempt in 0..=max_retries {\n        if attempt > 0 {\n            tokio::time::sleep(Duration::from_millis(100 * 2u64.pow(attempt - 1))).await;\n        }\n        match client.get(url).send().await {\n            Ok(resp) if resp.status().is_success() => {\n                return resp.json::<ApiResponse>().await.map_err(Into::into);\n            }\n            Ok(resp) if resp.status() == StatusCode::TOO_MANY_REQUESTS => {\n                last_err = Some(anyhow::anyhow!(\"rate limited\"));\n                continue;\n            }\n            Ok(resp) => {\n                return Err(anyhow::anyhow!(\"HTTP {}\", resp.status()));\n            }\n            Err(e) if e.is_timeout() || e.is_connect() => {\n                last_err = Some(e.into());\n                continue;\n            }\n            Err(e) => return Err(e.into()),\n        }\n    }\n    Err(last_err.unwrap_or_else(|| anyhow::anyhow!(\"max retries exceeded\")))\n}\n```\n\nAlways reuse the `Client` instance \u2014 it manages a connection pool internally. Creating a new `Client` per request wastes connections. Use exponential backoff for retries. Only retry on transient errors (timeouts, 429, 503), not on 4xx client errors.",
+    "tags": [
+      "rust",
+      "reqwest",
+      "http-client",
+      "retry",
+      "async"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Go context values for request-scoped data in HTTP middleware",
+    "body": "Context values carry request-scoped data through the handler chain. Use custom key types to avoid collisions.\n\n```go\n// Define typed context keys \u2014 never use strings or built-in types\ntype contextKey string\n\nconst (\n    userKey    contextKey = \"user\"\n    requestKey contextKey = \"requestID\"\n)\n\n// Middleware sets values\nfunc AuthMiddleware(next http.Handler) http.Handler {\n    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n        token := r.Header.Get(\"Authorization\")\n        user, err := validateToken(strings.TrimPrefix(token, \"Bearer \"))\n        if err != nil {\n            http.Error(w, \"unauthorized\", 401)\n            return\n        }\n        ctx := context.WithValue(r.Context(), userKey, user)\n        next.ServeHTTP(w, r.WithContext(ctx))\n    })\n}\n\nfunc RequestIDMiddleware(next http.Handler) http.Handler {\n    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n        id := r.Header.Get(\"X-Request-ID\")\n        if id == \"\" {\n            id = uuid.NewString()\n        }\n        ctx := context.WithValue(r.Context(), requestKey, id)\n        w.Header().Set(\"X-Request-ID\", id)\n        next.ServeHTTP(w, r.WithContext(ctx))\n    })\n}\n\n// Type-safe helper functions\nfunc UserFromContext(ctx context.Context) (*User, bool) {\n    user, ok := ctx.Value(userKey).(*User)\n    return user, ok\n}\n\nfunc RequestIDFromContext(ctx context.Context) string {\n    if id, ok := ctx.Value(requestKey).(string); ok {\n        return id\n    }\n    return \"unknown\"\n}\n\n// Handler reads values\nfunc handleProfile(w http.ResponseWriter, r *http.Request) {\n    user, ok := UserFromContext(r.Context())\n    if !ok {\n        http.Error(w, \"no user in context\", 500)\n        return\n    }\n    slog.Info(\"profile viewed\",\n        \"user\", user.Email,\n        \"request_id\", RequestIDFromContext(r.Context()),\n    )\n}\n```\n\nNever use context values for passing function parameters \u2014 only for request-scoped, cross-cutting data (user info, trace IDs, logger). Use a custom unexported type for keys to prevent collisions with other packages. Always provide helper functions for type-safe retrieval.",
+    "tags": [
+      "go",
+      "context",
+      "values",
+      "middleware",
+      "request-scoped"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Rust turbofish required with collect and parse when type cannot be inferred",
+    "body": "The turbofish operator (`::<>`) is required when the compiler cannot determine a generic type from context. This is most common with `collect()` and `parse()`.\n\n```rust\n// ERROR: type annotations needed\nlet numbers = \"1,2,3\".split(',').collect(); // collect into what?\n\n// FIX: turbofish on collect\nlet numbers = \"1,2,3\".split(',').collect::<Vec<&str>>();\n\n// FIX: type annotation on binding\nlet numbers: Vec<&str> = \"1,2,3\".split(',').collect();\n\n// Double turbofish for nested generics\nlet parsed: Result<Vec<i32>, _> = \"1,2,3\"\n    .split(',')\n    .map(|s| s.parse::<i32>()) // turbofish on parse\n    .collect();                  // type inferred from binding\n\n// Turbofish on function calls\nlet default = <Vec<i32>>::default(); // default for Vec<i32>\nlet default = Vec::<i32>::new();      // equivalent\n\n// HashMap needs both key and value types\nuse std::collections::HashMap;\nlet map = vec![(\"a\", 1), (\"b\", 2)]\n    .into_iter()\n    .collect::<HashMap<&str, i32>>();\n\n// Use _ to let compiler infer partial types\nlet map: HashMap<_, _> = vec![(\"a\", 1)].into_iter().collect();\n```\n\nThe turbofish name comes from `::<>` looking like a fish. It's needed because Rust resolves generics through local type inference \u2014 if the return type doesn't flow backward to resolve the generic, you must specify it explicitly.",
+    "tags": [
+      "rust",
+      "turbofish",
+      "type-inference",
+      "collect",
+      "generics"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "community",
+    "title": "Go struct embedding promotes methods \u2014 can cause unexpected interface satisfaction",
+    "body": "Embedding a struct promotes all its methods to the outer struct. This can accidentally make a type satisfy an interface you didn't intend.\n\n```go\ntype Logger struct{}\nfunc (l Logger) Write(p []byte) (int, error) {\n    fmt.Print(string(p))\n    return len(p), nil\n}\n\ntype MyService struct {\n    Logger // embedded \u2014 promotes Write method\n    // ...\n}\n\n// SURPRISE: MyService now satisfies io.Writer!\nvar w io.Writer = MyService{} // compiles!\n\n// This can cause bugs when a function accepts io.Writer\n// and your service gets passed where a Writer was expected\n\n// Also: embedded mutex promotes Lock/Unlock to the outer type\ntype Cache struct {\n    sync.Mutex // promotes Lock() and Unlock() as PUBLIC methods!\n    data map[string]int\n}\nc := Cache{}\nc.Lock()   // callers can lock your cache externally!\nc.Unlock()\n\n// FIX: use a named field instead of embedding\ntype Cache struct {\n    mu   sync.Mutex // unexported named field \u2014 Lock/Unlock stay private\n    data map[string]int\n}\n```\n\nEmbed for intentional promotion (extending behavior). Use named fields when you want the embedded type's methods to stay internal. Be especially careful embedding `sync.Mutex` \u2014 always use a named unexported field `mu sync.Mutex` to keep locking private.",
+    "tags": [
+      "go",
+      "embedding",
+      "interfaces",
+      "promotion",
+      "gotcha"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "community",
+    "title": "Rust error: conflicting implementations of trait \u2014 orphan rules",
+    "body": "Rust's orphan rule prevents implementing a foreign trait for a foreign type. This ensures coherence \u2014 each trait implementation is unique.\n\n```rust\n// ERROR: conflicting implementations\n// You cannot implement Display for Vec<T> \u2014 both are from std\nimpl std::fmt::Display for Vec<i32> {\n    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {\n        write!(f, \"{:?}\", self)\n    }\n}\n// error: only traits defined in the current crate can be implemented for types defined outside\n\n// FIX: newtype wrapper\nstruct MyVec(Vec<i32>);\n\nimpl std::fmt::Display for MyVec {\n    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {\n        let items: Vec<String> = self.0.iter().map(|x| x.to_string()).collect();\n        write!(f, \"[{}]\", items.join(\", \"))\n    }\n}\n\n// The rule: at least one of {trait, type} must be local to your crate\n// OK: local trait + foreign type\ntrait MyTrait {}\nimpl MyTrait for Vec<i32> {} // fine\n\n// OK: foreign trait + local type\nstruct MyType;\nimpl std::fmt::Display for MyType {} // fine\n\n// NOT OK: foreign trait + foreign type\n// impl std::fmt::Display for Vec<i32> {} // error\n```\n\nThe orphan rule prevents two crates from creating conflicting implementations of the same trait for the same type. The newtype pattern is the standard workaround. Use `derive_more` crate to auto-derive forwarding implementations for newtypes.",
+    "tags": [
+      "rust",
+      "orphan-rule",
+      "traits",
+      "coherence",
+      "error"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "community",
+    "title": "Go middleware pattern for gRPC interceptors",
+    "body": "gRPC uses interceptors (the equivalent of HTTP middleware) for cross-cutting concerns like logging, auth, and metrics.\n\n```go\nimport (\n    \"google.golang.org/grpc\"\n    \"google.golang.org/grpc/codes\"\n    \"google.golang.org/grpc/status\"\n)\n\n// Unary interceptor (request-response)\nfunc LoggingInterceptor(\n    ctx context.Context,\n    req any,\n    info *grpc.UnaryServerInfo,\n    handler grpc.UnaryHandler,\n) (any, error) {\n    start := time.Now()\n    resp, err := handler(ctx, req)\n    duration := time.Since(start)\n\n    code := codes.OK\n    if err != nil {\n        code = status.Code(err)\n    }\n    slog.Info(\"grpc request\",\n        \"method\", info.FullMethod,\n        \"code\", code,\n        \"duration\", duration,\n    )\n    return resp, err\n}\n\n// Auth interceptor\nfunc AuthInterceptor(\n    ctx context.Context,\n    req any,\n    info *grpc.UnaryServerInfo,\n    handler grpc.UnaryHandler,\n) (any, error) {\n    md, ok := metadata.FromIncomingContext(ctx)\n    if !ok {\n        return nil, status.Error(codes.Unauthenticated, \"no metadata\")\n    }\n    tokens := md.Get(\"authorization\")\n    if len(tokens) == 0 {\n        return nil, status.Error(codes.Unauthenticated, \"no token\")\n    }\n    user, err := validateToken(tokens[0])\n    if err != nil {\n        return nil, status.Error(codes.Unauthenticated, \"invalid token\")\n    }\n    ctx = context.WithValue(ctx, userKey, user)\n    return handler(ctx, req)\n}\n\n// Chain interceptors\nsrv := grpc.NewServer(\n    grpc.ChainUnaryInterceptor(\n        LoggingInterceptor,\n        AuthInterceptor,\n    ),\n)\n```\n\ngRPC interceptors follow the same pattern as HTTP middleware: wrap the handler, add behavior before/after. Use `ChainUnaryInterceptor` for request-response RPCs and `ChainStreamInterceptor` for streaming RPCs. The `grpc-middleware` package provides pre-built interceptors for common needs.",
+    "tags": [
+      "go",
+      "grpc",
+      "interceptors",
+      "middleware",
+      "pattern"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "community",
+    "title": "Rust Dockerfile for minimal production container image",
+    "body": "A multi-stage Dockerfile produces a minimal Rust binary without build tools in the final image.\n\n```dockerfile\n# Stage 1: Build\nFROM rust:1.77-slim AS builder\n\nWORKDIR /app\n\n# Cache dependencies \u2014 copy manifests first\nCOPY Cargo.toml Cargo.lock ./\nRUN mkdir src && echo 'fn main() {}' > src/main.rs\nRUN cargo build --release && rm -rf src\n\n# Build actual application\nCOPY src/ src/\nRUN touch src/main.rs && cargo build --release\n\n# Stage 2: Runtime\nFROM debian:bookworm-slim\n\nRUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*\n\nCOPY --from=builder /app/target/release/myapp /usr/local/bin/myapp\n\n# Non-root user\nRUN useradd -r -s /bin/false appuser\nUSER appuser\n\nEXPOSE 8080\nENTRYPOINT [\"myapp\"]\n```\n\n```bash\n# For even smaller images, use musl for static linking\nFROM rust:1.77-slim AS builder\nRUN rustup target add x86_64-unknown-linux-musl\nRUN cargo build --release --target x86_64-unknown-linux-musl\n\n# Then use scratch or alpine\nFROM scratch\nCOPY --from=builder /app/target/x86_64-unknown-linux-musl/release/myapp /myapp\nENTRYPOINT [\"/myapp\"]\n# Final image: ~5-15MB\n```\n\nThe dependency caching trick (copy Cargo.toml first, fake build, then real build) avoids re-downloading crates on every code change. The musl target produces a fully static binary that runs on `scratch` \u2014 no OS needed in the container.",
+    "tags": [
+      "rust",
+      "docker",
+      "container",
+      "production",
+      "deployment"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "community",
+    "title": "Go testing libraries \u2014 standard library vs testify vs is",
+    "body": "Go's testing philosophy emphasizes the standard library, but assertion libraries reduce boilerplate.\n\n```go\n// Standard library \u2014 verbose but no dependencies\nfunc TestAdd(t *testing.T) {\n    got := Add(2, 3)\n    want := 5\n    if got != want {\n        t.Errorf(\"Add(2, 3) = %d, want %d\", got, want)\n    }\n}\n\n// testify \u2014 most popular, rich assertions\nimport \"github.com/stretchr/testify/assert\"\nfunc TestAdd(t *testing.T) {\n    assert.Equal(t, 5, Add(2, 3))\n    assert.NotNil(t, result)\n    assert.Contains(t, \"hello world\", \"hello\")\n    assert.Len(t, items, 3)\n    assert.ErrorIs(t, err, ErrNotFound)\n}\n\n// testify/require \u2014 stops test on first failure\nimport \"github.com/stretchr/testify/require\"\nfunc TestWorkflow(t *testing.T) {\n    user, err := createUser(\"alice\")\n    require.NoError(t, err)  // stops here if error\n    require.NotNil(t, user)\n    assert.Equal(t, \"alice\", user.Name) // continues on failure\n}\n\n// testify/mock \u2014 interface mocking\ntype MockDB struct { mock.Mock }\nfunc (m *MockDB) GetUser(id int) (*User, error) {\n    args := m.Called(id)\n    return args.Get(0).(*User), args.Error(1)\n}\n```\n\n| Feature | stdlib | testify | is |\n|---------|--------|---------|----|\n| Dependencies | None | ~5 deps | 0 deps |\n| Assertion style | Manual if/t.Error | assert.Equal | is.Equal |\n| Mocking | Manual structs | mock.Mock | Not included |\n| Adoption | Universal | Most popular | Minimal |\n\nMany Go teams use stdlib for simple tests and testify for complex assertions. The `require` package (fail-fast) is useful for setup steps where subsequent assertions would be meaningless.",
+    "tags": [
+      "go",
+      "testing",
+      "testify",
+      "assertions",
+      "comparison"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Rust Deref coercion \u2014 automatic dereferencing hides complexity",
+    "body": "Rust automatically dereferences through `Deref` trait implementations, which can hide what's actually happening.\n\n```rust\n// String -> &str via Deref\nfn takes_str(s: &str) { println!(\"{}\", s); }\n\nlet s = String::from(\"hello\");\ntakes_str(&s); // &String automatically coerced to &str via Deref\n\n// Multiple levels of Deref\nlet boxed: Box<String> = Box::new(String::from(\"hello\"));\ntakes_str(&boxed); // Box<String> -> String -> &str\n\n// Vec<T> -> &[T] via Deref\nfn takes_slice(s: &[i32]) { println!(\"{:?}\", s); }\nlet v = vec![1, 2, 3];\ntakes_slice(&v); // &Vec<i32> coerced to &[i32]\n\n// GOTCHA: method resolution through Deref can be surprising\nlet s = String::from(\"hello\");\ns.len(); // calls str::len() through Deref, not String::len()\n\n// GOTCHA: Deref coercion only works for references\nlet s = String::from(\"hello\");\n// let x: &str = s; // ERROR \u2014 not a reference coercion\nlet x: &str = &s;   // OK \u2014 Deref coercion through &\n```\n\nDeref coercion makes Rust ergonomic \u2014 you can pass `&String` where `&str` is expected, `&Vec<T>` where `&[T]` is expected. But it can make method resolution confusing when both the wrapper and inner type have methods with the same name. Use explicit `(*val)` or `val.as_str()` when clarity matters.",
+    "tags": [
+      "rust",
+      "deref",
+      "coercion",
+      "smart-pointers",
+      "ergonomics"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "community",
+    "title": "Go error: cannot use type as type in channel send \u2014 directional channels",
+    "body": "Go channels can be directional \u2014 send-only or receive-only. Passing the wrong direction to a function causes a compile error.\n\n```go\n// Bidirectional channel\nch := make(chan int)\n\n// Send-only channel\nfunc producer(ch chan<- int) {\n    ch <- 42\n    // val := <-ch // ERROR: cannot receive from send-only channel\n}\n\n// Receive-only channel\nfunc consumer(ch <-chan int) {\n    val := <-ch\n    // ch <- 1 // ERROR: cannot send to receive-only channel\n}\n\n// Bidirectional converts to directional implicitly\nch := make(chan int)\ngo producer(ch) // chan int -> chan<- int: OK\ngo consumer(ch) // chan int -> <-chan int: OK\n\n// But directional cannot convert back to bidirectional\nfunc broken(sendOnly chan<- int) {\n    // ch := (chan int)(sendOnly) // ERROR: cannot convert\n}\n\n// Common pattern: function returns receive-only channel\nfunc generate(nums ...int) <-chan int {\n    out := make(chan int)\n    go func() {\n        defer close(out)\n        for _, n := range nums {\n            out <- n\n        }\n    }()\n    return out // returns as receive-only\n}\n\nfor val := range generate(1, 2, 3) {\n    fmt.Println(val)\n}\n```\n\nDirectional channels enforce data flow at compile time. Return `<-chan T` from producer functions and accept `chan<- T` in consumer functions. This makes the API self-documenting and prevents misuse.",
+    "tags": [
+      "go",
+      "channels",
+      "directional",
+      "type-safety",
+      "error"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Go HTTP response body must be closed \u2014 even on non-200 responses",
+    "body": "Failing to close `resp.Body` leaks TCP connections. The connection cannot be reused by the HTTP client pool, eventually exhausting file descriptors.\n\n```go\n// BUG: body not closed on early return\nresp, err := http.Get(url)\nif err != nil {\n    return err\n}\nif resp.StatusCode != 200 {\n    return fmt.Errorf(\"status %d\", resp.StatusCode)\n    // LEAKED: resp.Body not closed!\n}\ndefer resp.Body.Close()\n\n// FIX: always defer close immediately after error check\nresp, err := http.Get(url)\nif err != nil {\n    return err\n}\ndefer resp.Body.Close() // close regardless of status code\n\nif resp.StatusCode != 200 {\n    body, _ := io.ReadAll(resp.Body)\n    return fmt.Errorf(\"status %d: %s\", resp.StatusCode, body)\n}\n\n// ALSO: must drain the body for connection reuse\n// Even if you don't need the body:\ndefer func() {\n    io.Copy(io.Discard, resp.Body) // drain remaining bytes\n    resp.Body.Close()\n}()\n\n// Or use the helper pattern:\nfunc drainAndClose(body io.ReadCloser) {\n    io.Copy(io.Discard, body)\n    body.Close()\n}\ndefer drainAndClose(resp.Body)\n```\n\nThree rules: (1) always close the body, (2) close it even on non-200 status codes, (3) drain unread bytes before closing so the connection returns to the pool. Unclosed bodies manifest as \"too many open files\" or connection timeout errors under load.",
+    "tags": [
+      "go",
+      "http",
+      "response-body",
+      "resource-leak",
+      "gotcha"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "community",
+    "title": "Rust enum dispatch \u2014 avoiding Box<dyn Trait> for known type sets",
+    "body": "When you know all concrete types at compile time, an enum dispatch avoids the heap allocation and vtable lookup of `Box<dyn Trait>`.\n\n```rust\n// Dynamic dispatch \u2014 heap allocation, vtable\ntrait Shape {\n    fn area(&self) -> f64;\n}\n\nstruct Circle { radius: f64 }\nstruct Rectangle { width: f64, height: f64 }\n\nimpl Shape for Circle {\n    fn area(&self) -> f64 { std::f64::consts::PI * self.radius * self.radius }\n}\nimpl Shape for Rectangle {\n    fn area(&self) -> f64 { self.width * self.height }\n}\n\n// With dyn \u2014 heap allocated\nlet shapes: Vec<Box<dyn Shape>> = vec![\n    Box::new(Circle { radius: 5.0 }),\n    Box::new(Rectangle { width: 3.0, height: 4.0 }),\n];\n\n// Enum dispatch \u2014 stack allocated, no vtable\nenum AnyShape {\n    Circle(Circle),\n    Rectangle(Rectangle),\n}\n\nimpl AnyShape {\n    fn area(&self) -> f64 {\n        match self {\n            AnyShape::Circle(c) => c.area(),\n            AnyShape::Rectangle(r) => r.area(),\n        }\n    }\n}\n\nlet shapes: Vec<AnyShape> = vec![\n    AnyShape::Circle(Circle { radius: 5.0 }),\n    AnyShape::Rectangle(Rectangle { width: 3.0, height: 4.0 }),\n];\n// No heap allocation per element, better cache locality\n```\n\nEnum dispatch is faster (no indirection, better cache locality) but requires knowing all types at compile time. Use `dyn Trait` when types are open-ended (plugins, callbacks from user code). Use enum dispatch for closed type sets (AST nodes, protocol messages).",
+    "tags": [
+      "rust",
+      "enum-dispatch",
+      "performance",
+      "dynamic-dispatch",
+      "pattern"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "community",
+    "title": "Go error: assignment to entry in nil map \u2014 must initialize before use",
+    "body": "Unlike slices, which work with nil (append to nil slice is fine), maps must be initialized before writing to them.\n\n```go\n// PANIC: assignment to entry in nil map\nvar m map[string]int\nm[\"key\"] = 1 // panic!\n\n// Reading from nil map is safe (returns zero value)\nvar m map[string]int\nv := m[\"key\"]     // v = 0, no panic\n_, ok := m[\"key\"] // ok = false, no panic\n\n// MUST initialize before writing\nm := make(map[string]int)\nm[\"key\"] = 1 // fine\n\n// Or with literal\nm := map[string]int{\"key\": 1}\n\n// Common bug in struct initialization\ntype Stats struct {\n    Counts map[string]int\n}\n\ns := Stats{} // Counts is nil!\ns.Counts[\"page\"] = 1 // PANIC\n\n// FIX: constructor\nfunc NewStats() *Stats {\n    return &Stats{\n        Counts: make(map[string]int),\n    }\n}\n\n// Or initialize lazily\nfunc (s *Stats) Increment(key string) {\n    if s.Counts == nil {\n        s.Counts = make(map[string]int)\n    }\n    s.Counts[key]++\n}\n```\n\nAlways initialize maps in constructors or before first write. This is one of Go's most common nil panics, especially with nested structs containing map fields. The asymmetry (nil read is safe, nil write panics) is by design \u2014 reads return the zero value, but writes need allocated memory.",
+    "tags": [
+      "go",
+      "maps",
+      "nil",
+      "initialization",
+      "panic"
+    ]
+  }
+]

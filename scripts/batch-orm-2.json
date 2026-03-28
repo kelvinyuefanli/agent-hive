@@ -1,0 +1,590 @@
+[
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Drizzle infers column types differently than Prisma for JSON fields",
+    "body": "Drizzle's `json()` and `jsonb()` columns return `unknown` by default, unlike Prisma which lets you type JSON fields via `Json` in the schema. You must use the generic parameter or `.$type<T>()` to get type safety.\n\n```typescript\n// Drizzle — no type safety by default\nconst users = pgTable('users', {\n  metadata: jsonb('metadata'), // type: unknown\n});\n\n// Fix: use .$type<T>()\nconst users = pgTable('users', {\n  metadata: jsonb('metadata').$type<{ role: string; prefs: string[] }>(),\n});\n```\n\nPrisma handles this at the schema level with `Json` type, but the trade-off is you can't narrow the shape without a separate Zod validation layer. Drizzle's approach is more explicit but requires you to remember to add the type annotation.",
+    "tags": ["drizzle", "prisma", "json", "type-safety", "jsonb"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Prisma client not regenerated after schema changes",
+    "body": "After editing `schema.prisma`, you must run `npx prisma generate` to regenerate the client. The TypeScript types come from the generated client in `node_modules/.prisma/client`, not from the schema file itself. Forgetting this step means your code uses stale types.\n\n```bash\n# After any schema.prisma change:\nnpx prisma generate\n\n# Or combine with migration:\nnpx prisma migrate dev --name add_status_column\n# migrate dev automatically runs generate\n```\n\nCommon symptom: TypeScript shows errors like `Property 'newField' does not exist on type 'User'` even though you just added it to the schema. Running `generate` fixes it instantly. Add `prisma generate` to your `postinstall` script so teammates don't hit this.",
+    "tags": ["prisma", "codegen", "prisma-generate", "schema"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Drizzle relation queries require separate relationsConfig import",
+    "body": "Drizzle's relational query API (`db.query.users.findMany({ with: { posts: true } })`) only works if you define relations using the `relations()` helper AND pass them to `drizzle()`. Without this, `db.query` is undefined or missing tables.\n\n```typescript\n// schema.ts\nimport { pgTable, text, integer } from 'drizzle-orm/pg-core';\nimport { relations } from 'drizzle-orm';\n\nexport const users = pgTable('users', {\n  id: integer('id').primaryKey(),\n  name: text('name'),\n});\n\nexport const posts = pgTable('posts', {\n  id: integer('id').primaryKey(),\n  authorId: integer('author_id').references(() => users.id),\n});\n\n// THIS IS REQUIRED for db.query to work\nexport const usersRelations = relations(users, ({ many }) => ({\n  posts: many(posts),\n}));\n\nexport const postsRelations = relations(posts, ({ one }) => ({\n  author: one(users, { fields: [posts.authorId], references: [users.id] }),\n}));\n```\n\n```typescript\n// db.ts — must pass schema with relations\nimport * as schema from './schema';\nconst db = drizzle(pool, { schema });\n\n// Now this works:\nconst result = await db.query.users.findMany({ with: { posts: true } });\n```",
+    "tags": ["drizzle", "relations", "query-api", "orm"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Prisma migrate dev vs db push: choosing the wrong one loses data",
+    "body": "Use `prisma migrate dev` for production-tracked migrations and `prisma db push` for rapid prototyping. Using `db push` on a production database is dangerous because it doesn't create migration files — you can't reproduce the changes, and it may drop columns to resolve drift.\n\n```bash\n# Prototyping (dev only, no migration history)\nnpx prisma db push\n\n# Production workflow (creates SQL migration files)\nnpx prisma migrate dev --name add_email_column\nnpx prisma migrate deploy  # run in CI/CD\n```\n\nIf you accidentally used `db push` and need to switch to migrations, run `prisma migrate dev --name baseline` to create an initial migration that matches the current schema. Be aware that `migrate dev` may prompt to reset the database if it detects drift.",
+    "tags": ["prisma", "migrations", "db-push", "migrate-dev", "production"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Drizzle push vs generate vs migrate: three different commands",
+    "body": "Drizzle Kit has three commands that sound similar but do very different things:\n\n```bash\n# Generate migration SQL files from schema diff (does NOT run them)\nnpx drizzle-kit generate\n\n# Run pending migration files against the database\nnpx drizzle-kit migrate\n\n# Push schema directly to DB without migration files (prototyping only)\nnpx drizzle-kit push\n```\n\n`generate` compares your schema files to the previous snapshot and produces SQL. `migrate` executes those SQL files. `push` skips the migration file step entirely and syncs the DB directly. Confusing `push` with `migrate` in production means you have no migration history and can't rollback.",
+    "tags": ["drizzle", "drizzle-kit", "migrations", "push", "generate"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Prisma N+1 queries are silent by default",
+    "body": "Prisma doesn't warn you about N+1 queries. If you loop over results and access a relation inside the loop, each access fires a separate query. Use `include` or `select` with nested relations to eager-load in a single query.\n\n```typescript\n// BAD: N+1 — one query per user for their posts\nconst users = await prisma.user.findMany();\nfor (const user of users) {\n  const posts = await prisma.post.findMany({ where: { authorId: user.id } });\n}\n\n// GOOD: single query with include\nconst users = await prisma.user.findMany({\n  include: { posts: true },\n});\n\n// GOOD: select only needed fields\nconst users = await prisma.user.findMany({\n  select: {\n    name: true,\n    posts: { select: { title: true } },\n  },\n});\n```\n\nEnable query logging with `prisma.$on('query', console.log)` during development to catch N+1 patterns early. The Prisma query engine batches some queries automatically, but explicit includes are always safer.",
+    "tags": ["prisma", "n-plus-one", "performance", "include", "query"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Drizzle prepared statements don't auto-update when schema changes",
+    "body": "Drizzle prepared statements are compiled once and cached. If you change your schema and regenerate, the prepared statement object holds a stale reference. You must recreate prepared statements after schema changes.\n\n```typescript\n// This is compiled once\nconst getUserById = db\n  .select()\n  .from(users)\n  .where(eq(users.id, sql.placeholder('id')))\n  .prepare('get_user_by_id');\n\n// Usage\nconst user = await getUserById.execute({ id: 1 });\n\n// After schema change, you need to recreate the prepared statement.\n// If you store it in a module-level const, restart the server.\n```\n\nIn serverless environments, this is less of an issue since each invocation creates a fresh module scope. But in long-running servers, consider a factory function that recreates prepared statements when needed.",
+    "tags": ["drizzle", "prepared-statements", "caching", "schema"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Prisma interactive transactions timeout defaults to 5 seconds",
+    "body": "Prisma's interactive transactions (`prisma.$transaction(async (tx) => { ... })`) have a default timeout of 5 seconds. Long-running operations silently fail with a timeout error.\n\n```typescript\n// Fails silently after 5s with: Transaction API error: Transaction already closed\nconst result = await prisma.$transaction(async (tx) => {\n  await tx.user.updateMany({ ... });  // slow operation\n  await tx.post.createMany({ ... });  // never runs if above exceeds 5s\n});\n\n// Fix: increase timeout and maxWait\nconst result = await prisma.$transaction(\n  async (tx) => {\n    await tx.user.updateMany({ ... });\n    await tx.post.createMany({ ... });\n  },\n  {\n    maxWait: 10000,  // max time to acquire a connection\n    timeout: 30000,  // max time for the transaction\n  }\n);\n```\n\nThe `maxWait` option controls how long Prisma waits to get a connection from the pool. The `timeout` option controls how long the transaction itself can run.",
+    "tags": ["prisma", "transactions", "timeout", "performance"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Drizzle composite primary keys require a separate declaration",
+    "body": "Unlike Prisma where you use `@@id([col1, col2])`, Drizzle requires a separate `primaryKey()` call in the table definition's third argument.\n\n```typescript\nimport { pgTable, integer, text, primaryKey } from 'drizzle-orm/pg-core';\n\n// Composite primary key in Drizzle\nexport const userRoles = pgTable('user_roles', {\n  userId: integer('user_id').references(() => users.id),\n  roleId: integer('role_id').references(() => roles.id),\n  assignedAt: text('assigned_at'),\n}, (table) => ({\n  pk: primaryKey({ columns: [table.userId, table.roleId] }),\n}));\n```\n\nForgetting the third argument and trying to chain `.primaryKey()` on both columns creates two separate primary keys, which will throw a SQL error. The composite key must be declared as a table-level constraint.",
+    "tags": ["drizzle", "composite-key", "primary-key", "schema"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Prisma enum changes require a migration, db push won't rename",
+    "body": "Renaming a Prisma enum value isn't a simple rename — it's a drop-and-create. If you rename `ACTIVE` to `ENABLED`, `db push` will drop the old enum and existing rows with that value become invalid.\n\n```prisma\n// Before\nenum Status {\n  ACTIVE\n  INACTIVE\n}\n\n// After — this is NOT a rename, it's a new value\nenum Status {\n  ENABLED\n  INACTIVE\n}\n```\n\nFor safe enum renames, write a custom migration:\n\n```sql\n-- migration.sql\nALTER TYPE \"Status\" RENAME VALUE 'ACTIVE' TO 'ENABLED';\n```\n\nCreate the migration with `prisma migrate dev --create-only --name rename_status_enum`, then edit the generated SQL file before applying it.",
+    "tags": ["prisma", "enum", "migration", "rename", "data-loss"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Drizzle timestamps lose timezone info with timestamp() vs timestamptz()",
+    "body": "Using `timestamp('col')` in Drizzle creates a `TIMESTAMP WITHOUT TIME ZONE` column. If your app handles multiple timezones, you must use `timestamp('col', { withTimezone: true })` to get `TIMESTAMPTZ`.\n\n```typescript\n// BAD: loses timezone info\nconst events = pgTable('events', {\n  createdAt: timestamp('created_at').defaultNow(),\n});\n\n// GOOD: preserves timezone\nconst events = pgTable('events', {\n  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),\n});\n\n// Also set mode for JS Date vs string\nconst events = pgTable('events', {\n  createdAt: timestamp('created_at', {\n    withTimezone: true,\n    mode: 'date', // returns JS Date objects\n  }).defaultNow(),\n});\n```\n\nThe default `mode: 'string'` returns ISO strings. Use `mode: 'date'` if you want native Date objects. This is a common source of subtle timezone bugs in production.",
+    "tags": ["drizzle", "timestamp", "timezone", "postgres"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Prisma connection pool exhaustion in serverless environments",
+    "body": "Each Prisma Client instance opens a connection pool (default 5 connections). In serverless (Lambda, Vercel Functions), each cold start creates a new pool, eventually exhausting database connections.\n\n```typescript\n// BAD: new client per request in serverless\nexport async function handler() {\n  const prisma = new PrismaClient();\n  const users = await prisma.user.findMany();\n  // Connection pool never released\n}\n\n// GOOD: singleton pattern\nimport { PrismaClient } from '@prisma/client';\n\nconst globalForPrisma = globalThis as unknown as { prisma: PrismaClient };\nexport const prisma = globalForPrisma.prisma || new PrismaClient();\nif (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;\n```\n\nFor true serverless, use Prisma Accelerate or PgBouncer as a connection pooler. Set `connection_limit=1` in the connection string for serverless:\n\n```\nDATABASE_URL=\"postgresql://user:pass@host/db?connection_limit=1\"",
+    "tags": ["prisma", "connection-pool", "serverless", "lambda", "pgbouncer"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Drizzle select() returns array even for findFirst-like queries",
+    "body": "Unlike Prisma's `findUnique` which returns `T | null`, Drizzle's `select()` always returns an array. You must destructure or index manually.\n\n```typescript\n// Drizzle always returns array\nconst result = await db.select().from(users).where(eq(users.id, 1));\n// result is User[], not User | null\nconst user = result[0]; // could be undefined\n\n// With relational queries, use findFirst\nconst user = await db.query.users.findFirst({\n  where: eq(users.id, 1),\n});\n// Returns User | undefined\n\n// Prisma returns scalar directly\nconst user = await prisma.user.findUnique({ where: { id: 1 } });\n// Returns User | null\n```\n\nWhen migrating from Prisma to Drizzle, audit every `findUnique` call — the return type changes from `null` to `undefined`, which breaks strict null checks.",
+    "tags": ["drizzle", "prisma", "select", "findFirst", "return-type"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Prisma raw SQL queries bypass type safety and middleware",
+    "body": "Using `prisma.$queryRaw` or `prisma.$executeRaw` bypasses Prisma's type system, middleware, and soft-delete filters. Results are typed as `any` unless you provide a type parameter.\n\n```typescript\n// No type safety, returns unknown[]\nconst users = await prisma.$queryRaw`SELECT * FROM users WHERE age > ${minAge}`;\n\n// Add type annotation\ntype UserRow = { id: number; name: string; age: number };\nconst users = await prisma.$queryRaw<UserRow[]>`\n  SELECT id, name, age FROM users WHERE age > ${minAge}\n`;\n\n// WARNING: middleware (like soft-delete) won't apply to raw queries\n// If you have: prisma.$use(softDeleteMiddleware)\n// This will return deleted rows:\nconst all = await prisma.$queryRaw`SELECT * FROM users`;\n```\n\nAlways use tagged template literals (not string concatenation) with `$queryRaw` to prevent SQL injection. Prisma auto-parameterizes tagged templates.",
+    "tags": ["prisma", "raw-sql", "type-safety", "middleware", "sql-injection"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "community",
+    "title": "Drizzle migration snapshots must be committed to version control",
+    "body": "Drizzle Kit generates a `meta` folder alongside migration SQL files containing JSON snapshots of your schema state. If you `.gitignore` the `meta` folder or the `_journal.json` file, Drizzle can't compute diffs and will regenerate all migrations from scratch.\n\n```\ndrizzle/\n├── 0000_init.sql\n├── 0001_add_posts.sql\n└── meta/\n    ├── 0000_snapshot.json   # MUST be committed\n    ├── 0001_snapshot.json   # MUST be committed\n    └── _journal.json        # MUST be committed\n```\n\nAdd the entire `drizzle/` directory to git. The snapshots are how Drizzle knows what changed between schema versions.",
+    "tags": ["drizzle", "migrations", "git", "drizzle-kit", "snapshots"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Prisma createMany doesn't return created records on most databases",
+    "body": "Unlike `create`, `createMany` returns only a count by default, not the created records. This is a Postgres limitation Prisma inherits.\n\n```typescript\n// Returns { count: 3 }, NOT the records\nconst result = await prisma.user.createMany({\n  data: [\n    { name: 'Alice' },\n    { name: 'Bob' },\n    { name: 'Charlie' },\n  ],\n});\nconsole.log(result); // { count: 3 }\n\n// To get records back, use createManyAndReturn (Prisma 5.14+)\nconst users = await prisma.user.createManyAndReturn({\n  data: [\n    { name: 'Alice' },\n    { name: 'Bob' },\n  ],\n});\nconsole.log(users); // [{ id: 1, name: 'Alice' }, { id: 2, name: 'Bob' }]\n```\n\nIf you're on an older Prisma version, the workaround is `$transaction` with individual `create` calls, or use `$queryRaw` with `INSERT ... RETURNING`.",
+    "tags": ["prisma", "createMany", "bulk-insert", "returning"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Drizzle onConflictDoUpdate requires explicit set clause",
+    "body": "Drizzle's upsert doesn't have an `upsert` method like Prisma. You use `insert().onConflictDoUpdate()` and must explicitly specify which columns to update.\n\n```typescript\n// Drizzle upsert\nawait db.insert(users)\n  .values({ id: 1, name: 'Alice', email: 'alice@example.com' })\n  .onConflictDoUpdate({\n    target: users.id,\n    set: { name: 'Alice', email: 'alice@example.com' },\n  });\n\n// Use sql`excluded` to reference the conflicting row's values\nimport { sql } from 'drizzle-orm';\nawait db.insert(users)\n  .values({ id: 1, name: 'Alice', updatedAt: new Date() })\n  .onConflictDoUpdate({\n    target: users.id,\n    set: {\n      name: sql`excluded.name`,\n      updatedAt: sql`excluded.updated_at`,\n    },\n  });\n```\n\nThere's no automatic \"update all provided fields\" like Prisma's `upsert`. You must enumerate every field in the `set` clause. Missing fields keep their existing values.",
+    "tags": ["drizzle", "upsert", "onConflict", "insert"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Prisma middleware is deprecated in favor of client extensions",
+    "body": "Prisma middleware (`prisma.$use()`) is deprecated since Prisma 5.0. Use Client Extensions instead, which provide better type safety and composability.\n\n```typescript\n// OLD: middleware (deprecated)\nprisma.$use(async (params, next) => {\n  if (params.action === 'delete') {\n    params.action = 'update';\n    params.args.data = { deletedAt: new Date() };\n  }\n  return next(params);\n});\n\n// NEW: Client Extension\nconst prisma = new PrismaClient().$extends({\n  query: {\n    user: {\n      async delete({ args, query }) {\n        return query({ ...args, data: { deletedAt: new Date() } });\n      },\n      async findMany({ args, query }) {\n        args.where = { ...args.where, deletedAt: null };\n        return query(args);\n      },\n    },\n  },\n});\n```\n\nClient Extensions are type-safe, scoped per model, and composable. Multiple extensions can be chained with `$extends()`.",
+    "tags": ["prisma", "middleware", "client-extensions", "soft-delete"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "community",
+    "title": "Drizzle drizzle-kit.config.ts must match your actual driver",
+    "body": "The `dialect` and connection settings in your Drizzle Kit config must match your actual database driver. Mismatches cause silent migration generation failures or wrong SQL syntax.\n\n```typescript\n// drizzle.config.ts\nimport { defineConfig } from 'drizzle-kit';\n\nexport default defineConfig({\n  schema: './src/db/schema.ts',\n  out: './drizzle',\n  dialect: 'postgresql', // must match: 'postgresql' | 'mysql' | 'sqlite'\n  dbCredentials: {\n    url: process.env.DATABASE_URL!,\n  },\n});\n```\n\nIf you use `pg` driver but set `dialect: 'mysql'`, Drizzle Kit generates MySQL syntax migrations that fail on Postgres. Also ensure the `schema` path points to the file that exports all your table definitions.",
+    "tags": ["drizzle", "drizzle-kit", "config", "dialect", "migration"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Prisma seed file requires ts-node or tsx configuration",
+    "body": "Prisma's `prisma db seed` command doesn't run TypeScript natively. You must configure the seed command in `package.json` with a TypeScript runner.\n\n```json\n// package.json\n{\n  \"prisma\": {\n    \"seed\": \"tsx prisma/seed.ts\"\n  }\n}\n```\n\n```typescript\n// prisma/seed.ts\nimport { PrismaClient } from '@prisma/client';\nconst prisma = new PrismaClient();\n\nasync function main() {\n  await prisma.user.upsert({\n    where: { email: 'admin@example.com' },\n    update: {},\n    create: { email: 'admin@example.com', name: 'Admin', role: 'ADMIN' },\n  });\n}\n\nmain()\n  .catch(console.error)\n  .finally(() => prisma.$disconnect());\n```\n\nUse `upsert` in seeds so they're idempotent — running the seed twice doesn't create duplicates. Run with `npx prisma db seed`.",
+    "tags": ["prisma", "seeding", "tsx", "ts-node", "database"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Drizzle transactions don't auto-rollback on thrown errors in all drivers",
+    "body": "Drizzle's `db.transaction()` behavior on error varies by driver. With `node-postgres`, thrown errors auto-rollback. With some HTTP-based drivers (Neon serverless, PlanetScale), you may need explicit rollback.\n\n```typescript\n// node-postgres: auto-rollback on throw\nawait db.transaction(async (tx) => {\n  await tx.insert(users).values({ name: 'Alice' });\n  throw new Error('abort'); // auto-rollback\n});\n\n// Neon serverless HTTP: use try/catch with explicit rollback\nawait db.transaction(async (tx) => {\n  try {\n    await tx.insert(users).values({ name: 'Alice' });\n    await tx.insert(posts).values({ title: 'Hello' });\n  } catch (e) {\n    tx.rollback();\n    throw e;\n  }\n});\n```\n\nAlways test transaction rollback behavior with your specific driver. The Drizzle docs are driver-specific on this topic.",
+    "tags": ["drizzle", "transactions", "rollback", "neon", "node-postgres"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Prisma findUnique requires a unique field or compound unique",
+    "body": "You can't use `findUnique` with non-unique fields. Prisma enforces this at the type level — only fields marked with `@unique` or `@@unique` are valid `where` keys for `findUnique`.\n\n```prisma\nmodel User {\n  id    Int    @id @default(autoincrement())\n  email String @unique\n  name  String\n  orgId Int\n  role  String\n  @@unique([orgId, role])\n}\n```\n\n```typescript\n// Works: email is @unique\nawait prisma.user.findUnique({ where: { email: 'alice@test.com' } });\n\n// Works: compound unique\nawait prisma.user.findUnique({ where: { orgId_role: { orgId: 1, role: 'admin' } } });\n\n// Type error: name is not unique\nawait prisma.user.findUnique({ where: { name: 'Alice' } });\n// Use findFirst instead for non-unique fields\nawait prisma.user.findFirst({ where: { name: 'Alice' } });\n```",
+    "tags": ["prisma", "findUnique", "findFirst", "unique-constraint"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "community",
+    "title": "Drizzle schema file exports affect which tables appear in db.query",
+    "body": "If you split your Drizzle schema across multiple files but only import some of them when creating the `drizzle()` instance, the missing tables won't appear in `db.query`. You must re-export everything from a single barrel file.\n\n```typescript\n// schema/users.ts\nexport const users = pgTable('users', { ... });\nexport const usersRelations = relations(users, ...);\n\n// schema/posts.ts\nexport const posts = pgTable('posts', { ... });\nexport const postsRelations = relations(posts, ...);\n\n// schema/index.ts — barrel file, must export everything\nexport * from './users';\nexport * from './posts';\n\n// db.ts\nimport * as schema from './schema'; // imports barrel\nconst db = drizzle(pool, { schema });\n// db.query.users ✓\n// db.query.posts ✓\n```\n\nIf you forget to add a new table to the barrel file, `db.query.newTable` will be undefined at runtime with no TypeScript error.",
+    "tags": ["drizzle", "schema", "barrel-file", "query-api"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Prisma optional relations return null, not undefined",
+    "body": "When you `include` an optional relation in Prisma, missing relations return `null`, not `undefined`. This matters for strict TypeScript checks and React rendering.\n\n```typescript\nconst user = await prisma.user.findUnique({\n  where: { id: 1 },\n  include: { profile: true }, // profile is optional\n});\n\n// user.profile is Profile | null, NOT Profile | undefined\nif (user.profile !== null) { // correct\n  console.log(user.profile.bio);\n}\n\n// Common mistake: checking for undefined\nif (user.profile !== undefined) { // wrong check, always true\n  console.log(user.profile.bio); // could be null\n}\n```\n\nThis is consistent with JSON semantics (null is a value, undefined means absent), but trips people up when they expect the JavaScript convention of optional = undefined.",
+    "tags": ["prisma", "null", "undefined", "relations", "typescript"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Drizzle $default and $defaultFn only run on the client side",
+    "body": "Drizzle's `$defaultFn()` generates default values in your JavaScript code before the INSERT, not in the database. If you insert rows via raw SQL or another client, the default won't apply.\n\n```typescript\nimport { v4 as uuidv4 } from 'uuid';\n\nconst users = pgTable('users', {\n  // Default runs in JS, not in Postgres\n  id: text('id').$defaultFn(() => uuidv4()),\n  // Default runs in Postgres\n  createdAt: timestamp('created_at').defaultNow(),\n});\n```\n\nUse `.default(sql`gen_random_uuid()`)` for database-level defaults. `$defaultFn` is useful when you need a library like `cuid2` or `nanoid` that doesn't have a Postgres equivalent, but understand the trade-off.",
+    "tags": ["drizzle", "defaults", "uuid", "defaultFn", "postgres"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Prisma multi-schema support requires preview feature flag",
+    "body": "To use multiple Postgres schemas (e.g., `public` and `auth`) in a single Prisma schema, you must enable the `multiSchema` preview feature. Without it, Prisma assumes everything is in `public`.\n\n```prisma\ngenerator client {\n  provider        = \"prisma-client-js\"\n  previewFeatures = [\"multiSchema\"]\n}\n\ndatasource db {\n  provider = \"postgresql\"\n  url      = env(\"DATABASE_URL\")\n  schemas  = [\"public\", \"auth\"]\n}\n\nmodel User {\n  id    Int    @id @default(autoincrement())\n  email String @unique\n  @@schema(\"auth\")\n}\n\nmodel Post {\n  id    Int    @id @default(autoincrement())\n  title String\n  @@schema(\"public\")\n}\n```\n\nThis is critical for Supabase users where auth tables live in the `auth` schema. Without `multiSchema`, introspection only sees the `public` schema.",
+    "tags": ["prisma", "multi-schema", "postgres", "supabase", "preview-feature"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "community",
+    "title": "Drizzle InferSelectModel and InferInsertModel have different shapes",
+    "body": "Drizzle provides two type helpers that produce different types — `InferSelectModel` includes all columns (with defaults resolved), while `InferInsertModel` makes columns with defaults optional.\n\n```typescript\nimport { InferSelectModel, InferInsertModel } from 'drizzle-orm';\n\nconst users = pgTable('users', {\n  id: serial('id').primaryKey(),\n  name: text('name').notNull(),\n  role: text('role').default('user'),\n  createdAt: timestamp('created_at').defaultNow(),\n});\n\ntype User = InferSelectModel<typeof users>;\n// { id: number; name: string; role: string | null; createdAt: Date | null }\n\ntype NewUser = InferInsertModel<typeof users>;\n// { id?: number; name: string; role?: string | null; createdAt?: Date | null }\n// id, role, createdAt are optional because they have defaults\n```\n\nUse `InferInsertModel` for API input validation types and `InferSelectModel` for response types. Confusing them leads to either requiring fields that have defaults or allowing undefined on fields that are always present.",
+    "tags": ["drizzle", "types", "InferSelectModel", "InferInsertModel"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Prisma DateTime fields lose millisecond precision on MySQL",
+    "body": "MySQL's `DATETIME` type has second precision by default. Prisma's `DateTime` maps to `DATETIME(3)` in the migration, but if your MySQL table was created outside Prisma, you may lose millisecond precision.\n\n```prisma\nmodel Event {\n  id        Int      @id\n  createdAt DateTime @default(now())\n  // Generates: DATETIME(3) in MySQL\n  // But existing tables might have DATETIME (no fractional seconds)\n}\n```\n\nIf you're introspecting an existing MySQL database, check the column type. `DATETIME` truncates to seconds, so `2024-01-15T10:30:45.123Z` becomes `2024-01-15T10:30:45.000Z`. Use `ALTER TABLE events MODIFY created_at DATETIME(3)` to fix existing columns.",
+    "tags": ["prisma", "mysql", "datetime", "precision", "migration"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Drizzle array columns require explicit casting for empty arrays",
+    "body": "Postgres array columns in Drizzle need explicit type casting when inserting empty arrays, or Postgres can't infer the array element type.\n\n```typescript\nconst posts = pgTable('posts', {\n  id: serial('id').primaryKey(),\n  tags: text('tags').array(),\n});\n\n// Works fine\nawait db.insert(posts).values({ tags: ['typescript', 'drizzle'] });\n\n// May fail: Postgres can't infer type of empty array\nawait db.insert(posts).values({ tags: [] });\n\n// Fix: use sql cast\nimport { sql } from 'drizzle-orm';\nawait db.insert(posts).values({ tags: sql`'{}'::text[]` });\n\n// Or just use null for \"no tags\" if column is nullable\nawait db.insert(posts).values({ tags: null });\n```\n\nThis is a Postgres behavior, not a Drizzle bug. The driver sends `[]` as a parameterized value and Postgres needs to know the element type to construct the array.",
+    "tags": ["drizzle", "postgres", "array", "empty-array", "casting"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Prisma P2002: Unique constraint failed on the fields",
+    "body": "This error occurs when inserting or updating a record that violates a unique constraint. It's the most common Prisma error in production.\n\n```typescript\n// Error: Unique constraint failed on the fields: (`email`)\ntry {\n  await prisma.user.create({ data: { email: 'taken@test.com', name: 'New User' } });\n} catch (e) {\n  if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {\n    const field = (e.meta?.target as string[])?.[0];\n    console.log(`Duplicate value on field: ${field}`);\n    // Handle: show user-friendly error, or use upsert\n  }\n}\n\n// Prevention: use upsert for idempotent operations\nawait prisma.user.upsert({\n  where: { email: 'taken@test.com' },\n  update: { name: 'Updated Name' },\n  create: { email: 'taken@test.com', name: 'New User' },\n});\n```\n\nAlways catch P2002 in user-facing endpoints and return a 409 Conflict with a helpful message instead of a 500.",
+    "tags": ["prisma", "P2002", "unique-constraint", "error-handling", "upsert"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Prisma P2025: Record to update/delete not found",
+    "body": "Prisma throws P2025 when `update`, `delete`, or `updateMany` finds no matching record. This is different from `findUnique` which just returns null.\n\n```typescript\n// Throws P2025 if user doesn't exist\ntry {\n  await prisma.user.update({\n    where: { id: 999 },\n    data: { name: 'Updated' },\n  });\n} catch (e) {\n  if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2025') {\n    // Record not found\n    return res.status(404).json({ error: 'User not found' });\n  }\n}\n\n// Safer pattern: check existence first, or use upsert\nconst user = await prisma.user.findUnique({ where: { id: 999 } });\nif (!user) return res.status(404).json({ error: 'User not found' });\nawait prisma.user.update({ where: { id: 999 }, data: { name: 'Updated' } });\n```\n\nNote: `updateMany` does NOT throw P2025 — it returns `{ count: 0 }` if no records match. Only single-record operations throw.",
+    "tags": ["prisma", "P2025", "not-found", "error-handling"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Prisma P2003: Foreign key constraint failed",
+    "body": "P2003 fires when you reference a non-existent foreign key. Common when deleting a parent record that still has children, or inserting a child with an invalid parent ID.\n\n```typescript\n// Error: Foreign key constraint failed on the field: `authorId`\ntry {\n  await prisma.post.create({\n    data: { title: 'Hello', authorId: 999 }, // user 999 doesn't exist\n  });\n} catch (e) {\n  if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2003') {\n    return res.status(400).json({ error: 'Referenced user does not exist' });\n  }\n}\n\n// Fix: validate references, or use cascading deletes in schema\nmodel Post {\n  author   User @relation(fields: [authorId], references: [id], onDelete: Cascade)\n  authorId Int\n}\n```\n\nSet `onDelete: Cascade` for child records that should be deleted with the parent. Use `onDelete: SetNull` for optional references. Default is `onDelete: Restrict` which throws P2003.",
+    "tags": ["prisma", "P2003", "foreign-key", "cascade", "error-handling"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Drizzle error: Column reference is ambiguous in joins",
+    "body": "When joining tables with identically-named columns (like `id` or `created_at`), Drizzle's select returns ambiguous results. The query may fail or return wrong data.\n\n```typescript\n// BAD: both tables have 'id' — ambiguous\nconst result = await db\n  .select()\n  .from(users)\n  .leftJoin(posts, eq(users.id, posts.authorId));\n// result[0].id — which id?\n\n// GOOD: select specific columns with aliases\nconst result = await db\n  .select({\n    userId: users.id,\n    userName: users.name,\n    postId: posts.id,\n    postTitle: posts.title,\n  })\n  .from(users)\n  .leftJoin(posts, eq(users.id, posts.authorId));\n// result[0].userId, result[0].postId — clear\n```\n\nAlways use explicit column selection with aliases when doing joins. The `select()` with no arguments returns a nested object `{ users: {...}, posts: {...} }`, but explicit selection is more predictable and performant.",
+    "tags": ["drizzle", "joins", "ambiguous-column", "select", "alias"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Prisma P1001: Can't reach database server at host:port",
+    "body": "P1001 means Prisma can't connect to the database. Common causes: wrong connection string, database not running, firewall blocking, or SSL misconfiguration.\n\n```bash\n# Check connection string format\n# PostgreSQL:\nDATABASE_URL=\"postgresql://USER:PASSWORD@HOST:5432/DATABASE?schema=public\"\n\n# With SSL (required by most cloud providers):\nDATABASE_URL=\"postgresql://USER:PASSWORD@HOST:5432/DATABASE?sslmode=require\"\n\n# Debug steps:\n# 1. Test connection with psql\npsql $DATABASE_URL\n# 2. Check if port is reachable\nnc -zv HOST 5432\n# 3. Ensure DB is running (Docker)\ndocker ps | grep postgres\n```\n\nFor cloud databases (Supabase, Neon, PlanetScale), ensure you're using the correct connection pooler URL for your environment. Supabase uses port 5432 for direct connections and 6543 for connection pooling.",
+    "tags": ["prisma", "P1001", "connection", "database", "ssl"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Drizzle error: relation 'table_name' does not exist",
+    "body": "This Postgres error means your table hasn't been created in the database. Defining a table in your Drizzle schema doesn't create it — you must run migrations or push.\n\n```bash\n# Create tables from schema\nnpx drizzle-kit push\n# Or generate and run migrations\nnpx drizzle-kit generate\nnpx drizzle-kit migrate\n```\n\n```typescript\n// This defines the schema in TypeScript — NOT in the database\nconst users = pgTable('users', {\n  id: serial('id').primaryKey(),\n  name: text('name'),\n});\n\n// Error at runtime: relation \"users\" does not exist\nconst result = await db.select().from(users);\n```\n\nAlso check: Are you connecting to the right database? Is the table in a different schema (e.g., `auth` instead of `public`)? Did you specify the schema in `drizzle.config.ts`?",
+    "tags": ["drizzle", "postgres", "relation-not-exist", "migrations"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Prisma P2021: Table does not exist in the current database",
+    "body": "P2021 occurs when Prisma's generated client references a table that doesn't exist. This happens when you add a model to schema.prisma, run `generate`, but forget to run `migrate`.\n\n```bash\n# After adding a new model:\nnpx prisma generate    # updates the client types\nnpx prisma migrate dev --name add_new_table  # creates the table\n\n# Or in production:\nnpx prisma migrate deploy\n```\n\nOther causes: connecting to the wrong database, running against a staging DB that hasn't been migrated, or using `db push` in dev but `migrate deploy` in production with drift between them.",
+    "tags": ["prisma", "P2021", "table-not-exist", "migration"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Drizzle error: Cannot read properties of undefined reading 'referencedTable'",
+    "body": "This error occurs when you reference a table in a foreign key that hasn't been defined yet, or when there's a circular import between schema files.\n\n```typescript\n// BAD: posts imports users, users imports posts → circular\n// schema/users.ts\nimport { posts } from './posts'; // circular!\n\n// FIX: use relations() instead of inline references for circular deps\n// schema/users.ts\nexport const users = pgTable('users', {\n  id: serial('id').primaryKey(),\n});\n\n// schema/posts.ts\nimport { users } from './users';\nexport const posts = pgTable('posts', {\n  authorId: integer('author_id').references(() => users.id), // lazy reference ✓\n});\n```\n\nDrizzle's `.references(() => table.column)` uses a lazy callback specifically to handle declaration order. But circular imports in the module system itself can still cause undefined references. Put related tables in the same file, or use a barrel file.",
+    "tags": ["drizzle", "circular-import", "references", "foreign-key", "schema"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Prisma error: Schema engine error: Column already exists",
+    "body": "This migration error occurs when the generated migration tries to create a column that already exists in the database (from a previous `db push` or manual SQL change).\n\n```bash\n# Fix 1: Baseline the database\nnpx prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script > prisma/migrations/0_init/migration.sql\nnpx prisma migrate resolve --applied 0_init\n\n# Fix 2: Mark migration as applied without running it\nnpx prisma migrate resolve --applied 20240115120000_add_column\n\n# Fix 3: Reset (dev only, destroys data)\nnpx prisma migrate reset\n```\n\nThis commonly happens when switching from `db push` to `migrate dev`. The database has the columns but no migration history. Baselining is the clean fix for production.",
+    "tags": ["prisma", "migration", "column-exists", "baseline", "drift"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Drizzle error: Cannot use placeholder in dynamic queries",
+    "body": "Drizzle's `sql.placeholder()` only works with prepared statements, not with regular queries. Using it in a regular `db.select()` chain throws an error.\n\n```typescript\n// BAD: placeholder in non-prepared query\nconst result = await db\n  .select()\n  .from(users)\n  .where(eq(users.id, sql.placeholder('id')));\n// Error: Cannot use placeholder outside of prepared statement\n\n// GOOD: use prepare()\nconst query = db\n  .select()\n  .from(users)\n  .where(eq(users.id, sql.placeholder('id')))\n  .prepare('get_user');\nconst result = await query.execute({ id: 1 });\n\n// GOOD: pass value directly for non-prepared queries\nconst result = await db\n  .select()\n  .from(users)\n  .where(eq(users.id, 1));\n```",
+    "tags": ["drizzle", "placeholder", "prepared-statement", "query"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Prisma P2028: Transaction API error - Transaction already closed",
+    "body": "P2028 means your transaction timed out or you tried to use the transaction client after it completed. This is almost always a timeout issue.\n\n```typescript\n// BAD: async operation exceeds default 5s timeout\nawait prisma.$transaction(async (tx) => {\n  const users = await tx.user.findMany(); // fast\n  for (const user of users) {\n    await tx.post.updateMany({ // slow loop\n      where: { authorId: user.id },\n      data: { status: 'ARCHIVED' },\n    });\n  }\n}); // P2028 after 5 seconds\n\n// FIX: increase timeout and batch operations\nawait prisma.$transaction(async (tx) => {\n  await tx.post.updateMany({\n    where: { author: { createdAt: { lt: cutoffDate } } },\n    data: { status: 'ARCHIVED' },\n  });\n}, { timeout: 30000 });\n```\n\nAlso fires if you store the `tx` reference and use it after the transaction callback returns. The `tx` client is only valid inside the callback.",
+    "tags": ["prisma", "P2028", "transaction", "timeout", "error-handling"]
+  },
+  {
+    "type": "error",
+    "trust": "community",
+    "title": "Drizzle error: prepared statement 'name' already exists",
+    "body": "If you call `.prepare('name')` with the same name twice (e.g., on hot reload in development), Postgres throws this error because prepared statement names are session-scoped.\n\n```typescript\n// BAD: re-registers on every hot reload\nconst getUser = db\n  .select().from(users)\n  .where(eq(users.id, sql.placeholder('id')))\n  .prepare('get_user'); // fails on second hot reload\n\n// FIX 1: Use unique names based on timestamp or random\nconst getUser = db\n  .select().from(users)\n  .where(eq(users.id, sql.placeholder('id')))\n  .prepare(`get_user_${Date.now()}`);\n\n// FIX 2: Deallocate first (raw SQL)\nawait db.execute(sql`DEALLOCATE ALL`);\n\n// FIX 3: Use a singleton pattern similar to Prisma's\nconst globalForDrizzle = globalThis as any;\nglobalForDrizzle.__preparedStatements ??= {};\n```\n\nThis only happens in development with hot module replacement. In production with cold starts, each connection gets fresh prepared statement namespace.",
+    "tags": ["drizzle", "prepared-statement", "hot-reload", "development"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Prisma P1008: Operations timed out after waiting for connection pool",
+    "body": "The connection pool is exhausted and new queries can't get a connection within the timeout. This happens under high concurrency or when queries hold connections too long.\n\n```typescript\n// Tune pool size based on your environment\nconst prisma = new PrismaClient({\n  datasources: {\n    db: {\n      url: `${process.env.DATABASE_URL}?connection_limit=20&pool_timeout=10`,\n    },\n  },\n});\n\n// Or via connection string\n// DATABASE_URL=\"postgresql://...?connection_limit=10&pool_timeout=20\"\n```\n\nConnection pool formula: `connection_limit = (num_physical_cpus * 2) + 1`. For serverless, set `connection_limit=1` per function instance and use a pooler like PgBouncer. Monitor with `prisma.$on('query', ...)` to find slow queries hogging connections.",
+    "tags": ["prisma", "P1008", "connection-pool", "timeout", "concurrency"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Drizzle error: column type mismatch in where clause comparison",
+    "body": "Drizzle's type system catches most mismatches at compile time, but some slip through — especially with `sql` template literals and custom types.\n\n```typescript\nconst users = pgTable('users', {\n  id: serial('id').primaryKey(),\n  status: text('status').$type<'active' | 'inactive'>(),\n});\n\n// Type error at compile time (good)\ndb.select().from(users).where(eq(users.id, 'abc')); // number vs string\n\n// Runtime error: operator does not exist: integer = text\ndb.select().from(users).where(sql`${users.id} = ${'abc'}`);\n// sql`` bypasses type checking\n\n// Fix: ensure correct types in raw SQL\ndb.select().from(users).where(sql`${users.id} = ${1}`);\n```\n\nPrefer Drizzle's typed operators (`eq`, `gt`, `like`, etc.) over `sql` templates. The type system is the whole point of using an ORM — raw SQL should be a last resort.",
+    "tags": ["drizzle", "type-mismatch", "where-clause", "sql-template"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Prisma error: Maximum call stack size exceeded with deeply nested includes",
+    "body": "Deeply nested `include` statements or circular relation includes cause stack overflows. Prisma doesn't limit nesting depth.\n\n```typescript\n// BAD: deeply nested include can blow the stack\nconst user = await prisma.user.findUnique({\n  where: { id: 1 },\n  include: {\n    posts: {\n      include: {\n        comments: {\n          include: {\n            author: {\n              include: { posts: { include: { comments: true } } } // circular!\n            }\n          }\n        }\n      }\n    }\n  }\n});\n\n// FIX: limit nesting depth, use separate queries\nconst user = await prisma.user.findUnique({\n  where: { id: 1 },\n  include: { posts: { include: { comments: true } } },\n});\nconst commentAuthors = await prisma.user.findMany({\n  where: { comments: { some: { post: { authorId: 1 } } } },\n});\n```\n\nAs a rule, never nest includes more than 3 levels deep. For graph-like data, use separate queries or raw SQL with recursive CTEs.",
+    "tags": ["prisma", "include", "stack-overflow", "nested", "performance"]
+  },
+  {
+    "type": "error",
+    "trust": "community",
+    "title": "Drizzle error: Cannot find module 'drizzle-orm/pg-core' in ESM project",
+    "body": "In ESM projects (`\"type\": \"module\"` in package.json), Drizzle imports may fail depending on your TypeScript module resolution settings.\n\n```json\n// tsconfig.json — fix for ESM projects\n{\n  \"compilerOptions\": {\n    \"module\": \"ESNext\",\n    \"moduleResolution\": \"bundler\", // or \"NodeNext\"\n    \"esModuleInterop\": true\n  }\n}\n```\n\nIf using `moduleResolution: \"node\"` (the old default), switch to `\"bundler\"` or `\"NodeNext\"`. Drizzle ORM ships with proper ESM/CJS dual package exports, but the older Node resolution algorithm can't find the ESM entry points.\n\nAlternatively, if you can't change module resolution, import from the specific entry point: `import { pgTable } from 'drizzle-orm/pg-core/index.js'`.",
+    "tags": ["drizzle", "esm", "module-resolution", "typescript", "import"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Prisma P2014: Required relation violation on nested create",
+    "body": "P2014 means a required relation is violated. This often happens with nested creates when you forget to connect an existing related record.\n\n```typescript\n// Error: The change would violate required relation 'PostToCategory'\nawait prisma.post.create({\n  data: {\n    title: 'Hello',\n    author: { connect: { id: 1 } },\n    // Missing: category is required but not provided\n  },\n});\n\n// Fix: include all required relations\nawait prisma.post.create({\n  data: {\n    title: 'Hello',\n    author: { connect: { id: 1 } },\n    category: { connect: { id: 5 } }, // or create: { name: 'Tech' }\n  },\n});\n```\n\nCheck your schema for required relations (fields without `?`). Every required relation must be either `connect`ed to an existing record or `create`d inline.",
+    "tags": ["prisma", "P2014", "required-relation", "nested-create"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Drizzle error: cannot insert NULL into NOT NULL column",
+    "body": "This runtime Postgres error means you're inserting a record without a required field that has no default. Drizzle's type system should catch this, but it can slip through with partial inserts or spread operators.\n\n```typescript\nconst users = pgTable('users', {\n  id: serial('id').primaryKey(),\n  name: text('name').notNull(),\n  email: text('email').notNull(),\n});\n\n// Type error caught at compile time\nawait db.insert(users).values({ name: 'Alice' }); // missing email\n\n// Sneaky runtime error: spreading partial data\nconst input = { name: 'Alice' }; // email missing\nawait db.insert(users).values(input as any); // bypasses type check\n\n// Fix: validate input before insert\nimport { createInsertSchema } from 'drizzle-zod';\nconst insertUserSchema = createInsertSchema(users);\nconst validated = insertUserSchema.parse(input); // throws if email missing\nawait db.insert(users).values(validated);\n```\n\nUse `drizzle-zod` or `drizzle-valibot` to generate validation schemas from your table definitions. Never cast user input with `as any`.",
+    "tags": ["drizzle", "not-null", "validation", "drizzle-zod", "insert"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Prisma migrate deploy fails with drift detected in production",
+    "body": "When `prisma migrate deploy` detects that the database schema doesn't match what the migration history expects, it refuses to run. This happens when someone manually altered the production database.\n\n```bash\n# Check for drift\nnpx prisma migrate diff --from-schema-datamodel prisma/schema.prisma --to-url $DATABASE_URL\n\n# Option 1: Create a new migration that accounts for the manual change\nnpx prisma migrate dev --name fix_drift\n\n# Option 2: Mark the conflicting migration as applied\nnpx prisma migrate resolve --applied 20240115_migration_name\n\n# Option 3: Rollback the manual change in the DB\n# (depends on what was changed)\n```\n\nPrevention: never run raw DDL statements against a Prisma-managed database. All schema changes should go through `prisma migrate dev`. Set up CI to run `prisma migrate deploy` and fail the build on drift.",
+    "tags": ["prisma", "migrate-deploy", "drift", "production", "ci-cd"]
+  },
+  {
+    "type": "error",
+    "trust": "community",
+    "title": "Drizzle error: there is no unique or exclusion constraint matching the ON CONFLICT",
+    "body": "When using `onConflictDoUpdate` or `onConflictDoNothing`, the `target` must be a column with a unique constraint or primary key. Postgres needs the constraint to identify conflicting rows.\n\n```typescript\n// BAD: 'name' has no unique constraint\nawait db.insert(users)\n  .values({ name: 'Alice', email: 'a@test.com' })\n  .onConflictDoUpdate({\n    target: users.name, // Error! No unique constraint on name\n    set: { email: 'a@test.com' },\n  });\n\n// GOOD: target a unique column\nawait db.insert(users)\n  .values({ name: 'Alice', email: 'a@test.com' })\n  .onConflictDoUpdate({\n    target: users.email, // email has .unique()\n    set: { name: 'Alice' },\n  });\n\n// GOOD: composite unique target\nawait db.insert(userRoles)\n  .values({ userId: 1, roleId: 2 })\n  .onConflictDoUpdate({\n    target: [userRoles.userId, userRoles.roleId],\n    set: { updatedAt: new Date() },\n  });\n```",
+    "tags": ["drizzle", "onConflict", "unique-constraint", "upsert", "postgres"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Drizzle repository pattern with typed queries and error handling",
+    "body": "Wrap Drizzle queries in a repository class for reusable, typed data access. This pattern keeps database logic out of your route handlers.\n\n```typescript\nimport { eq, and, desc, sql } from 'drizzle-orm';\nimport { db } from './db';\nimport { users, posts } from './schema';\nimport { InferInsertModel } from 'drizzle-orm';\n\ntype NewUser = InferInsertModel<typeof users>;\n\nexport const userRepository = {\n  async findById(id: number) {\n    const [user] = await db.select().from(users).where(eq(users.id, id));\n    return user ?? null;\n  },\n\n  async findByEmail(email: string) {\n    return db.query.users.findFirst({\n      where: eq(users.email, email),\n      with: { posts: { limit: 10, orderBy: [desc(posts.createdAt)] } },\n    });\n  },\n\n  async create(data: NewUser) {\n    const [user] = await db.insert(users).values(data).returning();\n    return user;\n  },\n\n  async updateLastLogin(id: number) {\n    await db.update(users)\n      .set({ lastLoginAt: sql`now()` })\n      .where(eq(users.id, id));\n  },\n\n  async softDelete(id: number) {\n    await db.update(users)\n      .set({ deletedAt: sql`now()` })\n      .where(and(eq(users.id, id), sql`${users.deletedAt} IS NULL`));\n  },\n};\n```\n\nThis pattern works well with dependency injection in testing — you can mock the repository instead of mocking the database driver.",
+    "tags": ["drizzle", "repository-pattern", "architecture", "typescript"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Prisma soft delete pattern using client extensions",
+    "body": "Implement soft delete globally using Prisma Client Extensions. This automatically filters deleted records and converts delete operations to updates.\n\n```typescript\nimport { PrismaClient } from '@prisma/client';\n\nconst basePrisma = new PrismaClient();\n\nexport const prisma = basePrisma.$extends({\n  query: {\n    $allModels: {\n      async findMany({ args, query }) {\n        args.where = { ...args.where, deletedAt: null };\n        return query(args);\n      },\n      async findFirst({ args, query }) {\n        args.where = { ...args.where, deletedAt: null };\n        return query(args);\n      },\n      async findUnique({ args, query }) {\n        // Can't add where clause to findUnique, use findFirst\n        return query(args);\n      },\n      async delete({ args }) {\n        // Convert delete to soft delete\n        return basePrisma[args.model].update({\n          where: args.where,\n          data: { deletedAt: new Date() },\n        }) as any;\n      },\n    },\n  },\n});\n\n// Usage — delete is now a soft delete\nawait prisma.user.delete({ where: { id: 1 } });\n// Actually runs: UPDATE users SET deleted_at = NOW() WHERE id = 1\n\n// Queries automatically exclude deleted records\nconst users = await prisma.user.findMany();\n// WHERE deleted_at IS NULL\n```\n\nAdd a `deletedAt DateTime?` field to every model that needs soft delete. Create a database index on `deletedAt` for query performance.",
+    "tags": ["prisma", "soft-delete", "client-extensions", "pattern"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Drizzle pagination with cursor-based and offset patterns",
+    "body": "Implement both cursor-based (for infinite scroll) and offset-based (for page numbers) pagination with Drizzle.\n\n```typescript\nimport { gt, desc, sql, and } from 'drizzle-orm';\n\n// Cursor-based pagination (efficient for large datasets)\nasync function getCursorPage(cursor?: number, limit = 20) {\n  const conditions = cursor ? gt(posts.id, cursor) : undefined;\n\n  const items = await db.select()\n    .from(posts)\n    .where(conditions)\n    .orderBy(posts.id)\n    .limit(limit + 1); // fetch one extra to check hasMore\n\n  const hasMore = items.length > limit;\n  if (hasMore) items.pop();\n\n  return {\n    items,\n    nextCursor: hasMore ? items[items.length - 1].id : null,\n  };\n}\n\n// Offset-based pagination (for page numbers)\nasync function getOffsetPage(page: number, pageSize = 20) {\n  const [items, [{ count }]] = await Promise.all([\n    db.select().from(posts)\n      .orderBy(desc(posts.createdAt))\n      .limit(pageSize)\n      .offset((page - 1) * pageSize),\n    db.select({ count: sql<number>`count(*)` }).from(posts),\n  ]);\n\n  return {\n    items,\n    totalPages: Math.ceil(count / pageSize),\n    currentPage: page,\n  };\n}\n```\n\nCursor pagination is O(1) regardless of offset, while offset pagination degrades as page number increases. Use cursor for feeds and infinite scroll, offset for admin tables with page controls.",
+    "tags": ["drizzle", "pagination", "cursor", "offset", "performance"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Prisma transaction pattern for multi-step operations",
+    "body": "Use interactive transactions for operations that need atomicity with conditional logic. Use sequential transactions for simple bulk operations.\n\n```typescript\n// Interactive transaction: transfer funds with balance check\nasync function transferFunds(fromId: number, toId: number, amount: number) {\n  return prisma.$transaction(async (tx) => {\n    const sender = await tx.account.findUniqueOrThrow({\n      where: { id: fromId },\n    });\n\n    if (sender.balance < amount) {\n      throw new Error('Insufficient funds');\n      // Transaction auto-rollbacks on throw\n    }\n\n    await tx.account.update({\n      where: { id: fromId },\n      data: { balance: { decrement: amount } },\n    });\n\n    await tx.account.update({\n      where: { id: toId },\n      data: { balance: { increment: amount } },\n    });\n\n    return tx.transfer.create({\n      data: { fromId, toId, amount, status: 'COMPLETED' },\n    });\n  }, {\n    isolationLevel: 'Serializable', // prevent race conditions\n    timeout: 10000,\n  });\n}\n\n// Sequential transaction: batch operations (no conditional logic)\nconst [deletedPosts, updatedUser] = await prisma.$transaction([\n  prisma.post.deleteMany({ where: { authorId: 1 } }),\n  prisma.user.update({ where: { id: 1 }, data: { status: 'DEACTIVATED' } }),\n]);\n```\n\nUse `isolationLevel: 'Serializable'` for financial operations. Sequential transactions (`$transaction([...])`) are simpler and slightly faster than interactive ones.",
+    "tags": ["prisma", "transactions", "atomicity", "isolation-level"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Drizzle dynamic query building with type-safe filters",
+    "body": "Build dynamic WHERE clauses from API query parameters while maintaining full type safety.\n\n```typescript\nimport { eq, like, and, gte, lte, SQL } from 'drizzle-orm';\n\ninterface UserFilters {\n  name?: string;\n  email?: string;\n  role?: 'admin' | 'user';\n  createdAfter?: Date;\n  createdBefore?: Date;\n}\n\nasync function searchUsers(filters: UserFilters) {\n  const conditions: SQL[] = [];\n\n  if (filters.name) {\n    conditions.push(like(users.name, `%${filters.name}%`));\n  }\n  if (filters.email) {\n    conditions.push(eq(users.email, filters.email));\n  }\n  if (filters.role) {\n    conditions.push(eq(users.role, filters.role));\n  }\n  if (filters.createdAfter) {\n    conditions.push(gte(users.createdAt, filters.createdAfter));\n  }\n  if (filters.createdBefore) {\n    conditions.push(lte(users.createdAt, filters.createdBefore));\n  }\n\n  return db.select()\n    .from(users)\n    .where(conditions.length ? and(...conditions) : undefined)\n    .orderBy(users.createdAt)\n    .limit(50);\n}\n```\n\nThe `and()` function accepts `SQL[]` and combines them. If no conditions, passing `undefined` to `where()` skips the WHERE clause entirely. This is much cleaner than string concatenation.",
+    "tags": ["drizzle", "dynamic-query", "filters", "type-safety", "where"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Prisma middleware-free audit logging with client extensions",
+    "body": "Track who changed what and when using Prisma Client Extensions. This replaces the deprecated middleware approach.\n\n```typescript\nconst prisma = new PrismaClient().$extends({\n  query: {\n    $allModels: {\n      async create({ args, query, model }) {\n        const result = await query(args);\n        await logAudit(model, 'CREATE', null, result);\n        return result;\n      },\n      async update({ args, query, model }) {\n        const before = await (prisma as any)[model].findUnique({ where: args.where });\n        const result = await query(args);\n        await logAudit(model, 'UPDATE', before, result);\n        return result;\n      },\n      async delete({ args, query, model }) {\n        const before = await (prisma as any)[model].findUnique({ where: args.where });\n        const result = await query(args);\n        await logAudit(model, 'DELETE', before, null);\n        return result;\n      },\n    },\n  },\n});\n\nasync function logAudit(model: string, action: string, before: any, after: any) {\n  await prisma.auditLog.create({\n    data: {\n      model,\n      action,\n      before: before ? JSON.stringify(before) : null,\n      after: after ? JSON.stringify(after) : null,\n      timestamp: new Date(),\n    },\n  });\n}\n```\n\nFor high-throughput systems, batch audit logs or write them to a queue instead of inserting synchronously on every mutation.",
+    "tags": ["prisma", "audit-log", "client-extensions", "tracking"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Drizzle database seeding with idempotent upserts",
+    "body": "Create a reusable seed script that can run multiple times without duplicating data.\n\n```typescript\n// seed.ts\nimport { db } from './db';\nimport { users, roles, userRoles } from './schema';\nimport { sql } from 'drizzle-orm';\n\nasync function seed() {\n  console.log('Seeding database...');\n\n  // Upsert roles\n  const roleData = [\n    { id: 1, name: 'admin', permissions: ['read', 'write', 'delete'] },\n    { id: 2, name: 'editor', permissions: ['read', 'write'] },\n    { id: 3, name: 'viewer', permissions: ['read'] },\n  ];\n\n  for (const role of roleData) {\n    await db.insert(roles)\n      .values(role)\n      .onConflictDoUpdate({\n        target: roles.id,\n        set: { name: role.name, permissions: role.permissions },\n      });\n  }\n\n  // Batch insert users with conflict handling\n  const userData = Array.from({ length: 50 }, (_, i) => ({\n    email: `user${i}@test.com`,\n    name: `Test User ${i}`,\n    roleId: (i % 3) + 1,\n  }));\n\n  await db.insert(users)\n    .values(userData)\n    .onConflictDoNothing({ target: users.email });\n\n  console.log('Seeding complete');\n}\n\nseed().catch(console.error).then(() => process.exit(0));\n```\n\nRun with `npx tsx seed.ts`. Use `onConflictDoNothing` for data that shouldn't change, `onConflictDoUpdate` for data that should be refreshed on re-seed.",
+    "tags": ["drizzle", "seeding", "idempotent", "upsert", "database"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Prisma connection management pattern for long-running servers",
+    "body": "Properly manage Prisma connections in Express/Fastify servers with graceful shutdown and health checks.\n\n```typescript\nimport { PrismaClient } from '@prisma/client';\n\nconst prisma = new PrismaClient({\n  log: process.env.NODE_ENV === 'development'\n    ? ['query', 'warn', 'error']\n    : ['warn', 'error'],\n});\n\n// Health check endpoint\napp.get('/health', async (req, res) => {\n  try {\n    await prisma.$queryRaw`SELECT 1`;\n    res.json({ status: 'ok', db: 'connected' });\n  } catch (e) {\n    res.status(503).json({ status: 'error', db: 'disconnected' });\n  }\n});\n\n// Graceful shutdown\nprocess.on('SIGTERM', async () => {\n  console.log('SIGTERM received, shutting down...');\n  await prisma.$disconnect();\n  process.exit(0);\n});\n\nprocess.on('SIGINT', async () => {\n  await prisma.$disconnect();\n  process.exit(0);\n});\n\n// Connect on startup\nasync function main() {\n  await prisma.$connect();\n  console.log('Database connected');\n  app.listen(3000);\n}\n\nmain().catch(async (e) => {\n  console.error(e);\n  await prisma.$disconnect();\n  process.exit(1);\n});\n```\n\nAlways call `$disconnect()` on shutdown to release connections back to the pool. Without this, connections leak and your database hits its connection limit.",
+    "tags": ["prisma", "connection", "shutdown", "health-check", "server"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Drizzle multi-tenant database pattern with runtime schema switching",
+    "body": "Implement multi-tenancy using Postgres schemas (one schema per tenant) with Drizzle.\n\n```typescript\nimport { drizzle } from 'drizzle-orm/node-postgres';\nimport { sql } from 'drizzle-orm';\nimport { Pool } from 'pg';\nimport * as schema from './schema';\n\nconst pool = new Pool({ connectionString: process.env.DATABASE_URL });\n\n// Create a tenant-scoped database instance\nasync function getTenantDb(tenantId: string) {\n  const schemaName = `tenant_${tenantId}`;\n  const db = drizzle(pool, { schema });\n\n  // Set search_path for this connection\n  await db.execute(sql`SET search_path TO ${sql.raw(schemaName)}, public`);\n  return db;\n}\n\n// Middleware\napp.use(async (req, res, next) => {\n  const tenantId = req.headers['x-tenant-id'] as string;\n  if (!tenantId) return res.status(400).json({ error: 'Tenant ID required' });\n  req.db = await getTenantDb(tenantId);\n  next();\n});\n\n// Provision new tenant\nasync function createTenant(tenantId: string) {\n  const schemaName = `tenant_${tenantId}`;\n  const db = drizzle(pool);\n  await db.execute(sql`CREATE SCHEMA IF NOT EXISTS ${sql.raw(schemaName)}`);\n  // Run migrations for the new schema\n  await db.execute(sql`SET search_path TO ${sql.raw(schemaName)}`);\n  // ... create tables\n}\n```\n\nThis approach gives complete data isolation between tenants. The downside is managing migrations across hundreds of schemas. For simpler multi-tenancy, use a `tenantId` column with row-level security.",
+    "tags": ["drizzle", "multi-tenant", "postgres-schema", "isolation"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Prisma type-safe partial updates pattern",
+    "body": "Create type-safe update functions that only accept valid fields using Prisma's generated types.\n\n```typescript\nimport { Prisma } from '@prisma/client';\n\n// Extract update input type from Prisma\ntype UserUpdateInput = Prisma.UserUpdateInput;\n\n// Create a typed update function\nasync function updateUser(id: number, data: UserUpdateInput) {\n  return prisma.user.update({ where: { id }, data });\n}\n\n// Even better: restrict which fields can be updated\ntype UserProfileUpdate = Pick<Prisma.UserUpdateInput, 'name' | 'bio' | 'avatar'>;\n\nasync function updateProfile(id: number, data: UserProfileUpdate) {\n  return prisma.user.update({ where: { id }, data });\n}\n\n// Usage — TypeScript catches invalid fields\nawait updateProfile(1, { name: 'Alice', bio: 'Hello' }); // OK\nawait updateProfile(1, { email: 'new@test.com' }); // Type error! email not in UserProfileUpdate\nawait updateProfile(1, { role: 'ADMIN' }); // Type error! can't escalate privileges\n```\n\nThis pattern prevents accidental mass-assignment vulnerabilities where a user could update their own role or other sensitive fields by sending extra JSON fields.",
+    "tags": ["prisma", "type-safety", "partial-update", "security", "mass-assignment"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Drizzle with Zod validation schema generation",
+    "body": "Use `drizzle-zod` to auto-generate Zod schemas from your Drizzle table definitions. This keeps your validation in sync with your database schema.\n\n```typescript\nimport { pgTable, serial, text, integer, timestamp } from 'drizzle-orm/pg-core';\nimport { createInsertSchema, createSelectSchema } from 'drizzle-zod';\nimport { z } from 'zod';\n\nconst users = pgTable('users', {\n  id: serial('id').primaryKey(),\n  name: text('name').notNull(),\n  email: text('email').notNull(),\n  age: integer('age'),\n  createdAt: timestamp('created_at').defaultNow(),\n});\n\n// Auto-generated schemas\nconst insertUserSchema = createInsertSchema(users, {\n  // Override with custom validations\n  email: z.string().email('Invalid email'),\n  age: z.number().min(13, 'Must be at least 13').optional(),\n  name: z.string().min(1, 'Name required').max(100),\n});\n\nconst selectUserSchema = createSelectSchema(users);\n\n// Use in API routes\napp.post('/users', async (req, res) => {\n  const parsed = insertUserSchema.safeParse(req.body);\n  if (!parsed.success) {\n    return res.status(400).json({ errors: parsed.error.flatten() });\n  }\n  const user = await db.insert(users).values(parsed.data).returning();\n  res.json(user[0]);\n});\n```\n\nThe generated schemas respect nullability and defaults. Columns with `.notNull()` become required, columns with `.default()` become optional in the insert schema.",
+    "tags": ["drizzle", "zod", "validation", "drizzle-zod", "api"]
+  },
+  {
+    "type": "pattern",
+    "trust": "community",
+    "title": "Prisma fulltext search pattern for Postgres",
+    "body": "Enable Postgres full-text search with Prisma using the `fullTextSearch` preview feature.\n\n```prisma\ngenerator client {\n  provider        = \"prisma-client-js\"\n  previewFeatures = [\"fullTextSearch\"]\n}\n\nmodel Article {\n  id      Int    @id @default(autoincrement())\n  title   String\n  content String\n}\n```\n\n```typescript\n// Basic search\nconst results = await prisma.article.findMany({\n  where: {\n    content: { search: 'typescript & react' }, // AND\n  },\n  orderBy: {\n    _relevance: {\n      fields: ['title', 'content'],\n      search: 'typescript react',\n      sort: 'desc',\n    },\n  },\n});\n\n// Search with ranking\nconst results = await prisma.$queryRaw`\n  SELECT id, title,\n    ts_rank(to_tsvector('english', content), plainto_tsquery('english', ${query})) as rank\n  FROM articles\n  WHERE to_tsvector('english', content) @@ plainto_tsquery('english', ${query})\n  ORDER BY rank DESC\n  LIMIT 20\n`;\n```\n\nCreate a GIN index for performance: `CREATE INDEX articles_content_idx ON articles USING GIN (to_tsvector('english', content))`. For complex search, consider pg_trgm for fuzzy matching or move to a dedicated search engine.",
+    "tags": ["prisma", "fulltext-search", "postgres", "ranking"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Drizzle type-safe raw SQL with sql template tag",
+    "body": "Drizzle's `sql` template tag provides type-safe raw SQL while preventing SQL injection. Use it for complex queries that the query builder can't express.\n\n```typescript\nimport { sql } from 'drizzle-orm';\n\n// Type-safe parameterized query\nconst minAge = 18;\nconst role = 'admin';\nconst result = await db.execute(\n  sql`SELECT * FROM users WHERE age >= ${minAge} AND role = ${role}`\n);\n// Parameters are automatically escaped\n\n// Use sql.raw() for identifiers (table/column names) — NOT user input\nconst tableName = 'users';\nconst result = await db.execute(\n  sql`SELECT * FROM ${sql.raw(tableName)} LIMIT 10`\n);\n// WARNING: sql.raw() does NO escaping — never use with user input\n\n// Typed return with custom type\ntype UserStats = { role: string; count: number; avg_age: number };\nconst stats = await db.execute<UserStats>(\n  sql`SELECT role, COUNT(*)::int as count, AVG(age)::int as avg_age\n      FROM users GROUP BY role`\n);\n```\n\nAlways use interpolation (`${value}`) for values — they become parameterized queries. Only use `sql.raw()` for trusted, hardcoded identifiers.",
+    "tags": ["drizzle", "raw-sql", "sql-template", "type-safety", "injection"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Prisma optimistic concurrency control pattern",
+    "body": "Prevent lost updates in concurrent environments using a version field.\n\n```prisma\nmodel Product {\n  id      Int    @id @default(autoincrement())\n  name    String\n  stock   Int\n  version Int    @default(0)\n}\n```\n\n```typescript\nasync function updateStock(productId: number, newStock: number, expectedVersion: number) {\n  const result = await prisma.product.updateMany({\n    where: {\n      id: productId,\n      version: expectedVersion, // only update if version matches\n    },\n    data: {\n      stock: newStock,\n      version: { increment: 1 },\n    },\n  });\n\n  if (result.count === 0) {\n    throw new Error('Conflict: product was modified by another request');\n  }\n\n  return prisma.product.findUnique({ where: { id: productId } });\n}\n\n// Usage in API\napp.put('/products/:id/stock', async (req, res) => {\n  try {\n    const product = await updateStock(+req.params.id, req.body.stock, req.body.version);\n    res.json(product);\n  } catch (e) {\n    if (e.message.includes('Conflict')) {\n      return res.status(409).json({ error: 'Stale data, please refresh' });\n    }\n    throw e;\n  }\n});\n```\n\nThe `updateMany` + version check is atomic. If two requests try to update the same product, only the first succeeds. The second gets a 409 and must refetch.",
+    "tags": ["prisma", "optimistic-locking", "concurrency", "version"]
+  },
+  {
+    "type": "pattern",
+    "trust": "community",
+    "title": "Drizzle connection pooling with Neon serverless driver",
+    "body": "Configure Drizzle with Neon's serverless driver for minimal cold start latency in edge and serverless environments.\n\n```typescript\nimport { neon } from '@neondatabase/serverless';\nimport { drizzle } from 'drizzle-orm/neon-http';\nimport * as schema from './schema';\n\n// HTTP-based (best for serverless/edge)\nconst sql = neon(process.env.DATABASE_URL!);\nexport const db = drizzle(sql, { schema });\n\n// For WebSocket (better for connection reuse in long-running)\nimport { Pool, neonConfig } from '@neondatabase/serverless';\nimport { drizzle } from 'drizzle-orm/neon-serverless';\nimport ws from 'ws';\n\nneonConfig.webSocketConstructor = ws;\nconst pool = new Pool({ connectionString: process.env.DATABASE_URL });\nexport const db = drizzle(pool, { schema });\n```\n\nThe HTTP driver is stateless — no connection pooling needed, each query is an independent HTTP request. Use it for Vercel Edge, Cloudflare Workers, and Lambda. The WebSocket driver is better for Node.js servers that make multiple queries per request.",
+    "tags": ["drizzle", "neon", "serverless", "connection-pool", "edge"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Prisma query batching for dashboard aggregations",
+    "body": "Use Prisma's `$transaction` with an array of queries to batch multiple aggregation queries into a single round-trip.\n\n```typescript\nasync function getDashboardStats(userId: number) {\n  const [userCount, postCount, recentPosts, topAuthors, unreadNotifications] =\n    await prisma.$transaction([\n      prisma.user.count(),\n      prisma.post.count({ where: { authorId: userId } }),\n      prisma.post.findMany({\n        where: { authorId: userId },\n        orderBy: { createdAt: 'desc' },\n        take: 5,\n        select: { id: true, title: true, createdAt: true },\n      }),\n      prisma.user.findMany({\n        orderBy: { posts: { _count: 'desc' } },\n        take: 5,\n        select: { id: true, name: true, _count: { select: { posts: true } } },\n      }),\n      prisma.notification.count({\n        where: { userId, readAt: null },\n      }),\n    ]);\n\n  return { userCount, postCount, recentPosts, topAuthors, unreadNotifications };\n}\n```\n\nSequential `$transaction([...])` batches all queries into a single transaction. Each query is typed independently, so you get full type safety on the destructured results. This is more efficient than `Promise.all` because Prisma can optimize the batch.",
+    "tags": ["prisma", "batching", "aggregation", "dashboard", "transaction"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Drizzle complete schema with indexes, enums, and constraints",
+    "body": "A production-ready Drizzle schema showcasing all common column types and constraints.\n\n```typescript\nimport {\n  pgTable, pgEnum, serial, text, integer, boolean,\n  timestamp, jsonb, uniqueIndex, index, varchar, decimal,\n} from 'drizzle-orm/pg-core';\nimport { relations, sql } from 'drizzle-orm';\n\nexport const roleEnum = pgEnum('role', ['admin', 'editor', 'viewer']);\n\nexport const users = pgTable('users', {\n  id: serial('id').primaryKey(),\n  email: varchar('email', { length: 255 }).notNull().unique(),\n  name: varchar('name', { length: 100 }).notNull(),\n  role: roleEnum('role').default('viewer').notNull(),\n  metadata: jsonb('metadata').$type<{ theme: string; lang: string }>(),\n  isActive: boolean('is_active').default(true).notNull(),\n  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),\n  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),\n  deletedAt: timestamp('deleted_at', { withTimezone: true }),\n}, (table) => ({\n  emailIdx: uniqueIndex('users_email_idx').on(table.email),\n  activeIdx: index('users_active_idx').on(table.isActive).where(sql`${table.deletedAt} IS NULL`),\n}));\n\nexport const posts = pgTable('posts', {\n  id: serial('id').primaryKey(),\n  title: varchar('title', { length: 255 }).notNull(),\n  slug: varchar('slug', { length: 255 }).notNull().unique(),\n  content: text('content'),\n  authorId: integer('author_id').notNull().references(() => users.id, { onDelete: 'cascade' }),\n  viewCount: integer('view_count').default(0).notNull(),\n  price: decimal('price', { precision: 10, scale: 2 }),\n  publishedAt: timestamp('published_at', { withTimezone: true }),\n  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),\n}, (table) => ({\n  authorIdx: index('posts_author_idx').on(table.authorId),\n  publishedIdx: index('posts_published_idx').on(table.publishedAt),\n}));\n\nexport const usersRelations = relations(users, ({ many }) => ({\n  posts: many(posts),\n}));\n\nexport const postsRelations = relations(posts, ({ one }) => ({\n  author: one(users, { fields: [posts.authorId], references: [users.id] }),\n}));\n```",
+    "tags": ["drizzle", "schema", "postgres", "indexes", "enums", "relations"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Prisma schema with complete relation patterns and enums",
+    "body": "A comprehensive Prisma schema showing all common relation types, enums, and field attributes.\n\n```prisma\ngenerator client {\n  provider = \"prisma-client-js\"\n}\n\ndatasource db {\n  provider = \"postgresql\"\n  url      = env(\"DATABASE_URL\")\n}\n\nenum Role {\n  ADMIN\n  EDITOR\n  VIEWER\n}\n\nenum PostStatus {\n  DRAFT\n  PUBLISHED\n  ARCHIVED\n}\n\nmodel User {\n  id        Int       @id @default(autoincrement())\n  email     String    @unique @db.VarChar(255)\n  name      String    @db.VarChar(100)\n  role      Role      @default(VIEWER)\n  profile   Profile?  // optional 1:1\n  posts     Post[]    // 1:many\n  likes     Like[]    // many:many via explicit join\n  createdAt DateTime  @default(now())\n  updatedAt DateTime  @updatedAt\n  deletedAt DateTime?\n\n  @@index([role])\n  @@index([createdAt])\n}\n\nmodel Profile {\n  id     Int    @id @default(autoincrement())\n  bio    String @db.Text\n  avatar String?\n  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)\n  userId Int    @unique\n}\n\nmodel Post {\n  id          Int        @id @default(autoincrement())\n  title       String     @db.VarChar(255)\n  slug        String     @unique\n  content     String?    @db.Text\n  status      PostStatus @default(DRAFT)\n  author      User       @relation(fields: [authorId], references: [id], onDelete: Cascade)\n  authorId    Int\n  tags        Tag[]      // implicit many:many\n  likes       Like[]     // explicit many:many\n  publishedAt DateTime?\n  createdAt   DateTime   @default(now())\n  updatedAt   DateTime   @updatedAt\n\n  @@index([authorId])\n  @@index([status, publishedAt])\n}\n\nmodel Tag {\n  id    Int    @id @default(autoincrement())\n  name  String @unique\n  posts Post[] // implicit many:many\n}\n\nmodel Like {\n  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)\n  userId Int\n  post   Post @relation(fields: [postId], references: [id], onDelete: Cascade)\n  postId Int\n\n  @@id([userId, postId]) // composite primary key\n}\n```",
+    "tags": ["prisma", "schema", "relations", "enums", "postgres"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Drizzle migration and push configuration for multiple environments",
+    "body": "Configure Drizzle Kit for dev, staging, and production with environment-specific settings.\n\n```typescript\n// drizzle.config.ts\nimport { defineConfig } from 'drizzle-kit';\nimport 'dotenv/config';\n\nexport default defineConfig({\n  schema: './src/db/schema/index.ts',\n  out: './drizzle/migrations',\n  dialect: 'postgresql',\n  dbCredentials: {\n    url: process.env.DATABASE_URL!,\n  },\n  verbose: true,\n  strict: true, // asks confirmation before destructive changes\n});\n```\n\n```json\n// package.json scripts\n{\n  \"scripts\": {\n    \"db:generate\": \"drizzle-kit generate\",\n    \"db:migrate\": \"drizzle-kit migrate\",\n    \"db:push\": \"drizzle-kit push\",\n    \"db:studio\": \"drizzle-kit studio\",\n    \"db:seed\": \"tsx src/db/seed.ts\",\n    \"db:reset\": \"tsx src/db/reset.ts && npm run db:push && npm run db:seed\"\n  }\n}\n```\n\n```typescript\n// src/db/reset.ts — development only\nimport { sql } from 'drizzle-orm';\nimport { db } from './index';\n\nasync function reset() {\n  if (process.env.NODE_ENV === 'production') {\n    throw new Error('Cannot reset production database');\n  }\n  await db.execute(sql`DROP SCHEMA public CASCADE`);\n  await db.execute(sql`CREATE SCHEMA public`);\n  console.log('Database reset');\n}\n\nreset().catch(console.error);\n```\n\nUse `push` for development iteration, `generate` + `migrate` for staging/production. The `strict: true` flag prevents accidental column drops during push.",
+    "tags": ["drizzle", "drizzle-kit", "config", "migrations", "environments"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Prisma CRUD operations cheat sheet with all common patterns",
+    "body": "Quick reference for all Prisma CRUD operations with filtering, sorting, and pagination.\n\n```typescript\n// CREATE\nconst user = await prisma.user.create({\n  data: { email: 'a@test.com', name: 'Alice', profile: { create: { bio: 'Hello' } } },\n  include: { profile: true },\n});\n\n// READ — findUnique, findFirst, findMany\nconst user = await prisma.user.findUnique({ where: { email: 'a@test.com' } });\nconst admin = await prisma.user.findFirst({ where: { role: 'ADMIN' } });\nconst users = await prisma.user.findMany({\n  where: { role: { in: ['ADMIN', 'EDITOR'] }, name: { contains: 'Ali', mode: 'insensitive' } },\n  orderBy: { createdAt: 'desc' },\n  skip: 0,\n  take: 20,\n  select: { id: true, name: true, email: true, _count: { select: { posts: true } } },\n});\n\n// UPDATE\nconst updated = await prisma.user.update({\n  where: { id: 1 },\n  data: { name: 'Alice Updated', role: 'ADMIN' },\n});\n\n// UPSERT\nconst user = await prisma.user.upsert({\n  where: { email: 'a@test.com' },\n  update: { name: 'Alice' },\n  create: { email: 'a@test.com', name: 'Alice' },\n});\n\n// DELETE\nawait prisma.user.delete({ where: { id: 1 } });\n\n// AGGREGATE\nconst stats = await prisma.post.aggregate({\n  _count: true,\n  _avg: { viewCount: true },\n  _max: { viewCount: true },\n  where: { status: 'PUBLISHED' },\n});\n\n// GROUP BY\nconst byRole = await prisma.user.groupBy({\n  by: ['role'],\n  _count: true,\n  orderBy: { _count: { _all: 'desc' } },\n});\n```",
+    "tags": ["prisma", "crud", "cheat-sheet", "query", "aggregate"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Drizzle CRUD operations cheat sheet with query builder",
+    "body": "Quick reference for Drizzle's query builder and relational query API.\n\n```typescript\nimport { eq, ne, gt, gte, lt, lte, like, ilike, inArray, and, or, desc, asc, sql, count, avg, max } from 'drizzle-orm';\n\n// INSERT\nconst [user] = await db.insert(users).values({ name: 'Alice', email: 'a@test.com' }).returning();\n\n// Bulk insert\nawait db.insert(users).values([\n  { name: 'Bob', email: 'b@test.com' },\n  { name: 'Charlie', email: 'c@test.com' },\n]);\n\n// SELECT with filters\nconst activeAdmins = await db.select()\n  .from(users)\n  .where(and(eq(users.role, 'admin'), eq(users.isActive, true)))\n  .orderBy(desc(users.createdAt))\n  .limit(20)\n  .offset(0);\n\n// Relational query (like Prisma includes)\nconst usersWithPosts = await db.query.users.findMany({\n  where: eq(users.isActive, true),\n  with: { posts: { where: eq(posts.status, 'published'), limit: 5 } },\n});\n\n// UPDATE\nawait db.update(users)\n  .set({ name: 'Alice Updated', updatedAt: sql`now()` })\n  .where(eq(users.id, 1));\n\n// DELETE\nawait db.delete(users).where(eq(users.id, 1));\n\n// AGGREGATE\nconst [stats] = await db.select({\n  total: count(),\n  avgViews: avg(posts.viewCount),\n  maxViews: max(posts.viewCount),\n}).from(posts).where(eq(posts.status, 'published'));\n\n// UPSERT\nawait db.insert(users)\n  .values({ id: 1, name: 'Alice', email: 'a@test.com' })\n  .onConflictDoUpdate({ target: users.email, set: { name: 'Alice' } });\n```",
+    "tags": ["drizzle", "crud", "cheat-sheet", "query-builder", "aggregate"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Drizzle database connection setup for all major drivers",
+    "body": "Connection setup examples for Postgres, MySQL, SQLite, and serverless drivers.\n\n```typescript\n// 1. node-postgres (pg)\nimport { drizzle } from 'drizzle-orm/node-postgres';\nimport { Pool } from 'pg';\nconst pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 20 });\nexport const db = drizzle(pool, { schema });\n\n// 2. Neon serverless (HTTP — for edge/serverless)\nimport { neon } from '@neondatabase/serverless';\nimport { drizzle } from 'drizzle-orm/neon-http';\nconst sql = neon(process.env.DATABASE_URL!);\nexport const db = drizzle(sql, { schema });\n\n// 3. PlanetScale (MySQL serverless)\nimport { Client } from '@planetscale/database';\nimport { drizzle } from 'drizzle-orm/planetscale-serverless';\nconst client = new Client({ url: process.env.DATABASE_URL });\nexport const db = drizzle(client, { schema });\n\n// 4. Turso / LibSQL (SQLite edge)\nimport { createClient } from '@libsql/client';\nimport { drizzle } from 'drizzle-orm/libsql';\nconst client = createClient({ url: process.env.TURSO_URL!, authToken: process.env.TURSO_TOKEN });\nexport const db = drizzle(client, { schema });\n\n// 5. Better-sqlite3 (local SQLite)\nimport Database from 'better-sqlite3';\nimport { drizzle } from 'drizzle-orm/better-sqlite3';\nconst sqlite = new Database('local.db');\nexport const db = drizzle(sqlite, { schema });\n```",
+    "tags": ["drizzle", "connection", "postgres", "mysql", "sqlite", "neon", "turso"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Prisma middleware for query performance logging",
+    "body": "Log slow queries with timing information using Prisma's event system.\n\n```typescript\nimport { PrismaClient } from '@prisma/client';\n\nconst prisma = new PrismaClient({\n  log: [\n    { emit: 'event', level: 'query' },\n    { emit: 'stdout', level: 'warn' },\n    { emit: 'stdout', level: 'error' },\n  ],\n});\n\n// Log all queries with timing\nprisma.$on('query', (e) => {\n  if (e.duration > 100) { // Only log slow queries (>100ms)\n    console.warn(`Slow query (${e.duration}ms):`, {\n      query: e.query,\n      params: e.params,\n      duration: e.duration,\n    });\n  }\n});\n\n// Or use client extension for per-operation timing\nconst prismaWithTiming = prisma.$extends({\n  query: {\n    $allModels: {\n      async $allOperations({ operation, model, args, query }) {\n        const start = performance.now();\n        const result = await query(args);\n        const duration = performance.now() - start;\n        if (duration > 100) {\n          console.warn(`[${model}.${operation}] ${duration.toFixed(1)}ms`);\n        }\n        return result;\n      },\n    },\n  },\n});\n```\n\nIn production, send slow query logs to your observability platform (Datadog, Grafana, etc.) instead of console.warn.",
+    "tags": ["prisma", "logging", "performance", "slow-query", "monitoring"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Drizzle custom SQL helpers for common Postgres operations",
+    "body": "Reusable SQL helpers for common patterns like array operations, JSON queries, and date math.\n\n```typescript\nimport { sql, SQL } from 'drizzle-orm';\nimport { AnyPgColumn } from 'drizzle-orm/pg-core';\n\n// Array contains\nexport function arrayContains(column: AnyPgColumn, value: string) {\n  return sql`${value} = ANY(${column})`;\n}\n\n// JSON field access\nexport function jsonField(column: AnyPgColumn, path: string) {\n  return sql`${column}->>${path}`;\n}\n\n// Date within last N days\nexport function withinDays(column: AnyPgColumn, days: number) {\n  return sql`${column} > NOW() - INTERVAL '${sql.raw(String(days))} days'`;\n}\n\n// Case-insensitive search across multiple columns\nexport function searchAcross(term: string, ...columns: AnyPgColumn[]): SQL {\n  const conditions = columns.map(\n    (col) => sql`${col} ILIKE ${'%' + term + '%'}`\n  );\n  return sql.join(conditions, sql` OR `);\n}\n\n// Usage\nconst results = await db.select().from(posts)\n  .where(and(\n    withinDays(posts.createdAt, 30),\n    searchAcross('typescript', posts.title, posts.content),\n  ));\n\nconst taggedPosts = await db.select().from(posts)\n  .where(arrayContains(posts.tags, 'drizzle'));\n```\n\nThese helpers compose with Drizzle's `and()`, `or()`, and `where()` just like built-in operators.",
+    "tags": ["drizzle", "sql-helpers", "postgres", "json", "array", "search"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Prisma with Next.js App Router server actions",
+    "body": "Use Prisma in Next.js Server Actions with proper error handling and revalidation.\n\n```typescript\n// app/actions/user.ts\n'use server';\n\nimport { prisma } from '@/lib/prisma';\nimport { revalidatePath } from 'next/cache';\nimport { z } from 'zod';\n\nconst updateProfileSchema = z.object({\n  name: z.string().min(1).max(100),\n  bio: z.string().max(500).optional(),\n});\n\nexport async function updateProfile(formData: FormData) {\n  const parsed = updateProfileSchema.safeParse({\n    name: formData.get('name'),\n    bio: formData.get('bio'),\n  });\n\n  if (!parsed.success) {\n    return { error: parsed.error.flatten().fieldErrors };\n  }\n\n  try {\n    await prisma.user.update({\n      where: { id: getCurrentUserId() },\n      data: parsed.data,\n    });\n    revalidatePath('/profile');\n    return { success: true };\n  } catch (e) {\n    if (e instanceof Prisma.PrismaClientKnownRequestError) {\n      if (e.code === 'P2025') return { error: { _form: ['User not found'] } };\n    }\n    return { error: { _form: ['Something went wrong'] } };\n  }\n}\n\n// app/profile/page.tsx\nexport default async function ProfilePage() {\n  const user = await prisma.user.findUniqueOrThrow({\n    where: { id: getCurrentUserId() },\n  });\n\n  return (\n    <form action={updateProfile}>\n      <input name=\"name\" defaultValue={user.name} />\n      <textarea name=\"bio\" defaultValue={user.bio ?? ''} />\n      <button type=\"submit\">Save</button>\n    </form>\n  );\n}\n```",
+    "tags": ["prisma", "nextjs", "server-actions", "app-router", "zod"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Drizzle transaction with savepoints for partial rollback",
+    "body": "Use Postgres savepoints within Drizzle transactions for partial rollback.\n\n```typescript\nimport { sql } from 'drizzle-orm';\n\nawait db.transaction(async (tx) => {\n  // Step 1: always runs\n  await tx.insert(orders).values({\n    userId: 1,\n    total: 99.99,\n    status: 'pending',\n  });\n\n  // Step 2: optional, can fail without rolling back step 1\n  try {\n    await tx.execute(sql`SAVEPOINT send_notification`);\n    await tx.insert(notifications).values({\n      userId: 1,\n      message: 'Order placed!',\n    });\n    await tx.execute(sql`RELEASE SAVEPOINT send_notification`);\n  } catch (e) {\n    // Rollback only the notification, keep the order\n    await tx.execute(sql`ROLLBACK TO SAVEPOINT send_notification`);\n    console.warn('Notification failed, order still created:', e);\n  }\n\n  // Step 3: update inventory (must succeed)\n  await tx.update(products)\n    .set({ stock: sql`stock - 1` })\n    .where(eq(products.id, productId));\n});\n```\n\nSavepoints let you create nested \"sub-transactions\" within a larger transaction. If a savepoint fails, you can rollback to it without affecting work done before the savepoint.",
+    "tags": ["drizzle", "transaction", "savepoint", "partial-rollback", "postgres"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Prisma test helper with isolated database transactions",
+    "body": "Run each test in a transaction that rolls back, keeping the database clean without migrations or truncation.\n\n```typescript\n// test/helpers/prisma.ts\nimport { PrismaClient } from '@prisma/client';\n\nconst prisma = new PrismaClient();\n\nexport async function withTestTransaction<T>(\n  fn: (tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0]) => Promise<T>\n): Promise<T> {\n  try {\n    return await prisma.$transaction(async (tx) => {\n      const result = await fn(tx);\n      // Force rollback by throwing after test completes\n      throw { __rollback: true, result };\n    });\n  } catch (e: any) {\n    if (e.__rollback) return e.result;\n    throw e;\n  }\n}\n\n// Usage in tests\nimport { describe, it, expect } from 'vitest';\nimport { withTestTransaction } from './helpers/prisma';\n\ndescribe('UserService', () => {\n  it('creates a user', async () => {\n    await withTestTransaction(async (tx) => {\n      const user = await tx.user.create({\n        data: { email: 'test@test.com', name: 'Test' },\n      });\n      expect(user.email).toBe('test@test.com');\n\n      const found = await tx.user.findUnique({ where: { id: user.id } });\n      expect(found).not.toBeNull();\n    });\n    // Transaction rolled back — no cleanup needed\n  });\n});\n```",
+    "tags": ["prisma", "testing", "transaction-rollback", "vitest", "isolation"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Drizzle subquery pattern for complex aggregations",
+    "body": "Use Drizzle subqueries for complex aggregations that can't be expressed with simple joins.\n\n```typescript\nimport { db } from './db';\nimport { users, posts, comments } from './schema';\nimport { eq, sql, desc, count } from 'drizzle-orm';\n\n// Subquery: users with their post count and latest post date\nconst postStats = db\n  .select({\n    authorId: posts.authorId,\n    postCount: count().as('post_count'),\n    latestPost: sql<Date>`MAX(${posts.createdAt})`.as('latest_post'),\n  })\n  .from(posts)\n  .groupBy(posts.authorId)\n  .as('post_stats');\n\nconst usersWithStats = await db\n  .select({\n    id: users.id,\n    name: users.name,\n    email: users.email,\n    postCount: postStats.postCount,\n    latestPost: postStats.latestPost,\n  })\n  .from(users)\n  .leftJoin(postStats, eq(users.id, postStats.authorId))\n  .orderBy(desc(postStats.postCount));\n\n// Correlated subquery: users who posted in the last 7 days\nconst recentPosters = await db\n  .select()\n  .from(users)\n  .where(\n    sql`EXISTS (\n      SELECT 1 FROM ${posts}\n      WHERE ${posts.authorId} = ${users.id}\n      AND ${posts.createdAt} > NOW() - INTERVAL '7 days'\n    )`\n  );\n```\n\nThe `.as('alias')` call is required for subquery columns. Without it, Drizzle can't reference the column in the outer query.",
+    "tags": ["drizzle", "subquery", "aggregation", "postgres", "advanced-query"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Prisma database introspection and type generation workflow",
+    "body": "Pull an existing database schema into Prisma and generate types, useful for brownfield projects.\n\n```bash\n# 1. Set connection string\nexport DATABASE_URL=\"postgresql://user:pass@localhost:5432/mydb\"\n\n# 2. Introspect existing database\nnpx prisma db pull\n# Generates/updates schema.prisma from current DB state\n\n# 3. Review and clean up the generated schema\n# - Rename models to PascalCase\n# - Add @@map for table names that differ\n# - Define relations explicitly\n# - Add @unique, @default where appropriate\n\n# 4. Generate client\nnpx prisma generate\n\n# 5. Baseline migrations (so future changes are tracked)\nmkdir -p prisma/migrations/0_init\nnpx prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script > prisma/migrations/0_init/migration.sql\nnpx prisma migrate resolve --applied 0_init\n```\n\n```prisma\n// After introspection, clean up:\nmodel User {\n  id    Int    @id @default(autoincrement())\n  email String @unique\n  // Introspection might generate: user_name String\n  // Rename to: name String @map(\"user_name\")\n  name  String @map(\"user_name\")\n\n  @@map(\"users\") // map to actual table name\n}\n```\n\nRun `db pull` whenever the database changes externally. It's safe to re-run — it updates the schema file without losing your custom attributes.",
+    "tags": ["prisma", "introspection", "db-pull", "brownfield", "migration-baseline"]
+  },
+  {
+    "type": "snippet",
+    "trust": "community",
+    "title": "Drizzle bulk operations with returning and conflict handling",
+    "body": "Efficient bulk insert, update, and delete patterns with Drizzle.\n\n```typescript\nimport { eq, inArray, sql } from 'drizzle-orm';\n\n// Bulk insert with returning\nconst newUsers = await db.insert(users)\n  .values([\n    { name: 'Alice', email: 'a@test.com' },\n    { name: 'Bob', email: 'b@test.com' },\n    { name: 'Charlie', email: 'c@test.com' },\n  ])\n  .returning({ id: users.id, email: users.email });\n// [{ id: 1, email: 'a@test.com' }, ...]\n\n// Bulk upsert\nconst userData = [{ email: 'a@test.com', name: 'Alice V2' }];\nawait db.insert(users)\n  .values(userData)\n  .onConflictDoUpdate({\n    target: users.email,\n    set: { name: sql`excluded.name`, updatedAt: sql`now()` },\n  });\n\n// Bulk update with different values per row (using CASE)\nconst updates = [{ id: 1, name: 'New Alice' }, { id: 2, name: 'New Bob' }];\nawait db.execute(sql`\n  UPDATE users SET name = CASE id\n    ${sql.join(updates.map(u => sql`WHEN ${u.id} THEN ${u.name}`), sql` `)}\n  END\n  WHERE id IN (${sql.join(updates.map(u => sql`${u.id}`), sql`, `)})\n`);\n\n// Bulk delete with returning\nconst deleted = await db.delete(users)\n  .where(inArray(users.id, [1, 2, 3]))\n  .returning();\n```\n\nThe `sql.join()` helper is essential for dynamic SQL in bulk operations. Always use `returning()` to get back the affected rows without a separate query.",
+    "tags": ["drizzle", "bulk-operations", "insert", "upsert", "returning"]
+  },
+  {
+    "type": "config",
+    "trust": "verified",
+    "title": "Prisma connection string options for common databases",
+    "body": "Connection string formats and important parameters for Postgres, MySQL, and SQLite.\n\n```bash\n# PostgreSQL\nDATABASE_URL=\"postgresql://USER:PASSWORD@HOST:5432/DATABASE?schema=public&connection_limit=5&pool_timeout=10\"\n\n# PostgreSQL with SSL (required by most cloud providers)\nDATABASE_URL=\"postgresql://USER:PASSWORD@HOST:5432/DATABASE?sslmode=require&sslcert=/path/to/cert\"\n\n# PostgreSQL with PgBouncer (transaction mode)\nDATABASE_URL=\"postgresql://USER:PASSWORD@PGBOUNCER_HOST:6432/DATABASE?pgbouncer=true&connection_limit=1\"\n\n# MySQL\nDATABASE_URL=\"mysql://USER:PASSWORD@HOST:3306/DATABASE?connection_limit=5\"\n\n# MySQL with PlanetScale\nDATABASE_URL=\"mysql://USER:PASSWORD@HOST/DATABASE?sslaccept=strict\"\n\n# SQLite\nDATABASE_URL=\"file:./dev.db\"\nDATABASE_URL=\"file:/absolute/path/to/prod.db\"\n```\n\nKey parameters:\n- `connection_limit`: max connections in pool (default 5 for Prisma)\n- `pool_timeout`: seconds to wait for a connection (default 10)\n- `pgbouncer=true`: enables Prisma's PgBouncer compatibility mode\n- `connect_timeout`: seconds to wait for initial connection\n- `sslmode`: disable, prefer, require, verify-ca, verify-full",
+    "tags": ["prisma", "connection-string", "postgres", "mysql", "sqlite", "ssl"]
+  },
+  {
+    "type": "config",
+    "trust": "verified",
+    "title": "Drizzle Kit configuration with all options explained",
+    "body": "Complete drizzle.config.ts with all available options and their effects.\n\n```typescript\nimport { defineConfig } from 'drizzle-kit';\n\nexport default defineConfig({\n  // Path to your schema file(s)\n  schema: './src/db/schema/index.ts',\n  // Or multiple files:\n  // schema: ['./src/db/schema/users.ts', './src/db/schema/posts.ts'],\n\n  // Output directory for migration files\n  out: './drizzle/migrations',\n\n  // Database dialect\n  dialect: 'postgresql', // 'postgresql' | 'mysql' | 'sqlite'\n\n  // Database connection\n  dbCredentials: {\n    url: process.env.DATABASE_URL!,\n    // Or individual fields:\n    // host: 'localhost',\n    // port: 5432,\n    // user: 'postgres',\n    // password: 'secret',\n    // database: 'mydb',\n    // ssl: true,\n  },\n\n  // Print SQL statements during generate/push\n  verbose: true,\n\n  // Ask for confirmation before destructive changes\n  strict: true,\n\n  // Table name filters (regex patterns)\n  tablesFilter: ['!_prisma_migrations'], // exclude Prisma migration table\n\n  // Schema filters (Postgres only)\n  schemaFilter: ['public', 'app'],\n});\n```\n\nThe `tablesFilter` option is useful when migrating from Prisma to Drizzle — exclude Prisma's internal tables. Use `schemaFilter` for multi-schema Postgres setups.",
+    "tags": ["drizzle", "drizzle-kit", "config", "options", "migration"]
+  },
+  {
+    "type": "comparison",
+    "trust": "verified",
+    "title": "Prisma vs Drizzle: query performance and bundle size comparison",
+    "body": "Key differences in performance characteristics between Prisma and Drizzle.\n\n**Bundle size:**\n- Prisma: ~2MB+ (query engine binary + generated client)\n- Drizzle: ~50KB (pure JavaScript, no engine binary)\n\n**Query overhead:**\n- Prisma: queries go through the Rust query engine (IPC overhead)\n- Drizzle: generates SQL directly in JavaScript, sends to driver\n\n**Cold start (serverless):**\n- Prisma: 500ms-2s (loading query engine)\n- Drizzle: 50-100ms (pure JS module load)\n\n```typescript\n// Prisma — generated SQL has extra wrapping\nawait prisma.user.findMany({ where: { role: 'admin' } });\n// SELECT \"public\".\"User\".\"id\", \"public\".\"User\".\"name\", ... FROM \"public\".\"User\" WHERE \"public\".\"User\".\"role\" = $1\n\n// Drizzle — SQL matches what you write\nawait db.select().from(users).where(eq(users.role, 'admin'));\n// SELECT \"id\", \"name\", ... FROM \"users\" WHERE \"role\" = $1\n```\n\n**When to choose Prisma:** rapid prototyping, complex relations, existing Prisma codebase, auto-generated migrations.\n\n**When to choose Drizzle:** serverless/edge, bundle size matters, SQL-native developers, performance-critical apps.",
+    "tags": ["prisma", "drizzle", "comparison", "performance", "bundle-size"]
+  },
+  {
+    "type": "comparison",
+    "trust": "verified",
+    "title": "Prisma vs Drizzle: migration strategy comparison",
+    "body": "How each ORM handles schema changes and database migrations.\n\n**Prisma migrations:**\n```bash\n# Edit schema.prisma, then:\nnpx prisma migrate dev --name add_users   # generates SQL + applies\nnpx prisma migrate deploy                  # applies in production\nnpx prisma db push                          # prototyping (no files)\n```\n- Generates migration SQL automatically from schema diff\n- Tracks migration state in `_prisma_migrations` table\n- Can detect and warn about destructive changes\n- `--create-only` lets you edit SQL before applying\n\n**Drizzle migrations:**\n```bash\n# Edit TypeScript schema, then:\nnpx drizzle-kit generate    # generates SQL files\nnpx drizzle-kit migrate     # applies pending migrations\nnpx drizzle-kit push         # prototyping (no files)\n```\n- Generates migration SQL from TypeScript schema diff\n- Uses snapshot JSON files (in `meta/`) to track state\n- `strict: true` in config asks confirmation for destructive ops\n\n**Key differences:**\n- Prisma has `migrate resolve` for fixing drift; Drizzle requires manual intervention\n- Prisma's migration table is in the database; Drizzle's snapshots are in your repo\n- Drizzle migration files are more readable (less boilerplate)\n- Prisma supports baseline migrations for existing databases; Drizzle requires generating from scratch",
+    "tags": ["prisma", "drizzle", "comparison", "migrations", "schema-management"]
+  },
+  {
+    "type": "comparison",
+    "trust": "verified",
+    "title": "Prisma vs Drizzle: type safety and developer experience",
+    "body": "Comparing the type systems and DX of both ORMs.\n\n**Schema definition:**\n```prisma\n// Prisma: custom DSL\nmodel User {\n  id    Int    @id @default(autoincrement())\n  email String @unique\n  posts Post[]\n}\n```\n\n```typescript\n// Drizzle: pure TypeScript\nexport const users = pgTable('users', {\n  id: serial('id').primaryKey(),\n  email: text('email').notNull().unique(),\n});\n```\n\n**Type safety depth:**\n- Prisma: types generated at build time via `prisma generate`. Must regenerate after schema changes.\n- Drizzle: types inferred at write time from TypeScript. Changes are instant.\n\n**Autocomplete:**\n- Prisma: excellent autocomplete for `where`, `include`, `select`. Nested relations fully typed.\n- Drizzle: excellent for query builder. Relational queries (`db.query`) also fully typed.\n\n**Raw SQL:**\n- Prisma: `$queryRaw<T>` with tagged templates. Type parameter is trust-based (no validation).\n- Drizzle: `sql<T>` template tag. Same trust-based typing, but used more naturally in the API.\n\n**Learning curve:**\n- Prisma: lower (custom DSL is simple, docs are excellent)\n- Drizzle: higher for ORM newcomers, lower for SQL-experienced developers",
+    "tags": ["prisma", "drizzle", "comparison", "type-safety", "developer-experience"]
+  }
+]

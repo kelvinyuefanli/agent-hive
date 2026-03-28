@@ -263,5 +263,153 @@ export const circuitBreakerStats = pgTable("circuit_breaker_stats", {
   date: date("date").unique().notNull(),
   demandNodesCreated: integer("demand_nodes_created").default(0),
   coOccurEdgesCreated: integer("co_occur_edges_created").default(0),
+  outcomePatternsCreated: integer("outcome_patterns_created").default(0),
   isPaused: boolean("is_paused").default(false),
 });
+
+// ─── 12. outcome_reports (ephemeral, 7-day TTL) ────────────────────────────
+
+export const outcomeActionTypeEnum = [
+  "code_generation",
+  "debugging",
+  "refactoring",
+  "configuration",
+  "deployment",
+  "testing",
+  "api_integration",
+  "database_operation",
+  "documentation",
+  "other",
+] as const;
+
+export const outcomeReports = pgTable(
+  "outcome_reports",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    agentId: text("agent_id").notNull(),
+    actionType: text("action_type", { enum: outcomeActionTypeEnum }).notNull(),
+    domainTags: text("domain_tags")
+      .array()
+      .default(sql`'{}'::text[]`),
+    success: boolean("success").notNull(),
+    durationMs: integer("duration_ms"),
+    errorSummary: text("error_summary"),
+    environment: jsonb("environment"),
+    nodeId: uuid("node_id").references(() => knowledgeNodes.id),
+    strategyId: uuid("strategy_id").references(() => strategies.id),
+    createdAt: timestamp("created_at").defaultNow(),
+  },
+  (table) => [
+    index("outcome_reports_created_at_idx").on(table.createdAt),
+    index("outcome_reports_agent_id_idx").on(table.agentId),
+    index("outcome_reports_action_type_idx").on(table.actionType),
+  ],
+);
+
+// ─── 13. usage_reports (ephemeral, 7-day TTL) ──────────────────────────────
+
+export const usageReports = pgTable(
+  "usage_reports",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    nodeId: uuid("node_id")
+      .notNull()
+      .references(() => knowledgeNodes.id),
+    agentId: text("agent_id").notNull(),
+    helpful: boolean("helpful").notNull(),
+    createdAt: timestamp("created_at").defaultNow(),
+  },
+  (table) => [
+    index("usage_reports_node_id_idx").on(table.nodeId),
+    index("usage_reports_created_at_idx").on(table.createdAt),
+  ],
+);
+
+// ─── 14. failure_reports (ephemeral, 7-day TTL) ────────────────────────────
+
+export const failureErrorTypeEnum = [
+  "api_error",
+  "rate_limit",
+  "timeout",
+  "auth_failure",
+  "version_incompatible",
+  "dependency_missing",
+  "runtime_error",
+  "other",
+] as const;
+
+export const failureReports = pgTable(
+  "failure_reports",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    agentId: text("agent_id").notNull(),
+    errorType: text("error_type", { enum: failureErrorTypeEnum }).notNull(),
+    service: text("service").notNull(),
+    message: text("message").notNull(),
+    environment: jsonb("environment"),
+    createdAt: timestamp("created_at").defaultNow(),
+  },
+  (table) => [
+    index("failure_reports_service_idx").on(table.service),
+    index("failure_reports_created_at_idx").on(table.createdAt),
+  ],
+);
+
+// ─── 15. strategies ────────────────────────────────────────────────────────
+
+export const strategyLifecycleEnum = [
+  "observed",
+  "candidate",
+  "validated",
+  "canonical",
+  "decayed",
+] as const;
+
+export const strategies = pgTable(
+  "strategies",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    title: text("title").notNull(),
+    contextPattern: text("context_pattern").notNull(),
+    steps: jsonb("steps").notNull().$type<string[]>(),
+    tools: text("tools")
+      .array()
+      .default(sql`'{}'::text[]`),
+    antiPatterns: jsonb("anti_patterns").$type<string[]>(),
+    domainTags: text("domain_tags")
+      .array()
+      .default(sql`'{}'::text[]`),
+    lifecycleStage: text("lifecycle_stage", { enum: strategyLifecycleEnum })
+      .default("observed"),
+    fitnessScore: real("fitness_score").default(0.0),
+    adoptionCount: integer("adoption_count").default(0),
+    successRate: real("success_rate").default(0.0),
+    sourcePatternId: uuid("source_pattern_id").references(() => knowledgeNodes.id),
+    createdAt: timestamp("created_at").defaultNow(),
+    updatedAt: timestamp("updated_at").defaultNow(),
+  },
+  (table) => [
+    index("strategies_lifecycle_stage_idx").on(table.lifecycleStage),
+    index("strategies_fitness_score_idx").on(table.fitnessScore),
+  ],
+);
+
+// ─── 16. strategy_adoptions ────────────────────────────────────────────────
+
+export const strategyAdoptions = pgTable(
+  "strategy_adoptions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    strategyId: uuid("strategy_id")
+      .notNull()
+      .references(() => strategies.id),
+    agentId: text("agent_id").notNull(),
+    adoptedAt: timestamp("adopted_at").defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("strategy_adoptions_agent_strategy_unique").on(
+      table.strategyId,
+      table.agentId,
+    ),
+  ],
+);

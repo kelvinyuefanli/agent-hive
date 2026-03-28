@@ -1,0 +1,1316 @@
+[
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Cannot use useState or useEffect in Server Components",
+    "body": "In Next.js 15 App Router, all components are Server Components by default. If you use `useState`, `useEffect`, or any other React hook, you must add the `'use client'` directive at the top of the file.\n\n```tsx\n// BAD \u2014 this will error because page.tsx is a Server Component\nimport { useState } from 'react';\n\nexport default function Page() {\n  const [count, setCount] = useState(0); // Error!\n  return <button onClick={() => setCount(count + 1)}>{count}</button>;\n}\n\n// GOOD \u2014 extract interactive parts to a Client Component\n// components/counter.tsx\n'use client';\nimport { useState } from 'react';\n\nexport function Counter() {\n  const [count, setCount] = useState(0);\n  return <button onClick={() => setCount(count + 1)}>{count}</button>;\n}\n\n// app/page.tsx \u2014 Server Component imports Client Component\nimport { Counter } from '@/components/counter';\nexport default function Page() {\n  return <Counter />;\n}\n```\n\nThe fix is always to split: keep data fetching in the Server Component and move interactivity into a `'use client'` child component.",
+    "tags": [
+      "react-19",
+      "server-components",
+      "use-client",
+      "hooks",
+      "next-15"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Passing non-serializable props from Server to Client Components",
+    "body": "Props passed from Server Components to Client Components must be serializable. Functions, class instances, Dates (as objects), Maps, Sets, and Symbols cannot be passed directly.\n\n```tsx\n// BAD \u2014 passing a function from Server to Client Component\nimport { ClientChild } from './client-child';\n\nexport default function Page() {\n  const handleClick = () => console.log('clicked');\n  // Error: Functions cannot be passed directly to Client Components\n  return <ClientChild onClick={handleClick} />;\n}\n\n// GOOD \u2014 define the handler inside the Client Component\n// client-child.tsx\n'use client';\nexport function ClientChild() {\n  const handleClick = () => console.log('clicked');\n  return <button onClick={handleClick}>Click</button>;\n}\n```\n\nSerializable types include: strings, numbers, booleans, null, undefined, arrays, plain objects, Date (as ISO string), BigInt, and Server Action references (functions marked with `'use server'`). If you need to pass a Date, convert it to an ISO string first.",
+    "tags": [
+      "react-19",
+      "server-components",
+      "client-components",
+      "serialization",
+      "props"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Client Components can render Server Components only as children props",
+    "body": "A Client Component cannot import and render a Server Component directly. However, you can pass a Server Component as `children` or any other JSX prop.\n\n```tsx\n// BAD \u2014 Client Component importing Server Component\n'use client';\nimport { ServerData } from './server-data'; // This becomes a Client Component!\n\nexport function Wrapper() {\n  return <div><ServerData /></div>;\n}\n\n// GOOD \u2014 pass Server Component as children from a parent Server Component\n// app/page.tsx (Server Component)\nimport { ClientWrapper } from './client-wrapper';\nimport { ServerData } from './server-data';\n\nexport default function Page() {\n  return (\n    <ClientWrapper>\n      <ServerData />\n    </ClientWrapper>\n  );\n}\n\n// client-wrapper.tsx\n'use client';\nexport function ClientWrapper({ children }: { children: React.ReactNode }) {\n  const [open, setOpen] = useState(true);\n  return open ? <div>{children}</div> : null;\n}\n```\n\nWhen a Server Component is imported inside a `'use client'` file, it gets treated as a Client Component and loses server-only capabilities.",
+    "tags": [
+      "react-19",
+      "server-components",
+      "client-components",
+      "composition",
+      "children-pattern"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Next.js 15 fetch requests are no longer cached by default",
+    "body": "In Next.js 15, `fetch()` requests in Server Components default to `cache: 'no-store'`, which is a breaking change from Next.js 14 where the default was `cache: 'force-cache'`.\n\n```tsx\n// Next.js 14 behavior: cached by default\n// Next.js 15 behavior: NOT cached by default\nconst data = await fetch('https://api.example.com/data');\n\n// To opt into caching in Next.js 15, explicitly set cache:\nconst data = await fetch('https://api.example.com/data', {\n  cache: 'force-cache',\n});\n\n// Or use time-based revalidation:\nconst data = await fetch('https://api.example.com/data', {\n  next: { revalidate: 3600 }, // revalidate every hour\n});\n```\n\nThis change was made because most fetch calls in practice need fresh data. If you are migrating from Next.js 14, audit all your `fetch()` calls and add explicit caching where needed to avoid performance regressions.",
+    "tags": [
+      "next-15",
+      "fetch",
+      "caching",
+      "migration",
+      "breaking-change"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Server Actions must be async functions",
+    "body": "Server Actions defined with `'use server'` must always be async functions. A non-async function with the directive will cause a build error.\n\n```tsx\n// BAD \u2014 Server Action is not async\n'use server';\nexport function createUser(formData: FormData) {\n  // Error: Server actions must be async functions\n  const name = formData.get('name');\n}\n\n// GOOD \u2014 Server Action is async\n'use server';\nexport async function createUser(formData: FormData) {\n  const name = formData.get('name') as string;\n  await db.insert(users).values({ name });\n}\n```\n\nThis requirement exists because Server Actions are invoked via network requests from the client, and the framework needs to handle the asynchronous serialization/deserialization of arguments and return values.",
+    "tags": [
+      "react-19",
+      "server-actions",
+      "async",
+      "use-server",
+      "next-15"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Server Actions cannot be defined in Client Components \u2014 use a separate file",
+    "body": "You cannot put `'use server'` inside a `'use client'` file. Server Actions must be defined in a separate file or inline in a Server Component.\n\n```tsx\n// BAD \u2014 'use server' inside a 'use client' file\n'use client';\n\nasync function submitForm() {\n  'use server'; // Error! Cannot use 'use server' in a Client Component\n}\n\n// GOOD \u2014 separate file for Server Actions\n// app/actions.ts\n'use server';\nexport async function submitForm(formData: FormData) {\n  const title = formData.get('title') as string;\n  await db.insert(posts).values({ title });\n  revalidatePath('/posts');\n}\n\n// app/components/form.tsx\n'use client';\nimport { submitForm } from '@/app/actions';\n\nexport function PostForm() {\n  return (\n    <form action={submitForm}>\n      <input name=\"title\" />\n      <button type=\"submit\">Create</button>\n    </form>\n  );\n}\n```\n\nThe `'use server'` directive marks the function as a server endpoint. Import the action into Client Components \u2014 React serializes the reference automatically.",
+    "tags": [
+      "react-19",
+      "server-actions",
+      "use-client",
+      "use-server",
+      "next-15"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "useFormStatus must be used inside a child of the form element",
+    "body": "The `useFormStatus` hook reads the status of the parent `<form>`. It must be called in a component that is rendered as a child of the form \u2014 not in the same component that renders the form.\n\n```tsx\n// BAD \u2014 useFormStatus in the same component as <form>\n'use client';\nimport { useFormStatus } from 'react-dom';\n\nexport function MyForm() {\n  const { pending } = useFormStatus(); // Always returns { pending: false }!\n  return (\n    <form action={someAction}>\n      <button disabled={pending}>Submit</button>\n    </form>\n  );\n}\n\n// GOOD \u2014 useFormStatus in a child component\n'use client';\nimport { useFormStatus } from 'react-dom';\n\nfunction SubmitButton() {\n  const { pending } = useFormStatus();\n  return <button disabled={pending}>{pending ? 'Saving...' : 'Submit'}</button>;\n}\n\nexport function MyForm() {\n  return (\n    <form action={someAction}>\n      <input name=\"title\" />\n      <SubmitButton />\n    </form>\n  );\n}\n```\n\n`useFormStatus` looks up the tree for the nearest `<form>` ancestor. If it is used in the component that renders the `<form>`, it finds no parent form and `pending` is always `false`.",
+    "tags": [
+      "react-19",
+      "useFormStatus",
+      "forms",
+      "server-actions",
+      "gotcha"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "useActionState replaces useFormState in React 19",
+    "body": "React 19 renamed `useFormState` to `useActionState` and moved it from `react-dom` to `react`. The old API is deprecated.\n\n```tsx\n// BAD \u2014 deprecated API\nimport { useFormState } from 'react-dom';\n\n// GOOD \u2014 React 19 API\n'use client';\nimport { useActionState } from 'react';\nimport { createPost } from '@/app/actions';\n\nexport function PostForm() {\n  const [state, formAction, isPending] = useActionState(createPost, {\n    message: '',\n    errors: {},\n  });\n\n  return (\n    <form action={formAction}>\n      <input name=\"title\" />\n      {state.errors?.title && <p>{state.errors.title}</p>}\n      <button disabled={isPending}>{isPending ? 'Creating...' : 'Create'}</button>\n      {state.message && <p>{state.message}</p>}\n    </form>\n  );\n}\n```\n\nThe third element in the returned tuple (`isPending`) is new in `useActionState` \u2014 it replaces the need for a separate `useFormStatus` call in many cases. The action function receives `(previousState, formData)` as arguments.",
+    "tags": [
+      "react-19",
+      "useActionState",
+      "useFormState",
+      "forms",
+      "migration"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "React 19 use() hook cannot be called conditionally like other hooks",
+    "body": "The `use()` API can be called conditionally (unlike other hooks), but it has its own constraints: it can only read Promises and React Context. It cannot be used with other types.\n\n```tsx\n// use() CAN be called conditionally \u2014 this is valid!\nimport { use } from 'react';\n\nfunction UserProfile({ userPromise, showDetails }: {\n  userPromise: Promise<User>;\n  showDetails: boolean;\n}) {\n  if (showDetails) {\n    const user = use(userPromise); // OK inside conditional!\n    return <div>{user.name}</div>;\n  }\n  return <div>Hidden</div>;\n}\n\n// use() also works with Context\nfunction ThemedButton() {\n  const theme = use(ThemeContext); // Replaces useContext(ThemeContext)\n  return <button style={{ color: theme.primary }}>Click</button>;\n}\n```\n\nHowever, the Promise passed to `use()` must be created outside the component or memoized. Creating a new Promise each render causes an infinite loop. Typically, you create the Promise in a Server Component and pass it as a prop.",
+    "tags": [
+      "react-19",
+      "use-hook",
+      "suspense",
+      "context",
+      "conditional-hooks"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Dynamic rendering forced by cookies() headers() searchParams in Next.js 15",
+    "body": "Using `cookies()`, `headers()`, or `searchParams` in a Server Component forces the entire route to be dynamically rendered. This means no static HTML is generated at build time.\n\n```tsx\n// This page will ALWAYS be dynamically rendered\nimport { cookies } from 'next/headers';\n\nexport default async function Page() {\n  const cookieStore = await cookies();\n  const theme = cookieStore.get('theme')?.value ?? 'light';\n  return <div className={theme}>Content</div>;\n}\n\n// To keep the page static, move dynamic logic to a Client Component\n// page.tsx (stays static)\nimport { ThemeSwitcher } from './theme-switcher';\nexport default function Page() {\n  return <div><ThemeSwitcher />Content</div>;\n}\n\n// theme-switcher.tsx\n'use client';\nexport function ThemeSwitcher() {\n  // Read cookie on the client instead\n  const theme = document.cookie.match(/theme=(\\w+)/)?.[1] ?? 'light';\n  return <div className={theme} />;\n}\n```\n\nIn Next.js 15, `cookies()` and `headers()` are now async and must be awaited. This is a breaking change from Next.js 14.",
+    "tags": [
+      "next-15",
+      "dynamic-rendering",
+      "cookies",
+      "headers",
+      "searchParams",
+      "static-rendering"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "cookies() and headers() are now async in Next.js 15",
+    "body": "In Next.js 15, `cookies()` and `headers()` are asynchronous and must be awaited. This is a breaking change from Next.js 14 where they were synchronous.\n\n```tsx\n// Next.js 14 (synchronous)\nimport { cookies } from 'next/headers';\nconst cookieStore = cookies();\nconst token = cookieStore.get('token');\n\n// Next.js 15 (async \u2014 must await)\nimport { cookies } from 'next/headers';\nconst cookieStore = await cookies();\nconst token = cookieStore.get('token');\n\n// Same for headers\nimport { headers } from 'next/headers';\nconst headersList = await headers();\nconst userAgent = headersList.get('user-agent');\n```\n\nIf you forget to await, you will get a TypeScript error or unexpected behavior at runtime. The Next.js codemod `npx @next/codemod@latest next-async-request-api .` can automatically update your codebase.",
+    "tags": [
+      "next-15",
+      "cookies",
+      "headers",
+      "async",
+      "breaking-change",
+      "migration"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "params and searchParams props are now async in Next.js 15 pages and layouts",
+    "body": "In Next.js 15, the `params` and `searchParams` props passed to page and layout components are now Promises and must be awaited.\n\n```tsx\n// Next.js 14\nexport default function Page({ params }: { params: { slug: string } }) {\n  return <h1>{params.slug}</h1>;\n}\n\n// Next.js 15 \u2014 params is a Promise\nexport default async function Page({\n  params,\n}: {\n  params: Promise<{ slug: string }>;\n}) {\n  const { slug } = await params;\n  return <h1>{slug}</h1>;\n}\n\n// Same for searchParams\nexport default async function Page({\n  searchParams,\n}: {\n  searchParams: Promise<{ q?: string }>;\n}) {\n  const { q } = await searchParams;\n  return <div>Search: {q}</div>;\n}\n```\n\nThis applies to `page.tsx`, `layout.tsx`, `route.ts`, `generateMetadata`, and `generateStaticParams`. The codemod `npx @next/codemod@latest next-async-request-api .` handles this migration.",
+    "tags": [
+      "next-15",
+      "params",
+      "searchParams",
+      "async",
+      "breaking-change",
+      "migration"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Router cache no longer caches page components by default in Next.js 15",
+    "body": "Next.js 15 changed the client-side router cache to no longer cache Page component segments by default. Every navigation now fetches fresh data from the server for page segments.\n\n```tsx\n// To restore the old caching behavior, configure next.config.ts:\nimport type { NextConfig } from 'next';\n\nconst nextConfig: NextConfig = {\n  experimental: {\n    staleTimes: {\n      dynamic: 30,  // Cache dynamic pages for 30 seconds\n      static: 180,  // Cache static pages for 180 seconds\n    },\n  },\n};\n\nexport default nextConfig;\n```\n\nLayout segments are still cached and reused on navigation by default \u2014 only page segments changed. This is particularly important for apps that relied on the router cache to avoid refetching data on back/forward navigation. If you see more server requests after upgrading to Next.js 15, this is likely the cause.",
+    "tags": [
+      "next-15",
+      "router-cache",
+      "caching",
+      "client-navigation",
+      "breaking-change"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "revalidatePath and revalidateTag only take effect after the current request",
+    "body": "Calling `revalidatePath()` or `revalidateTag()` in a Server Action does not immediately refetch data in the same request. The revalidation happens on the next request.\n\n```tsx\n'use server';\nimport { revalidatePath } from 'next/cache';\n\nexport async function createPost(formData: FormData) {\n  const title = formData.get('title') as string;\n  await db.insert(posts).values({ title });\n\n  revalidatePath('/posts');\n  // The /posts page will show fresh data on the NEXT request,\n  // not in the response to this Server Action call.\n  // However, Next.js automatically triggers a router refresh after\n  // the action completes, so the user will see updated data.\n}\n\n// If you need the newly created data in the action's return value:\nexport async function createPost(prevState: State, formData: FormData) {\n  const title = formData.get('title') as string;\n  const [post] = await db.insert(posts).values({ title }).returning();\n  revalidatePath('/posts');\n  return { success: true, post }; // Return the data directly\n}\n```\n\nNext.js handles the coordination \u2014 after a Server Action with `revalidatePath`, it refetches the affected segments and updates the UI.",
+    "tags": [
+      "next-15",
+      "revalidatePath",
+      "revalidateTag",
+      "caching",
+      "server-actions"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Cannot access request-scoped data (cookies/headers) in generateStaticParams",
+    "body": "`generateStaticParams` runs at build time to determine which paths to statically generate. It cannot access `cookies()`, `headers()`, or any request-scoped data.\n\n```tsx\n// BAD \u2014 cookies not available at build time\nimport { cookies } from 'next/headers';\n\nexport async function generateStaticParams() {\n  const cookieStore = await cookies(); // Error at build!\n  const token = cookieStore.get('token');\n  const posts = await fetchPosts(token);\n  return posts.map((p) => ({ slug: p.slug }));\n}\n\n// GOOD \u2014 use direct data fetching without request context\nexport async function generateStaticParams() {\n  const posts = await db.query.posts.findMany({\n    columns: { slug: true },\n  });\n  return posts.map((p) => ({ slug: p.slug }));\n}\n```\n\nIf your data fetching requires authentication, use a service-level API key or direct database access in `generateStaticParams`, not user-scoped cookies.",
+    "tags": [
+      "next-15",
+      "generateStaticParams",
+      "static-rendering",
+      "cookies",
+      "build-time"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Metadata API generateMetadata blocks page rendering until resolved",
+    "body": "When using `generateMetadata`, the page component will not start rendering until the metadata function resolves. This means slow metadata fetches delay the entire page.\n\n```tsx\n// SLOW \u2014 sequential data fetching\nexport async function generateMetadata({ params }: Props): Promise<Metadata> {\n  const { id } = await params;\n  const product = await fetch(`/api/products/${id}`).then(r => r.json());\n  return { title: product.name };\n}\n\nexport default async function Page({ params }: Props) {\n  const { id } = await params;\n  const product = await fetch(`/api/products/${id}`).then(r => r.json());\n  return <div>{product.name}</div>;\n}\n\n// BETTER \u2014 Next.js deduplicates fetch with the same URL\n// Both generateMetadata and Page call the same URL,\n// but only one actual fetch is made (React/Next.js memoizes it)\n```\n\nNext.js automatically deduplicates `fetch()` calls with the same URL and options within a single render pass. So calling the same fetch in both `generateMetadata` and your Page component results in only one actual network request.",
+    "tags": [
+      "next-15",
+      "metadata",
+      "generateMetadata",
+      "performance",
+      "data-fetching"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Middleware runs on the Edge Runtime \u2014 no Node.js APIs available",
+    "body": "Next.js middleware runs on the Edge Runtime, which does not support many Node.js APIs like `fs`, `path`, `crypto.randomBytes`, `Buffer`, or native modules.\n\n```tsx\n// middleware.ts \u2014 RUNS ON EDGE RUNTIME\nimport { NextResponse } from 'next/server';\nimport type { NextRequest } from 'next/server';\n\n// BAD \u2014 Node.js APIs not available\nimport fs from 'fs'; // Error!\nimport { PrismaClient } from '@prisma/client'; // Error \u2014 uses native modules\n\n// GOOD \u2014 use Web APIs and edge-compatible libraries\nexport function middleware(request: NextRequest) {\n  const url = request.nextUrl.clone();\n  const token = request.cookies.get('token')?.value;\n\n  if (!token && url.pathname.startsWith('/dashboard')) {\n    url.pathname = '/login';\n    return NextResponse.redirect(url);\n  }\n\n  // Use Web Crypto API instead of Node crypto\n  const array = new Uint8Array(16);\n  crypto.getRandomValues(array);\n\n  return NextResponse.next();\n}\n```\n\nFor JWT verification in middleware, use edge-compatible libraries like `jose` instead of `jsonwebtoken`. For database access, use HTTP-based clients (Prisma Accelerate, Neon serverless driver).",
+    "tags": [
+      "next-15",
+      "middleware",
+      "edge-runtime",
+      "node-apis",
+      "limitations"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Suspense boundary required for streaming with use() and async Server Components",
+    "body": "If a Server Component uses `await` or a Client Component uses `use()` to read a Promise, you need a `<Suspense>` boundary above it to show a loading state while the data loads. Without it, the entire page waits.\n\n```tsx\n// app/page.tsx\nimport { Suspense } from 'react';\nimport { SlowData } from './slow-data';\n\nexport default function Page() {\n  return (\n    <div>\n      <h1>Dashboard</h1>\n      {/* Without Suspense, the entire page waits for SlowData */}\n      <Suspense fallback={<p>Loading data...</p>}>\n        <SlowData />\n      </Suspense>\n    </div>\n  );\n}\n\n// slow-data.tsx (Server Component)\nasync function SlowData() {\n  const data = await fetch('https://slow-api.example.com/data', {\n    cache: 'no-store',\n  });\n  const json = await data.json();\n  return <pre>{JSON.stringify(json, null, 2)}</pre>;\n}\n```\n\nPlace `<Suspense>` boundaries strategically. Each boundary creates a streaming chunk \u2014 the shell renders instantly and data fills in as it resolves.",
+    "tags": [
+      "react-19",
+      "suspense",
+      "streaming",
+      "ssr",
+      "server-components"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "loading.tsx creates an implicit Suspense boundary for the page segment",
+    "body": "A `loading.tsx` file in a route segment automatically wraps the page in a `<Suspense>` boundary. This means you do not need to manually add `<Suspense>` around the page content.\n\n```tsx\n// app/dashboard/loading.tsx\nexport default function Loading() {\n  return <div className=\"animate-pulse\">Loading dashboard...</div>;\n}\n\n// app/dashboard/page.tsx \u2014 automatically wrapped in Suspense\nexport default async function Dashboard() {\n  const data = await fetchDashboardData(); // loading.tsx shows while this resolves\n  return <div>{data.summary}</div>;\n}\n\n// This is equivalent to:\n// <Suspense fallback={<Loading />}>\n//   <Dashboard />\n// </Suspense>\n```\n\nHowever, `loading.tsx` only applies to the page segment, not to nested components. If you have multiple slow data fetches in child components, add explicit `<Suspense>` boundaries around each one for more granular streaming.",
+    "tags": [
+      "next-15",
+      "loading",
+      "suspense",
+      "streaming",
+      "app-router"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "error.tsx must be a Client Component",
+    "body": "The `error.tsx` file in Next.js App Router must include the `'use client'` directive. It is a Client Component because it uses `useEffect` and needs to be interactive (offering a retry button).\n\n```tsx\n// app/dashboard/error.tsx\n'use client'; // Required!\n\nexport default function Error({\n  error,\n  reset,\n}: {\n  error: Error & { digest?: string };\n  reset: () => void;\n}) {\n  return (\n    <div>\n      <h2>Something went wrong!</h2>\n      <p>{error.message}</p>\n      <button onClick={() => reset()}>Try again</button>\n    </div>\n  );\n}\n```\n\nForgetting `'use client'` will cause the error boundary to not catch errors properly. Also note that `error.tsx` catches errors in its segment and below, but not errors in the `layout.tsx` of the same segment. To catch layout errors, place `error.tsx` in the parent segment or use `global-error.tsx`.",
+    "tags": [
+      "next-15",
+      "error-boundary",
+      "error.tsx",
+      "use-client",
+      "app-router"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "error.tsx does not catch errors from layout.tsx in the same segment",
+    "body": "An `error.tsx` file catches errors thrown by `page.tsx` and child components in the same segment, but it does NOT catch errors from the `layout.tsx` in the same segment.\n\n```\napp/\n  dashboard/\n    layout.tsx    \u2190 errors here are NOT caught by error.tsx below\n    error.tsx     \u2190 only catches errors from page.tsx and children\n    page.tsx\n```\n\n```tsx\n// To catch errors in dashboard/layout.tsx, you need:\n// app/error.tsx (parent segment) or app/global-error.tsx\n\n// app/global-error.tsx catches root layout errors\n'use client';\nexport default function GlobalError({\n  error,\n  reset,\n}: {\n  error: Error & { digest?: string };\n  reset: () => void;\n}) {\n  return (\n    <html>\n      <body>\n        <h1>Something went wrong</h1>\n        <button onClick={() => reset()}>Retry</button>\n      </body>\n    </html>\n  );\n}\n```\n\n`global-error.tsx` is the only way to catch errors in the root `layout.tsx`. It must define its own `<html>` and `<body>` tags since it replaces the root layout when active.",
+    "tags": [
+      "next-15",
+      "error-boundary",
+      "layout",
+      "global-error",
+      "app-router"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "React 19 ref as prop \u2014 forwardRef is no longer needed",
+    "body": "In React 19, function components can accept `ref` as a regular prop. The `forwardRef` wrapper is no longer required.\n\n```tsx\n// React 18 \u2014 needed forwardRef\nimport { forwardRef } from 'react';\n\nconst Input = forwardRef<HTMLInputElement, InputProps>((props, ref) => {\n  return <input ref={ref} {...props} />;\n});\n\n// React 19 \u2014 ref is just a prop\nfunction Input({ ref, ...props }: InputProps & { ref?: React.Ref<HTMLInputElement> }) {\n  return <input ref={ref} {...props} />;\n}\n\n// Usage is the same\nfunction Form() {\n  const inputRef = useRef<HTMLInputElement>(null);\n  return <Input ref={inputRef} placeholder=\"Type here\" />;\n}\n```\n\n`forwardRef` still works but is deprecated and will be removed in a future version. The React team provides a codemod: `npx types-react-codemod@latest preset-19 .` to update your types. Existing `forwardRef` components continue to work during the migration.",
+    "tags": [
+      "react-19",
+      "ref",
+      "forwardRef",
+      "migration",
+      "props"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Parallel routes default.tsx required to avoid 404 on hard navigation",
+    "body": "When using parallel routes (named slots like `@modal`), you must provide a `default.tsx` for each slot. Without it, a hard refresh (full page reload) will result in a 404.\n\n```\napp/\n  layout.tsx\n  page.tsx\n  @modal/\n    default.tsx    \u2190 REQUIRED for hard refresh to work\n    (.)photo/\n      [id]/\n        page.tsx\n```\n\n```tsx\n// app/@modal/default.tsx\nexport default function Default() {\n  return null; // Return null when no modal is active\n}\n\n// app/layout.tsx\nexport default function Layout({\n  children,\n  modal,\n}: {\n  children: React.ReactNode;\n  modal: React.ReactNode;\n}) {\n  return (\n    <div>\n      {children}\n      {modal}\n    </div>\n  );\n}\n```\n\nOn soft navigation (client-side), Next.js remembers the slot state. On hard navigation, it cannot reconstruct the slot state so it renders `default.tsx`. If no `default.tsx` exists, Next.js renders a 404.",
+    "tags": [
+      "next-15",
+      "parallel-routes",
+      "default.tsx",
+      "modal",
+      "hard-navigation"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Intercepting routes (.) (..) (...) match route segments not filesystem paths",
+    "body": "Intercepting route conventions `(.)`, `(..)`, `(...)` match based on route segments, not the filesystem directory structure. This is a common source of confusion.\n\n```\n// Filesystem structure:\napp/\n  feed/\n    page.tsx\n    @modal/\n      (..)photo/       \u2190 This does NOT go up one filesystem dir\n        [id]/\n          page.tsx\n  photo/\n    [id]/\n      page.tsx\n\n// Route segments:\n// /feed          \u2192 app/feed/page.tsx\n// /photo/[id]    \u2192 app/photo/[id]/page.tsx\n// (..) in @modal means \"one route segment up\" = from /feed to /\n// So (..)photo matches /photo/[id]\n```\n\n```tsx\n// app/feed/@modal/(..)photo/[id]/page.tsx\n// This intercepts /photo/123 when navigated from /feed\nexport default async function PhotoModal({\n  params,\n}: {\n  params: Promise<{ id: string }>;\n}) {\n  const { id } = await params;\n  return <Modal><Photo id={id} /></Modal>;\n}\n```\n\nBecause `@modal` is a named slot (not a route segment), `(..)` goes up from `/feed` to `/`, then matches `photo/[id]`.",
+    "tags": [
+      "next-15",
+      "intercepting-routes",
+      "parallel-routes",
+      "modal",
+      "routing"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "next/image requires explicit width and height or fill prop",
+    "body": "The Next.js `<Image>` component requires either explicit `width` and `height` props or the `fill` prop. Omitting both causes a build error.\n\n```tsx\nimport Image from 'next/image';\n\n// BAD \u2014 missing dimensions\n<Image src=\"/hero.jpg\" alt=\"Hero\" />\n\n// GOOD \u2014 explicit dimensions\n<Image src=\"/hero.jpg\" alt=\"Hero\" width={800} height={400} />\n\n// GOOD \u2014 fill mode (parent must have position: relative)\n<div style={{ position: 'relative', width: '100%', height: '400px' }}>\n  <Image\n    src=\"/hero.jpg\"\n    alt=\"Hero\"\n    fill\n    style={{ objectFit: 'cover' }}\n    sizes=\"100vw\"\n  />\n</div>\n\n// For remote images, configure domains in next.config.ts:\nconst nextConfig: NextConfig = {\n  images: {\n    remotePatterns: [\n      { protocol: 'https', hostname: 'cdn.example.com' },\n    ],\n  },\n};\n```\n\nWhen using `fill`, always provide the `sizes` prop to help the browser pick the right image size. Without `sizes`, the browser defaults to `100vw` which may download unnecessarily large images.",
+    "tags": [
+      "next-15",
+      "next-image",
+      "image-optimization",
+      "fill",
+      "responsive"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "next/font subsets must be specified or build fails",
+    "body": "When using `next/font/google`, you must specify the `subsets` option. Omitting it causes a build warning or error and may load all font subsets, bloating the page.\n\n```tsx\n// BAD \u2014 no subsets\nimport { Inter } from 'next/font/google';\nconst inter = Inter({}); // Warning: Missing subsets\n\n// GOOD \u2014 specify subsets\nimport { Inter } from 'next/font/google';\nconst inter = Inter({\n  subsets: ['latin'],\n  display: 'swap',\n});\n\n// Variable fonts with specific weights\nimport { Roboto } from 'next/font/google';\nconst roboto = Roboto({\n  weight: ['400', '700'],\n  subsets: ['latin'],\n  display: 'swap',\n});\n\n// Usage in layout\nexport default function RootLayout({ children }: { children: React.ReactNode }) {\n  return (\n    <html lang=\"en\" className={inter.className}>\n      <body>{children}</body>\n    </html>\n  );\n}\n```\n\nFonts declared at the module level are automatically self-hosted and deduplicated. Do not declare fonts inside components \u2014 declare them in the layout file or a shared module.",
+    "tags": [
+      "next-15",
+      "next-font",
+      "google-fonts",
+      "subsets",
+      "performance"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Route Handlers GET functions are cached by default when not using dynamic data",
+    "body": "In Next.js 15, a GET Route Handler is statically evaluated at build time if it does not use dynamic functions (`cookies()`, `headers()`, `searchParams`) or the `dynamic = 'force-dynamic'` export.\n\n```tsx\n// app/api/data/route.ts\n// This GET handler is STATIC \u2014 built once, returns same response\nexport async function GET() {\n  const data = await db.query.posts.findMany();\n  return Response.json(data);\n}\n\n// To make it dynamic, use one of:\n\n// Option 1: Export dynamic config\nexport const dynamic = 'force-dynamic';\nexport async function GET() {\n  const data = await db.query.posts.findMany();\n  return Response.json(data);\n}\n\n// Option 2: Use a dynamic function\nimport { cookies } from 'next/headers';\nexport async function GET() {\n  const cookieStore = await cookies(); // Forces dynamic\n  const data = await db.query.posts.findMany();\n  return Response.json(data);\n}\n\n// Option 3: Use revalidation\nexport const revalidate = 60; // ISR \u2014 revalidate every 60 seconds\nexport async function GET() {\n  const data = await db.query.posts.findMany();\n  return Response.json(data);\n}\n```\n\nPOST, PUT, PATCH, and DELETE handlers are always dynamic.",
+    "tags": [
+      "next-15",
+      "route-handlers",
+      "caching",
+      "static-rendering",
+      "api-routes"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Server Actions return value must be serializable",
+    "body": "Server Actions can return values, but the return value must be serializable (same constraints as passing props from Server to Client Components).\n\n```tsx\n// BAD \u2014 returning non-serializable data\n'use server';\nexport async function getUser() {\n  const user = await db.query.users.findFirst();\n  return {\n    ...user,\n    createdAt: user.createdAt, // Date object \u2014 not serializable!\n    validate: () => true, // Function \u2014 not serializable!\n  };\n}\n\n// GOOD \u2014 serialize everything\n'use server';\nexport async function getUser() {\n  const user = await db.query.users.findFirst();\n  return {\n    ...user,\n    createdAt: user.createdAt.toISOString(), // String \u2014 OK\n    // Omit functions entirely\n  };\n}\n```\n\nThis applies to the return value used with `useActionState` as well. If your action state includes dates, always convert them to strings or timestamps before returning.",
+    "tags": [
+      "react-19",
+      "server-actions",
+      "serialization",
+      "useActionState",
+      "gotcha"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "next.config.ts replaces next.config.js as the default in Next.js 15",
+    "body": "Next.js 15 supports TypeScript configuration files natively. You can use `next.config.ts` with full type checking.\n\n```tsx\n// next.config.ts\nimport type { NextConfig } from 'next';\n\nconst nextConfig: NextConfig = {\n  images: {\n    remotePatterns: [\n      { protocol: 'https', hostname: 'cdn.example.com' },\n    ],\n  },\n  experimental: {\n    ppr: true, // Partial Prerendering\n    typedRoutes: true,\n  },\n};\n\nexport default nextConfig;\n```\n\nIf both `next.config.ts` and `next.config.js` exist, the `.ts` file takes precedence. When migrating, rename the file and add the `NextConfig` type annotation for autocompletion.",
+    "tags": [
+      "next-15",
+      "config",
+      "typescript",
+      "next-config",
+      "migration"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "ISR revalidation in App Router uses route segment config not getStaticProps",
+    "body": "Incremental Static Regeneration in the App Router does not use `getStaticProps`. Instead, you export a `revalidate` constant from the page or use `fetch` options.\n\n```tsx\n// app/products/page.tsx\n\n// Option 1: Route segment config\nexport const revalidate = 3600; // Revalidate every hour\n\nexport default async function ProductsPage() {\n  const products = await db.query.products.findMany();\n  return <ProductList products={products} />;\n}\n\n// Option 2: Per-fetch revalidation\nexport default async function ProductsPage() {\n  const res = await fetch('https://api.example.com/products', {\n    next: { revalidate: 3600 },\n  });\n  const products = await res.json();\n  return <ProductList products={products} />;\n}\n\n// On-demand revalidation via Server Action:\n'use server';\nimport { revalidatePath, revalidateTag } from 'next/cache';\n\nexport async function refreshProducts() {\n  revalidateTag('products');\n  // or: revalidatePath('/products');\n}\n```\n\nThe lowest `revalidate` value in a route wins. If a layout has `revalidate = 3600` and a page has `revalidate = 60`, the page revalidates every 60 seconds.",
+    "tags": [
+      "next-15",
+      "isr",
+      "revalidation",
+      "static-rendering",
+      "app-router"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Cannot throw redirect() inside try/catch blocks",
+    "body": "The `redirect()` function from `next/navigation` works by throwing a special error. If you catch it in a try/catch, the redirect will not work.\n\n```tsx\n// BAD \u2014 redirect caught by try/catch\nimport { redirect } from 'next/navigation';\n\nexport async function createPost(formData: FormData) {\n  'use server';\n  try {\n    await db.insert(posts).values({ title: formData.get('title') as string });\n    redirect('/posts'); // Caught by catch block!\n  } catch (error) {\n    return { error: 'Failed to create post' };\n  }\n}\n\n// GOOD \u2014 redirect outside try/catch\nexport async function createPost(formData: FormData) {\n  'use server';\n  let success = false;\n  try {\n    await db.insert(posts).values({ title: formData.get('title') as string });\n    success = true;\n  } catch (error) {\n    return { error: 'Failed to create post' };\n  }\n  if (success) {\n    redirect('/posts');\n  }\n}\n```\n\nThe same applies to `notFound()` \u2014 it also throws internally. Always place these calls outside of try/catch blocks.",
+    "tags": [
+      "next-15",
+      "redirect",
+      "try-catch",
+      "server-actions",
+      "navigation"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Cannot use redirect() in Client Components \u2014 use useRouter instead",
+    "body": "The `redirect()` function from `next/navigation` only works in Server Components, Server Actions, and Route Handlers. In Client Components, use `useRouter().push()`.\n\n```tsx\n// BAD \u2014 redirect in Client Component\n'use client';\nimport { redirect } from 'next/navigation';\n\nexport function LoginButton() {\n  function handleClick() {\n    redirect('/dashboard'); // This won't work!\n  }\n  return <button onClick={handleClick}>Login</button>;\n}\n\n// GOOD \u2014 useRouter in Client Component\n'use client';\nimport { useRouter } from 'next/navigation';\n\nexport function LoginButton() {\n  const router = useRouter();\n  function handleClick() {\n    router.push('/dashboard');\n  }\n  return <button onClick={handleClick}>Login</button>;\n}\n```\n\nUse `redirect()` in server-side code (Server Components, Server Actions, Route Handlers) and `useRouter` in Client Components. For conditional redirects in middleware, use `NextResponse.redirect()`.",
+    "tags": [
+      "next-15",
+      "redirect",
+      "useRouter",
+      "client-components",
+      "navigation"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Dynamic imports with next/dynamic lose Server Component benefits",
+    "body": "Using `next/dynamic` in a Server Component converts it to a Client Component implicitly. If you want code splitting in Server Components, use regular `import()` with `<Suspense>`.\n\n```tsx\n// BAD \u2014 next/dynamic in Server Component makes it a Client Component\nimport dynamic from 'next/dynamic';\nconst HeavyChart = dynamic(() => import('./heavy-chart'));\n\nexport default function Page() {\n  return <HeavyChart />; // Now a client-rendered component\n}\n\n// GOOD for Server Components \u2014 use React.lazy + Suspense or just import\nimport { Suspense } from 'react';\nimport { HeavyChart } from './heavy-chart'; // Server Component\n\nexport default function Page() {\n  return (\n    <Suspense fallback={<p>Loading chart...</p>}>\n      <HeavyChart />\n    </Suspense>\n  );\n}\n\n// next/dynamic IS correct for Client Components that need lazy loading:\n'use client';\nimport dynamic from 'next/dynamic';\nconst Editor = dynamic(() => import('./editor'), { ssr: false });\n```\n\nUse `next/dynamic` with `{ ssr: false }` specifically when a Client Component needs a browser-only library (e.g., a WYSIWYG editor).",
+    "tags": [
+      "next-15",
+      "dynamic-import",
+      "code-splitting",
+      "server-components",
+      "next-dynamic"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Metadata exported from layout.tsx is not merged with page metadata",
+    "body": "In Next.js 15, metadata from `layout.tsx` and `page.tsx` in the same segment is not deeply merged. The page metadata replaces matching fields from the layout.\n\n```tsx\n// app/layout.tsx\nexport const metadata: Metadata = {\n  title: { default: 'My App', template: '%s | My App' },\n  description: 'My application description',\n  openGraph: {\n    siteName: 'My App',\n    type: 'website',\n  },\n};\n\n// app/about/page.tsx\nexport const metadata: Metadata = {\n  title: 'About', // Becomes 'About | My App' via template\n  // description is inherited from layout\n  // But if you set openGraph here, it REPLACES the layout's openGraph entirely\n  openGraph: {\n    title: 'About Us', // siteName and type from layout are LOST\n  },\n};\n\n// To preserve parent openGraph fields, re-specify them:\nexport const metadata: Metadata = {\n  title: 'About',\n  openGraph: {\n    title: 'About Us',\n    siteName: 'My App', // Must repeat\n    type: 'website', // Must repeat\n  },\n};\n```\n\nThe `title.template` pattern is the recommended way to build consistent titles. Shallow fields like `description` are inherited, but nested objects like `openGraph` are fully replaced.",
+    "tags": [
+      "next-15",
+      "metadata",
+      "seo",
+      "layout",
+      "openGraph"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "useOptimistic resets when the parent component re-renders with new data",
+    "body": "The optimistic state from `useOptimistic` is automatically replaced when the parent Server Component re-renders and passes updated props. This is by design but can surprise developers.\n\n```tsx\n'use client';\nimport { useOptimistic } from 'react';\n\nexport function LikeButton({ likes }: { likes: number }) {\n  const [optimisticLikes, addOptimisticLike] = useOptimistic(\n    likes,\n    (current, _: null) => current + 1\n  );\n\n  async function handleLike() {\n    addOptimisticLike(null);\n    await likePost(); // Server Action\n    // After this completes, the Server Component re-renders\n    // and passes the new `likes` count, replacing optimistic state\n  }\n\n  return (\n    <button onClick={handleLike}>\n      {optimisticLikes} likes\n    </button>\n  );\n}\n```\n\nIf the action fails, the optimistic state reverts to the last prop value. Make sure your Server Action calls `revalidatePath` or `revalidateTag` so the parent re-renders with correct data after success.",
+    "tags": [
+      "react-19",
+      "useOptimistic",
+      "server-actions",
+      "revalidation",
+      "state"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Cannot use process.env on the client without NEXT_PUBLIC_ prefix",
+    "body": "Environment variables without the `NEXT_PUBLIC_` prefix are only available on the server. Accessing them in Client Components returns `undefined`.\n\n```tsx\n// .env.local\nDATABASE_URL=postgres://...\nNEXT_PUBLIC_API_URL=https://api.example.com\n\n// Server Component \u2014 both work\nconst dbUrl = process.env.DATABASE_URL; // OK\nconst apiUrl = process.env.NEXT_PUBLIC_API_URL; // OK\n\n// Client Component \u2014 only NEXT_PUBLIC_ works\n'use client';\nconst dbUrl = process.env.DATABASE_URL; // undefined!\nconst apiUrl = process.env.NEXT_PUBLIC_API_URL; // OK\n```\n\nNever prefix sensitive values like database URLs or API secrets with `NEXT_PUBLIC_` \u2014 they get bundled into the client JavaScript. If a Client Component needs server-only data, fetch it via a Server Action or API route.",
+    "tags": [
+      "next-15",
+      "environment-variables",
+      "NEXT_PUBLIC",
+      "client-components",
+      "security"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "community",
+    "title": "Streaming SSR breaks when a component throws during rendering",
+    "body": "If a component inside a `<Suspense>` boundary throws an unrecoverable error during streaming SSR, the entire stream can fail. Use error boundaries alongside Suspense for resilient streaming.\n\n```tsx\n// Resilient streaming pattern:\nimport { Suspense } from 'react';\n\n// error.tsx handles thrown errors, loading.tsx handles Suspense\n// But for fine-grained control, nest error boundaries:\n\nexport default function Page() {\n  return (\n    <div>\n      <h1>Dashboard</h1>\n      <ErrorBoundary fallback={<p>Failed to load stats</p>}>\n        <Suspense fallback={<p>Loading stats...</p>}>\n          <Stats />\n        </Suspense>\n      </ErrorBoundary>\n      <ErrorBoundary fallback={<p>Failed to load chart</p>}>\n        <Suspense fallback={<p>Loading chart...</p>}>\n          <Chart />\n        </Suspense>\n      </ErrorBoundary>\n    </div>\n  );\n}\n```\n\nIn Next.js App Router, `error.tsx` serves as the error boundary for the segment. For more granular error handling within a page, use a custom `ErrorBoundary` class component wrapping each `<Suspense>`.",
+    "tags": [
+      "react-19",
+      "streaming",
+      "ssr",
+      "suspense",
+      "error-boundary"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "community",
+    "title": "Server Actions have a 1MB default body size limit",
+    "body": "Server Actions use a POST request under the hood with a default body size limit of 1MB. Sending large payloads (e.g., base64-encoded files) will fail silently or throw a confusing error.\n\n```tsx\n// next.config.ts \u2014 increase the limit\nimport type { NextConfig } from 'next';\n\nconst nextConfig: NextConfig = {\n  experimental: {\n    serverActions: {\n      bodySizeLimit: '10mb',\n    },\n  },\n};\n\nexport default nextConfig;\n\n// Better approach: use a Route Handler for file uploads\n// app/api/upload/route.ts\nexport async function POST(request: Request) {\n  const formData = await request.formData();\n  const file = formData.get('file') as File;\n  const bytes = await file.arrayBuffer();\n  // Process the file...\n  return Response.json({ success: true });\n}\n```\n\nFor file uploads, prefer Route Handlers over Server Actions. Route Handlers give you more control over streaming and progress tracking.",
+    "tags": [
+      "next-15",
+      "server-actions",
+      "file-upload",
+      "body-size",
+      "route-handlers"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "community",
+    "title": "unstable_cache is replaced by use cache directive in Next.js 15",
+    "body": "Next.js 15 introduces the `'use cache'` directive as the replacement for `unstable_cache`. The `'use cache'` directive can be applied to functions or entire files.\n\n```tsx\n// OLD approach with unstable_cache\nimport { unstable_cache } from 'next/cache';\n\nconst getCachedPosts = unstable_cache(\n  async () => {\n    return db.query.posts.findMany();\n  },\n  ['posts'],\n  { revalidate: 3600 }\n);\n\n// NEW approach with 'use cache' (Next.js 15 canary)\nasync function getPosts() {\n  'use cache';\n  return db.query.posts.findMany();\n}\n\n// With cache lifetime configuration\nimport { cacheLife } from 'next/cache';\n\nasync function getPosts() {\n  'use cache';\n  cacheLife('hours');\n  return db.query.posts.findMany();\n}\n```\n\nNote: `'use cache'` is still experimental in Next.js 15 and requires `experimental.dynamicIO` in `next.config.ts`. For stable code, continue using `unstable_cache` or fetch-level caching.",
+    "tags": [
+      "next-15",
+      "caching",
+      "use-cache",
+      "unstable-cache",
+      "experimental"
+    ]
+  },
+  {
+    "type": "gotcha",
+    "trust": "community",
+    "title": "not-found.tsx only triggers from notFound() function call",
+    "body": "The `not-found.tsx` file does not automatically render for missing dynamic routes. You must explicitly call `notFound()` from `next/navigation`.\n\n```tsx\n// app/posts/[slug]/page.tsx\nimport { notFound } from 'next/navigation';\n\nexport default async function PostPage({\n  params,\n}: {\n  params: Promise<{ slug: string }>;\n}) {\n  const { slug } = await params;\n  const post = await db.query.posts.findFirst({\n    where: eq(posts.slug, slug),\n  });\n\n  if (!post) {\n    notFound(); // Triggers not-found.tsx\n  }\n\n  return <article>{post.title}</article>;\n}\n\n// app/posts/[slug]/not-found.tsx\nexport default function NotFound() {\n  return <div>Post not found</div>;\n}\n```\n\nThe `app/not-found.tsx` at the root handles unmatched routes globally. Segment-level `not-found.tsx` files handle `notFound()` calls within that segment. If no segment-level `not-found.tsx` exists, it bubbles up to the nearest parent.",
+    "tags": [
+      "next-15",
+      "not-found",
+      "notFound",
+      "routing",
+      "app-router"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Error: useState is not a function (Server Component using hooks)",
+    "body": "This error occurs when you try to use React hooks like `useState`, `useEffect`, or `useRef` in a Server Component (any component without the `'use client'` directive in App Router).\n\n```\nError: useState is not a function\n// or\nError: (0 , react__WEBPACK_IMPORTED_MODULE_0__.useState) is not a function\n```\n\n```tsx\n// FIX: Add 'use client' directive at the top of the file\n'use client';\nimport { useState } from 'react';\n\nexport function Counter() {\n  const [count, setCount] = useState(0);\n  return <button onClick={() => setCount(c => c + 1)}>{count}</button>;\n}\n```\n\nAlternatively, restructure your component to keep data fetching in the Server Component and pass data as props to a Client Component child.",
+    "tags": [
+      "react-19",
+      "server-components",
+      "useState",
+      "hooks",
+      "use-client"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Error: Only plain objects can be passed to Client Components from Server Components",
+    "body": "This error appears when you pass non-serializable values (functions, class instances, Dates, Maps, Sets) from a Server Component to a Client Component.\n\n```\nError: Only plain objects, and a few built-ins, can be passed to Client Components from Server Components. Classes or null prototypes are not supported.\n```\n\n```tsx\n// BAD \u2014 passing a Date object\nexport default async function Page() {\n  const user = await getUser();\n  return <ClientProfile user={user} />; // user.createdAt is a Date!\n}\n\n// FIX \u2014 serialize dates before passing\nexport default async function Page() {\n  const user = await getUser();\n  return (\n    <ClientProfile\n      user={{\n        ...user,\n        createdAt: user.createdAt.toISOString(),\n      }}\n    />\n  );\n}\n```\n\nCommon culprits: Prisma/Drizzle models with Date fields, Mongoose documents, or any object with a non-plain prototype. Serialize everything to plain objects, strings, and numbers before passing to Client Components.",
+    "tags": [
+      "react-19",
+      "server-components",
+      "client-components",
+      "serialization",
+      "date"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Error: Invariant: headers() expects to have requestAsyncStorage",
+    "body": "This error occurs when `headers()`, `cookies()`, or other request-scoped functions are called outside of a request context (e.g., at module scope, in `generateStaticParams`, or during build time).\n\n```\nError: Invariant: headers() expects to have requestAsyncStorage, none available.\n```\n\n```tsx\n// BAD \u2014 calling headers at module scope\nimport { headers } from 'next/headers';\nconst headersList = await headers(); // Error \u2014 no request context!\n\n// GOOD \u2014 call inside a Server Component or Route Handler\nimport { headers } from 'next/headers';\n\nexport default async function Page() {\n  const headersList = await headers(); // OK \u2014 inside request context\n  const auth = headersList.get('authorization');\n  return <div>Auth: {auth}</div>;\n}\n\n// GOOD \u2014 in a Route Handler\nexport async function GET() {\n  const headersList = await headers();\n  return Response.json({ ua: headersList.get('user-agent') });\n}\n```\n\nRequest-scoped functions can only be called during the execution of a request. They cannot be used in `generateStaticParams`, top-level module code, or `next.config.ts`.",
+    "tags": [
+      "next-15",
+      "headers",
+      "cookies",
+      "request-context",
+      "build-error"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Error: NEXT_REDIRECT thrown in try/catch block",
+    "body": "When `redirect()` from `next/navigation` is called inside a try/catch, the catch block intercepts the redirect error, preventing navigation.\n\n```\nError: NEXT_REDIRECT\n// or the redirect simply doesn't work\n```\n\n```tsx\n// BAD\nimport { redirect } from 'next/navigation';\n\nexport async function submitAction(formData: FormData) {\n  'use server';\n  try {\n    await saveData(formData);\n    redirect('/success'); // Caught by catch!\n  } catch (e) {\n    return { error: 'Something went wrong' };\n  }\n}\n\n// FIX \u2014 redirect outside try/catch\nexport async function submitAction(formData: FormData) {\n  'use server';\n  let result;\n  try {\n    result = await saveData(formData);\n  } catch (e) {\n    return { error: 'Something went wrong' };\n  }\n  redirect('/success');\n}\n```\n\nBoth `redirect()` and `notFound()` throw special errors internally. Always call them after the try/catch block. You can also check `isRedirectError(e)` from `next/dist/client/components/redirect` to re-throw redirect errors.",
+    "tags": [
+      "next-15",
+      "redirect",
+      "try-catch",
+      "server-actions",
+      "NEXT_REDIRECT"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Error: Event handlers cannot be passed to Client Component props",
+    "body": "This error occurs when a Server Component tries to pass an event handler (function) as a prop to a Client Component.\n\n```\nError: Event handlers cannot be passed to Client Component props.\n<button onClick={function} children=...>\n                ^^^^^^^^^^ If you need interactivity, consider converting part of this to a Client Component.\n```\n\n```tsx\n// BAD \u2014 Server Component passing onClick\nexport default function Page() {\n  return <button onClick={() => console.log('click')}>Click</button>;\n}\n\n// FIX \u2014 extract to Client Component\n// components/click-button.tsx\n'use client';\nexport function ClickButton() {\n  return <button onClick={() => console.log('click')}>Click</button>;\n}\n\n// page.tsx\nimport { ClickButton } from '@/components/click-button';\nexport default function Page() {\n  return <ClickButton />;\n}\n```\n\nAll event handlers (`onClick`, `onChange`, `onSubmit`, etc.) require client-side JavaScript. Move them into `'use client'` components.",
+    "tags": [
+      "react-19",
+      "server-components",
+      "event-handlers",
+      "onClick",
+      "use-client"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Error: Cannot find module 'server-only'",
+    "body": "This error means you are importing a module marked with `server-only` in a Client Component, or you haven't installed the `server-only` package.\n\n```\nError: Cannot find module 'server-only'\n```\n\n```bash\n# Install the package\nnpm install server-only\n```\n\n```tsx\n// lib/db.ts \u2014 mark as server-only to prevent client imports\nimport 'server-only';\nimport { drizzle } from 'drizzle-orm/neon-http';\n\nexport const db = drizzle(process.env.DATABASE_URL!);\n\n// If a Client Component imports this file:\n// 'use client';\n// import { db } from '@/lib/db'; // Build error! Good \u2014 prevents leaking secrets\n```\n\nUse `import 'server-only'` in any module that contains secrets, direct database access, or server-only logic. This gives a clear build-time error instead of a confusing runtime error. There is also a `client-only` package for the reverse case.",
+    "tags": [
+      "next-15",
+      "server-only",
+      "client-only",
+      "security",
+      "imports"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Error: Unsupported Server Component type: undefined",
+    "body": "This error usually means you have a default export that is `undefined` \u2014 often caused by exporting a named function but forgetting the `default` keyword in a page or layout file.\n\n```\nError: Unsupported Server Component type: undefined\n```\n\n```tsx\n// BAD \u2014 missing default export\nexport function Page() {\n  return <div>Hello</div>;\n}\n// Next.js expects: export default function Page()\n\n// BAD \u2014 exporting undefined\nconst Page = undefined;\nexport default Page;\n\n// FIX\nexport default function Page() {\n  return <div>Hello</div>;\n}\n```\n\nThis also happens when a barrel file re-exports something that doesn't exist, or when a circular import causes a module to resolve as `undefined`. Check your import chain if the fix above doesn't resolve it.",
+    "tags": [
+      "react-19",
+      "server-components",
+      "default-export",
+      "undefined",
+      "next-15"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Error: createContext is not supported in Server Components",
+    "body": "React Context (`createContext`, `useContext`) cannot be used in Server Components because they require client-side state.\n\n```\nError: createContext is not supported in Server Components\n```\n\n```tsx\n// BAD \u2014 createContext in Server Component\nimport { createContext } from 'react';\nexport const ThemeContext = createContext('light'); // Error in Server Component!\n\n// FIX \u2014 create context in a Client Component file\n// lib/theme-context.tsx\n'use client';\nimport { createContext, useContext } from 'react';\n\nexport const ThemeContext = createContext<string>('light');\n\nexport function ThemeProvider({ children, theme }: {\n  children: React.ReactNode;\n  theme: string;\n}) {\n  return (\n    <ThemeContext.Provider value={theme}>\n      {children}\n    </ThemeContext.Provider>\n  );\n}\n\nexport function useTheme() {\n  return useContext(ThemeContext);\n}\n\n// app/layout.tsx \u2014 Server Component wrapping Client Provider\nimport { ThemeProvider } from '@/lib/theme-context';\nexport default function Layout({ children }: { children: React.ReactNode }) {\n  return <ThemeProvider theme=\"dark\">{children}</ThemeProvider>;\n}\n```",
+    "tags": [
+      "react-19",
+      "server-components",
+      "createContext",
+      "useContext",
+      "context"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Error: Objects are not valid as a React child (found: [object Promise])",
+    "body": "In Client Components, you cannot render a Promise directly. This error often occurs when trying to use async/await patterns that only work in Server Components.\n\n```\nError: Objects are not valid as a React child (found: [object Promise]).\nIf you meant to render a collection of children, use an array instead.\n```\n\n```tsx\n// BAD \u2014 async Client Component\n'use client';\nexport default async function Profile() {\n  const user = await fetchUser(); // Client Components can't be async!\n  return <div>{user.name}</div>;\n}\n\n// FIX Option 1 \u2014 use useEffect + useState\n'use client';\nimport { useState, useEffect } from 'react';\n\nexport default function Profile() {\n  const [user, setUser] = useState<User | null>(null);\n  useEffect(() => {\n    fetchUser().then(setUser);\n  }, []);\n  if (!user) return <p>Loading...</p>;\n  return <div>{user.name}</div>;\n}\n\n// FIX Option 2 \u2014 use React 19 use() hook\n'use client';\nimport { use } from 'react';\n\nexport default function Profile({ userPromise }: { userPromise: Promise<User> }) {\n  const user = use(userPromise);\n  return <div>{user.name}</div>;\n}\n```\n\nAsync components are only supported as Server Components. In Client Components, use `useEffect`, React Query, SWR, or the `use()` hook with a Promise passed from a Server Component.",
+    "tags": [
+      "react-19",
+      "client-components",
+      "async",
+      "promise",
+      "use-hook"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Error: You're importing a component that needs useEffect but it only works in a Client Component",
+    "body": "This Next.js error occurs when a third-party library uses `useEffect` internally but you import it in a Server Component file.\n\n```\nError: You're importing a component that needs useEffect. It only works in a Client Component but none of its parents are marked with \"use client\".\n```\n\n```tsx\n// BAD \u2014 importing a client-only library in a Server Component\nimport { Toaster } from 'react-hot-toast'; // Uses useEffect internally\n\nexport default function Layout({ children }: { children: React.ReactNode }) {\n  return (\n    <html>\n      <body>\n        {children}\n        <Toaster /> {/* Error! */}\n      </body>\n    </html>\n  );\n}\n\n// FIX \u2014 wrap in a Client Component\n// components/toaster-provider.tsx\n'use client';\nimport { Toaster } from 'react-hot-toast';\nexport function ToasterProvider() {\n  return <Toaster />;\n}\n\n// app/layout.tsx\nimport { ToasterProvider } from '@/components/toaster-provider';\nexport default function Layout({ children }: { children: React.ReactNode }) {\n  return (\n    <html>\n      <body>\n        {children}\n        <ToasterProvider />\n      </body>\n    </html>\n  );\n}\n```\n\nThis pattern is common with toast libraries, animation libraries (Framer Motion), and UI component libraries. Create a thin `'use client'` wrapper component.",
+    "tags": [
+      "next-15",
+      "server-components",
+      "useEffect",
+      "third-party",
+      "use-client"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Error: Hydration mismatch \u2014 server rendered HTML didn't match client",
+    "body": "Hydration errors occur when the server-rendered HTML differs from what the client renders. Common causes: using `Date.now()`, `Math.random()`, `window`, or `localStorage` during render.\n\n```\nError: Hydration failed because the server rendered HTML didn't match the client.\nText content does not match. Server: \"March 28\" Client: \"March 27\"\n```\n\n```tsx\n// BAD \u2014 Date differs between server and client\nexport default function Page() {\n  return <p>{new Date().toLocaleDateString()}</p>;\n}\n\n// FIX \u2014 use useEffect for client-only values\n'use client';\nimport { useState, useEffect } from 'react';\n\nexport function LocalDate() {\n  const [date, setDate] = useState<string>('');\n  useEffect(() => {\n    setDate(new Date().toLocaleDateString());\n  }, []);\n  return <p>{date}</p>;\n}\n\n// FIX \u2014 or suppress hydration warning for intentional mismatches\nexport function LocalDate() {\n  return <p suppressHydrationWarning>{new Date().toLocaleDateString()}</p>;\n}\n```\n\nOther common causes: browser extensions modifying the DOM, conditional rendering based on `typeof window !== 'undefined'`, and CSS-in-JS libraries not configured for SSR.",
+    "tags": [
+      "react-19",
+      "hydration",
+      "ssr",
+      "mismatch",
+      "suppressHydrationWarning"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Error: Dynamic server usage: Page couldn't be rendered statically",
+    "body": "This Next.js build error occurs when a page uses dynamic functions (`cookies()`, `headers()`, `searchParams`) but is expected to be static.\n\n```\nError: Dynamic server usage: Page couldn't be rendered statically because it used `cookies`.\n```\n\n```tsx\n// If you WANT the page to be dynamic:\nexport const dynamic = 'force-dynamic';\n\n// Or if you want static generation with revalidation:\nexport const revalidate = 3600;\n\n// Or move the dynamic code to a Suspense boundary:\nimport { Suspense } from 'react';\n\nexport default function Page() {\n  return (\n    <div>\n      <h1>Static content</h1>\n      <Suspense fallback={<p>Loading...</p>}>\n        <DynamicPart />\n      </Suspense>\n    </div>\n  );\n}\n\nasync function DynamicPart() {\n  const cookieStore = await cookies();\n  return <p>Theme: {cookieStore.get('theme')?.value}</p>;\n}\n```\n\nWith PPR enabled, the Suspense approach gives you the best of both worlds: static shell + streamed dynamic content.",
+    "tags": [
+      "next-15",
+      "static-rendering",
+      "dynamic-rendering",
+      "cookies",
+      "build-error"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Error: You cannot dot into a client module from a server component",
+    "body": "This error occurs when you try to access a named export from a `'use client'` module using dot notation in a Server Component.\n\n```\nError: You cannot dot into a client module from a server component.\n```\n\n```tsx\n// BAD \u2014 dot access into client module\n// ui.tsx\n'use client';\nexport const Button = () => <button>Click</button>;\nexport const Input = () => <input />;\n\n// page.tsx (Server Component)\nimport * as UI from './ui';\nUI.Button; // Error!\n\n// FIX \u2014 use named imports\nimport { Button, Input } from './ui'; // OK\n\nexport default function Page() {\n  return <Button />;\n}\n```\n\nAlways use named imports (`import { X }`) or default imports (`import X`) when importing from `'use client'` files into Server Components. Namespace imports (`import * as X`) are not supported across the server/client boundary.",
+    "tags": [
+      "react-19",
+      "server-components",
+      "client-components",
+      "imports",
+      "namespace"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Error: Functions cannot be passed directly to Client Components unless marked with 'use server'",
+    "body": "This error appears when you pass a regular function (not a Server Action) from a Server Component to a Client Component.\n\n```\nError: Functions cannot be passed directly to Client Components unless you explicitly expose it by marking it with \"use server\".\n```\n\n```tsx\n// BAD \u2014 regular function passed to Client Component\nexport default function Page() {\n  function handleSubmit(data: string) {\n    console.log(data);\n  }\n  return <ClientForm onSubmit={handleSubmit} />;\n}\n\n// FIX \u2014 mark as Server Action\nexport default function Page() {\n  async function handleSubmit(data: string) {\n    'use server';\n    console.log(data);\n  }\n  return <ClientForm onSubmit={handleSubmit} />;\n}\n\n// Or define in a separate file\n// actions.ts\n'use server';\nexport async function handleSubmit(data: string) {\n  console.log(data);\n}\n```\n\nOnly `'use server'` functions (Server Actions) can cross the server-to-client boundary. They are serialized as references that trigger server-side execution when called.",
+    "tags": [
+      "react-19",
+      "server-actions",
+      "client-components",
+      "use-server",
+      "props"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Error: Route used cookies/headers inside a Suspense boundary that has no fallback",
+    "body": "When using PPR or streaming, dynamic functions inside a Suspense boundary require a fallback. Without a fallback, Next.js cannot determine the static/dynamic split.\n\n```\nError: Route \"/dashboard\" used `cookies` inside a \"use cache\" or during prerendering without a Suspense boundary with a fallback UI.\n```\n\n```tsx\n// BAD \u2014 no fallback\nimport { Suspense } from 'react';\nimport { cookies } from 'next/headers';\n\nexport default function Page() {\n  return (\n    <Suspense> {/* Missing fallback prop */}\n      <UserInfo />\n    </Suspense>\n  );\n}\n\n// FIX \u2014 add a fallback\nexport default function Page() {\n  return (\n    <Suspense fallback={<div>Loading user...</div>}>\n      <UserInfo />\n    </Suspense>\n  );\n}\n\nasync function UserInfo() {\n  const cookieStore = await cookies();\n  const name = cookieStore.get('name')?.value;\n  return <p>Hello {name}</p>;\n}\n```\n\nAlways provide a meaningful `fallback` prop on `<Suspense>` boundaries that wrap dynamic content. The fallback is shown during the static prerender and then replaced when the dynamic content streams in.",
+    "tags": [
+      "next-15",
+      "suspense",
+      "cookies",
+      "ppr",
+      "fallback"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Error: async/await is not yet supported in Client Components",
+    "body": "Client Components cannot be `async` functions. This error appears when you add `async` to a component in a `'use client'` file.\n\n```\nError: async/await is not yet supported in Client Components, only Server Components.\n```\n\n```tsx\n// BAD\n'use client';\nexport default async function Dashboard() {\n  const data = await fetchData(); // Error!\n  return <div>{data.title}</div>;\n}\n\n// FIX Option 1 \u2014 fetch in Server Component, pass as props\n// page.tsx (Server Component)\nimport { Dashboard } from './dashboard';\nexport default async function Page() {\n  const data = await fetchData();\n  return <Dashboard data={data} />;\n}\n\n// FIX Option 2 \u2014 use React 19 use() hook\n'use client';\nimport { use } from 'react';\n\nexport function Dashboard({ dataPromise }: { dataPromise: Promise<Data> }) {\n  const data = use(dataPromise); // Suspends until resolved\n  return <div>{data.title}</div>;\n}\n\n// FIX Option 3 \u2014 useEffect for client-only fetching\n'use client';\nimport { useState, useEffect } from 'react';\nexport function Dashboard() {\n  const [data, setData] = useState<Data | null>(null);\n  useEffect(() => { fetchData().then(setData); }, []);\n  return data ? <div>{data.title}</div> : <p>Loading...</p>;\n}\n```",
+    "tags": [
+      "react-19",
+      "client-components",
+      "async",
+      "use-hook",
+      "data-fetching"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "Error: Attempted to call the default export of /app/page.tsx from the server but it's on the client",
+    "body": "This error occurs when a page file has `'use client'` but Next.js tries to render it as a Server Component (e.g., during static generation).\n\n```\nError: Attempted to call the default export of \"/app/page.tsx\" from the server but it's on the client.\n```\n\n```tsx\n// BAD \u2014 page.tsx should not be 'use client' if it uses server features\n'use client';\nexport default function Page() {\n  return <div>Hello</div>;\n}\n\n// While this works for simple pages, it prevents:\n// - Server-side data fetching\n// - Metadata export\n// - Static generation\n\n// BETTER \u2014 keep page.tsx as Server Component, extract client parts\n// app/page.tsx\nimport { ClientContent } from './client-content';\nexport const metadata = { title: 'Home' }; // Only works in Server Components\n\nexport default function Page() {\n  return <ClientContent />;\n}\n```\n\nPages should generally be Server Components. Extract interactive parts into Client Component children. This allows metadata exports and server-side data fetching to work correctly.",
+    "tags": [
+      "next-15",
+      "use-client",
+      "page",
+      "server-components",
+      "metadata"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "community",
+    "title": "Error: Image with src has either width or height modified but not the other",
+    "body": "Next.js `<Image>` requires consistent dimension handling. If you override one dimension via CSS, the other may distort.\n\n```\nError: Image with src \"/hero.jpg\" has either width or height modified, but not the other.\nIf you use CSS to change the size of your image, also include the styles 'width: auto' or 'height: auto'.\n```\n\n```tsx\n// BAD \u2014 only width set in CSS\n<Image src=\"/hero.jpg\" alt=\"\" width={800} height={400}\n  style={{ width: '100%' }} // height is not adjusted\n/>\n\n// FIX \u2014 add height: auto\n<Image src=\"/hero.jpg\" alt=\"\" width={800} height={400}\n  style={{ width: '100%', height: 'auto' }}\n/>\n\n// Or use fill mode instead\n<div style={{ position: 'relative', width: '100%', aspectRatio: '2/1' }}>\n  <Image src=\"/hero.jpg\" alt=\"\" fill style={{ objectFit: 'cover' }} sizes=\"100vw\" />\n</div>\n```\n\nThe `width` and `height` props set the intrinsic dimensions for layout shift prevention. If you override one in CSS, add `auto` for the other to maintain aspect ratio.",
+    "tags": [
+      "next-15",
+      "next-image",
+      "css",
+      "dimensions",
+      "layout-shift"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "community",
+    "title": "Error: Middleware is returning a response body which is not supported",
+    "body": "Next.js middleware cannot return a response body. It can only rewrite, redirect, or modify headers.\n\n```\nError: Middleware is returning a response body, which is not supported.\n```\n\n```tsx\n// BAD \u2014 returning JSON from middleware\nimport { NextResponse } from 'next/server';\n\nexport function middleware() {\n  return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });\n}\n\n// FIX \u2014 redirect or rewrite instead\nexport function middleware(request: NextRequest) {\n  const token = request.cookies.get('token');\n  if (!token) {\n    // Option 1: Redirect\n    return NextResponse.redirect(new URL('/login', request.url));\n    // Option 2: Rewrite to an error page\n    return NextResponse.rewrite(new URL('/unauthorized', request.url));\n  }\n  return NextResponse.next();\n}\n\n// If you need to return JSON, use a Route Handler instead:\n// app/api/auth/check/route.ts\nexport async function GET(request: Request) {\n  return Response.json({ error: 'Unauthorized' }, { status: 401 });\n}\n```\n\nMiddleware is designed for routing decisions, not for serving responses. Use Route Handlers for API endpoints.",
+    "tags": [
+      "next-15",
+      "middleware",
+      "response-body",
+      "redirect",
+      "rewrite"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "community",
+    "title": "Error: A component suspended while responding to synchronous input",
+    "body": "This React 19 error occurs when a component suspends during a synchronous user interaction (like typing) without a proper transition.\n\n```\nError: A component suspended while responding to synchronous input. This will cause the UI to be replaced with a loading indicator.\n```\n\n```tsx\n// BAD \u2014 suspending on every keystroke\n'use client';\nimport { use, useState } from 'react';\n\nfunction SearchResults({ query }: { query: string }) {\n  const results = use(fetchResults(query)); // Suspends on every keystroke!\n  return <ul>{results.map(r => <li key={r.id}>{r.title}</li>)}</ul>;\n}\n\n// FIX \u2014 wrap the update in startTransition or useTransition\n'use client';\nimport { useState, useTransition } from 'react';\n\nexport function Search() {\n  const [query, setQuery] = useState('');\n  const [deferredQuery, setDeferredQuery] = useState('');\n  const [isPending, startTransition] = useTransition();\n\n  function handleChange(e: React.ChangeEvent<HTMLInputElement>) {\n    setQuery(e.target.value);\n    startTransition(() => {\n      setDeferredQuery(e.target.value);\n    });\n  }\n\n  return (\n    <div>\n      <input value={query} onChange={handleChange} />\n      {isPending ? <p>Searching...</p> : <Results query={deferredQuery} />}\n    </div>\n  );\n}\n```\n\nUse `useTransition` or `useDeferredValue` to mark non-urgent updates that may suspend. This keeps the input responsive while the results load.",
+    "tags": [
+      "react-19",
+      "suspense",
+      "useTransition",
+      "synchronous-input",
+      "performance"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "community",
+    "title": "Error: Cannot read properties of null (reading 'useContext') \u2014 wrong React version",
+    "body": "This cryptic error often occurs when multiple React versions are installed, or when a dependency bundles its own React copy.\n\n```\nTypeError: Cannot read properties of null (reading 'useContext')\n// or: Invalid hook call. Hooks can only be called inside of the body of a function component.\n```\n\n```bash\n# Check for duplicate React installations\nnpm ls react\n# Should show only one version (19.x)\n\n# If you see duplicates, add resolutions:\n# package.json\n{\n  \"overrides\": {\n    \"react\": \"$react\",\n    \"react-dom\": \"$react-dom\"\n  }\n}\n```\n\n```tsx\n// Also check that react and react-dom versions match:\n// package.json\n{\n  \"dependencies\": {\n    \"react\": \"^19.0.0\",\n    \"react-dom\": \"^19.0.0\"\n  }\n}\n```\n\nRun `npm dedupe` after fixing versions. This error is especially common after upgrading to React 19 when some packages still depend on React 18.",
+    "tags": [
+      "react-19",
+      "hooks",
+      "duplicate-react",
+      "npm",
+      "version-mismatch"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "community",
+    "title": "Error: generateMetadata cannot use hooks or 'use client' features",
+    "body": "`generateMetadata` is a server-only function and cannot use hooks, browser APIs, or any client-side features.\n\n```\nError: Expected a return value from generateMetadata.\n// or: useState is not a function\n```\n\n```tsx\n// BAD \u2014 using hooks in generateMetadata\nimport { useState } from 'react';\n\nexport async function generateMetadata() {\n  const [title] = useState('Hello'); // Error!\n  return { title };\n}\n\n// GOOD \u2014 server-only data fetching\nimport type { Metadata } from 'next';\n\nexport async function generateMetadata({\n  params,\n}: {\n  params: Promise<{ slug: string }>;\n}): Promise<Metadata> {\n  const { slug } = await params;\n  const post = await db.query.posts.findFirst({\n    where: eq(posts.slug, slug),\n  });\n\n  return {\n    title: post?.title ?? 'Not Found',\n    description: post?.excerpt,\n    openGraph: {\n      title: post?.title,\n      images: [{ url: post?.image ?? '/og-default.png' }],\n    },\n  };\n}\n```\n\n`generateMetadata` runs on the server during rendering. It can use `fetch`, database queries, and other server-only operations, but not React hooks or browser APIs.",
+    "tags": [
+      "next-15",
+      "metadata",
+      "generateMetadata",
+      "hooks",
+      "server-only"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "community",
+    "title": "Error: NextRouter was not mounted \u2014 using pages router import in App Router",
+    "body": "This error occurs when you import `useRouter` from `next/router` (Pages Router) instead of `next/navigation` (App Router).\n\n```\nError: NextRouter was not mounted. See https://nextjs.org/docs/messages/next-router-not-mounted\n```\n\n```tsx\n// BAD \u2014 Pages Router import\nimport { useRouter } from 'next/router';\n\n// GOOD \u2014 App Router import\nimport { useRouter } from 'next/navigation';\n\n// The APIs are different:\n// next/router (Pages Router):\n//   router.query \u2014 access query params\n//   router.pathname \u2014 current path\n//   router.asPath \u2014 full path\n\n// next/navigation (App Router):\n//   useRouter() \u2014 push, replace, back, forward, refresh, prefetch\n//   usePathname() \u2014 current path\n//   useSearchParams() \u2014 query params\n//   useParams() \u2014 dynamic route params\n\n'use client';\nimport { useRouter, usePathname, useSearchParams } from 'next/navigation';\n\nexport function Navigation() {\n  const router = useRouter();\n  const pathname = usePathname();\n  const searchParams = useSearchParams();\n  return <div>{pathname}?{searchParams.toString()}</div>;\n}\n```",
+    "tags": [
+      "next-15",
+      "useRouter",
+      "app-router",
+      "pages-router",
+      "migration"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "community",
+    "title": "Error: Module not found: Can't resolve 'fs' in middleware or Edge Runtime",
+    "body": "Node.js built-in modules like `fs`, `path`, `net`, `child_process` are not available in the Edge Runtime used by middleware and edge route handlers.\n\n```\nModule not found: Can't resolve 'fs'\n// or: The edge runtime does not support Node.js 'fs' module\n```\n\n```tsx\n// BAD \u2014 using fs in middleware\nimport fs from 'fs';\n\nexport function middleware() {\n  const config = fs.readFileSync('./config.json'); // Error!\n}\n\n// FIX \u2014 for middleware, use alternatives:\n// 1. Fetch from an API route\nexport async function middleware(request: NextRequest) {\n  const config = await fetch(new URL('/api/config', request.url));\n  // ...\n}\n\n// 2. For Route Handlers, opt out of Edge Runtime:\n// app/api/data/route.ts\nexport const runtime = 'nodejs'; // Use Node.js runtime instead of Edge\n\nimport fs from 'fs';\nexport async function GET() {\n  const data = fs.readFileSync('./data.json', 'utf-8');\n  return Response.json(JSON.parse(data));\n}\n```\n\nMiddleware always runs on the Edge Runtime and cannot be changed. Route Handlers and Server Components default to Node.js runtime but can opt into Edge with `export const runtime = 'edge'`.",
+    "tags": [
+      "next-15",
+      "middleware",
+      "edge-runtime",
+      "fs",
+      "node-modules"
+    ]
+  },
+  {
+    "type": "error",
+    "trust": "community",
+    "title": "Error: Entire page deopted into client-side rendering \u2014 missing Suspense",
+    "body": "This warning in the Next.js dev console indicates a page lost SSR benefits because a Client Component reads dynamic data without a Suspense boundary.\n\n```\n\u26a0 Entire page \"/search\" deopted into client-side rendering.\nhttps://nextjs.org/docs/messages/deopted-into-client-rendering\n```\n\n```tsx\n// Common cause: useSearchParams without Suspense\n// BAD\n'use client';\nimport { useSearchParams } from 'next/navigation';\n\nexport default function SearchPage() {\n  const searchParams = useSearchParams(); // Deopts entire page!\n  return <div>Query: {searchParams.get('q')}</div>;\n}\n\n// FIX \u2014 add Suspense boundary\nimport { Suspense } from 'react';\n\nexport default function SearchPage() {\n  return (\n    <Suspense fallback={<div>Loading search...</div>}>\n      <SearchContent />\n    </Suspense>\n  );\n}\n\nfunction SearchContent() {\n  'use client';\n  const searchParams = useSearchParams();\n  return <div>Query: {searchParams.get('q')}</div>;\n}\n```\n\nThis also happens with `useParams()` in some cases. Wrap Client Components that read URL state in `<Suspense>` boundaries.",
+    "tags": [
+      "next-15",
+      "client-rendering",
+      "ssr",
+      "useSearchParams",
+      "suspense",
+      "deopt"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Server Component data fetching pattern with parallel requests",
+    "body": "When a Server Component needs multiple independent data sources, use `Promise.all` to fetch in parallel instead of sequential awaits.\n\n```tsx\n// BAD \u2014 sequential fetching (slow)\nexport default async function Dashboard() {\n  const user = await getUser();         // 200ms\n  const stats = await getStats();       // 300ms\n  const notifications = await getNotifications(); // 150ms\n  // Total: ~650ms\n\n  return (\n    <div>\n      <UserProfile user={user} />\n      <StatsPanel stats={stats} />\n      <NotificationList notifications={notifications} />\n    </div>\n  );\n}\n\n// GOOD \u2014 parallel fetching\nexport default async function Dashboard() {\n  const [user, stats, notifications] = await Promise.all([\n    getUser(),\n    getStats(),\n    getNotifications(),\n  ]);\n  // Total: ~300ms (slowest request)\n\n  return (\n    <div>\n      <UserProfile user={user} />\n      <StatsPanel stats={stats} />\n      <NotificationList notifications={notifications} />\n    </div>\n  );\n}\n```\n\nFor even better UX, combine parallel fetching with `<Suspense>` boundaries so each section streams independently as its data resolves.",
+    "tags": [
+      "react-19",
+      "server-components",
+      "data-fetching",
+      "performance",
+      "promise-all"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Streaming with Suspense \u2014 progressive page loading pattern",
+    "body": "Use multiple `<Suspense>` boundaries to stream different parts of a page independently. Fast data appears immediately while slow data streams in.\n\n```tsx\nimport { Suspense } from 'react';\n\nexport default function DashboardPage() {\n  return (\n    <div className=\"grid grid-cols-2 gap-4\">\n      {/* Fast \u2014 renders immediately */}\n      <Suspense fallback={<Skeleton className=\"h-32\" />}>\n        <QuickStats />\n      </Suspense>\n\n      {/* Slow \u2014 streams in later */}\n      <Suspense fallback={<Skeleton className=\"h-64\" />}>\n        <RevenueChart />\n      </Suspense>\n\n      {/* Medium \u2014 streams independently */}\n      <Suspense fallback={<Skeleton className=\"h-48\" />}>\n        <RecentOrders />\n      </Suspense>\n    </div>\n  );\n}\n\nasync function QuickStats() {\n  const stats = await getQuickStats(); // 50ms\n  return <div>{stats.totalRevenue}</div>;\n}\n\nasync function RevenueChart() {\n  const data = await getRevenueData(); // 2000ms\n  return <Chart data={data} />;\n}\n\nasync function RecentOrders() {\n  const orders = await getRecentOrders(); // 500ms\n  return <OrderTable orders={orders} />;\n}\n```\n\nEach `<Suspense>` boundary creates a separate streaming chunk. The page shell and fast sections render first, then slower sections fill in as they resolve.",
+    "tags": [
+      "react-19",
+      "suspense",
+      "streaming",
+      "ssr",
+      "performance",
+      "next-15"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Form handling with Server Actions and useActionState",
+    "body": "The recommended pattern for form handling in Next.js 15 combines Server Actions with `useActionState` for progressive enhancement.\n\n```tsx\n// app/actions.ts\n'use server';\nimport { z } from 'zod';\nimport { revalidatePath } from 'next/cache';\n\nconst schema = z.object({\n  title: z.string().min(1, 'Title is required').max(100),\n  content: z.string().min(10, 'Content must be at least 10 characters'),\n});\n\nexport type FormState = {\n  errors?: { title?: string[]; content?: string[] };\n  message?: string;\n};\n\nexport async function createPost(\n  prevState: FormState,\n  formData: FormData\n): Promise<FormState> {\n  const parsed = schema.safeParse(Object.fromEntries(formData));\n  if (!parsed.success) {\n    return { errors: parsed.error.flatten().fieldErrors };\n  }\n  await db.insert(posts).values(parsed.data);\n  revalidatePath('/posts');\n  return { message: 'Post created!' };\n}\n\n// components/post-form.tsx\n'use client';\nimport { useActionState } from 'react';\nimport { createPost, type FormState } from '@/app/actions';\n\nexport function PostForm() {\n  const [state, formAction, isPending] = useActionState(createPost, {});\n  return (\n    <form action={formAction}>\n      <input name=\"title\" />\n      {state.errors?.title && <p className=\"text-red-500\">{state.errors.title[0]}</p>}\n      <textarea name=\"content\" />\n      {state.errors?.content && <p className=\"text-red-500\">{state.errors.content[0]}</p>}\n      <button disabled={isPending}>{isPending ? 'Creating...' : 'Create'}</button>\n      {state.message && <p className=\"text-green-500\">{state.message}</p>}\n    </form>\n  );\n}\n```\n\nThis pattern works without JavaScript (progressive enhancement), shows validation errors, handles loading states, and revalidates cached data after mutation.",
+    "tags": [
+      "react-19",
+      "server-actions",
+      "useActionState",
+      "forms",
+      "validation",
+      "next-15"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Authentication check pattern in layout vs middleware",
+    "body": "For auth checks, use middleware for route protection and layouts for passing user data down. Never fetch auth state in every component.\n\n```tsx\n// middleware.ts \u2014 route protection\nimport { NextResponse } from 'next/server';\nimport type { NextRequest } from 'next/server';\n\nexport function middleware(request: NextRequest) {\n  const token = request.cookies.get('session')?.value;\n  if (!token && request.nextUrl.pathname.startsWith('/dashboard')) {\n    return NextResponse.redirect(new URL('/login', request.url));\n  }\n  return NextResponse.next();\n}\n\nexport const config = {\n  matcher: ['/dashboard/:path*', '/settings/:path*'],\n};\n\n// app/dashboard/layout.tsx \u2014 pass user data to children\nimport { cookies } from 'next/headers';\nimport { verifyToken } from '@/lib/auth';\nimport { redirect } from 'next/navigation';\n\nexport default async function DashboardLayout({\n  children,\n}: {\n  children: React.ReactNode;\n}) {\n  const cookieStore = await cookies();\n  const token = cookieStore.get('session')?.value;\n  const user = token ? await verifyToken(token) : null;\n\n  if (!user) redirect('/login');\n\n  return (\n    <div>\n      <nav>Welcome, {user.name}</nav>\n      {children}\n    </div>\n  );\n}\n```\n\nMiddleware runs on every request at the edge (fast, lightweight checks). Layouts run on the server with full Node.js access (database queries, JWT verification). Use both together for defense in depth.",
+    "tags": [
+      "next-15",
+      "authentication",
+      "middleware",
+      "layout",
+      "security"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Optimistic UI with useOptimistic and Server Actions",
+    "body": "Use `useOptimistic` for instant UI feedback while a Server Action processes in the background.\n\n```tsx\n// app/actions.ts\n'use server';\nimport { revalidatePath } from 'next/cache';\n\nexport async function toggleTodo(id: string, completed: boolean) {\n  await db.update(todos).set({ completed }).where(eq(todos.id, id));\n  revalidatePath('/todos');\n}\n\n// components/todo-list.tsx\n'use client';\nimport { useOptimistic, startTransition } from 'react';\nimport { toggleTodo } from '@/app/actions';\n\ntype Todo = { id: string; title: string; completed: boolean };\n\nexport function TodoList({ todos }: { todos: Todo[] }) {\n  const [optimisticTodos, setOptimisticTodos] = useOptimistic(\n    todos,\n    (state, { id, completed }: { id: string; completed: boolean }) =>\n      state.map((t) => (t.id === id ? { ...t, completed } : t))\n  );\n\n  function handleToggle(id: string, completed: boolean) {\n    startTransition(async () => {\n      setOptimisticTodos({ id, completed: !completed });\n      await toggleTodo(id, !completed);\n    });\n  }\n\n  return (\n    <ul>\n      {optimisticTodos.map((todo) => (\n        <li key={todo.id}>\n          <input\n            type=\"checkbox\"\n            checked={todo.completed}\n            onChange={() => handleToggle(todo.id, todo.completed)}\n          />\n          {todo.title}\n        </li>\n      ))}\n    </ul>\n  );\n}\n```\n\nThe checkbox toggles instantly via optimistic state. When the Server Action completes and `revalidatePath` triggers, the optimistic state is replaced with the real server data.",
+    "tags": [
+      "react-19",
+      "useOptimistic",
+      "server-actions",
+      "optimistic-ui",
+      "startTransition"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Data fetching with React use() hook and Server Component Promise passing",
+    "body": "Pass a Promise from a Server Component to a Client Component and read it with `use()`. This enables streaming without waterfall fetching.\n\n```tsx\n// app/page.tsx (Server Component)\nimport { UserProfile } from './user-profile';\n\nexport default function Page() {\n  // Start fetching immediately \u2014 don't await here!\n  const userPromise = getUser();\n  const postsPromise = getPosts();\n\n  return (\n    <div>\n      <Suspense fallback={<p>Loading user...</p>}>\n        <UserProfile userPromise={userPromise} postsPromise={postsPromise} />\n      </Suspense>\n    </div>\n  );\n}\n\n// user-profile.tsx\n'use client';\nimport { use } from 'react';\n\nexport function UserProfile({\n  userPromise,\n  postsPromise,\n}: {\n  userPromise: Promise<User>;\n  postsPromise: Promise<Post[]>;\n}) {\n  const user = use(userPromise);\n  const posts = use(postsPromise);\n\n  return (\n    <div>\n      <h1>{user.name}</h1>\n      <ul>\n        {posts.map((p) => <li key={p.id}>{p.title}</li>)}\n      </ul>\n    </div>\n  );\n}\n```\n\nBy not awaiting in the Server Component, both promises start fetching immediately and the Client Component suspends until both resolve. The `<Suspense>` boundary shows the fallback while suspended.",
+    "tags": [
+      "react-19",
+      "use-hook",
+      "suspense",
+      "data-fetching",
+      "streaming"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Route Handler with typed response and error handling",
+    "body": "A clean pattern for Route Handlers in Next.js 15 with proper typing, validation, and error handling.\n\n```tsx\n// app/api/posts/route.ts\nimport { NextRequest } from 'next/server';\nimport { z } from 'zod';\n\nconst createPostSchema = z.object({\n  title: z.string().min(1).max(200),\n  content: z.string().min(1),\n  published: z.boolean().default(false),\n});\n\nexport async function GET(request: NextRequest) {\n  const searchParams = request.nextUrl.searchParams;\n  const page = parseInt(searchParams.get('page') ?? '1');\n  const limit = parseInt(searchParams.get('limit') ?? '10');\n\n  const posts = await db.query.posts.findMany({\n    limit,\n    offset: (page - 1) * limit,\n    orderBy: (posts, { desc }) => [desc(posts.createdAt)],\n  });\n\n  return Response.json({ data: posts, page, limit });\n}\n\nexport async function POST(request: NextRequest) {\n  try {\n    const body = await request.json();\n    const parsed = createPostSchema.safeParse(body);\n\n    if (!parsed.success) {\n      return Response.json(\n        { error: 'Validation failed', details: parsed.error.flatten() },\n        { status: 400 }\n      );\n    }\n\n    const post = await db.insert(posts).values(parsed.data).returning();\n    return Response.json({ data: post[0] }, { status: 201 });\n  } catch (error) {\n    return Response.json(\n      { error: 'Internal server error' },\n      { status: 500 }\n    );\n  }\n}\n```\n\nRoute Handlers support `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, and `OPTIONS`. Use them for public APIs; use Server Actions for mutations tied to UI forms.",
+    "tags": [
+      "next-15",
+      "route-handlers",
+      "api",
+      "validation",
+      "zod"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Server Action vs Route Handler \u2014 when to use which",
+    "body": "Server Actions and Route Handlers serve different purposes. Use Server Actions for form mutations and Route Handlers for API endpoints.\n\n```tsx\n// USE SERVER ACTIONS when:\n// - Handling form submissions\n// - Mutating data from UI interactions\n// - Need revalidation after mutation\n// - Want progressive enhancement (works without JS)\n\n'use server';\nexport async function updateProfile(formData: FormData) {\n  const name = formData.get('name') as string;\n  await db.update(users).set({ name }).where(eq(users.id, currentUser.id));\n  revalidatePath('/profile');\n}\n\n// USE ROUTE HANDLERS when:\n// - Building a public API consumed by external clients\n// - Handling webhooks\n// - File uploads with progress\n// - Streaming responses\n// - Need specific HTTP method handling\n\n// app/api/webhook/route.ts\nexport async function POST(request: Request) {\n  const signature = request.headers.get('x-webhook-signature');\n  if (!verifySignature(signature, await request.text())) {\n    return Response.json({ error: 'Invalid signature' }, { status: 401 });\n  }\n  // Process webhook...\n  return Response.json({ received: true });\n}\n```\n\nServer Actions are RPC-style (function call), Route Handlers are REST-style (HTTP methods). Server Actions automatically handle CSRF protection; Route Handlers need manual CORS/auth handling.",
+    "tags": [
+      "next-15",
+      "server-actions",
+      "route-handlers",
+      "api-design",
+      "when-to-use"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Nested layouts with shared data using React cache()",
+    "body": "Use `React.cache()` to deduplicate data fetching across layouts and pages in the same request without prop drilling.\n\n```tsx\n// lib/get-user.ts\nimport { cache } from 'react';\nimport { cookies } from 'next/headers';\n\nexport const getUser = cache(async () => {\n  const cookieStore = await cookies();\n  const token = cookieStore.get('session')?.value;\n  if (!token) return null;\n  return verifyAndGetUser(token);\n});\n\n// app/dashboard/layout.tsx\nimport { getUser } from '@/lib/get-user';\n\nexport default async function DashboardLayout({ children }: { children: React.ReactNode }) {\n  const user = await getUser(); // First call \u2014 fetches\n  if (!user) redirect('/login');\n  return (\n    <div>\n      <nav>Welcome, {user.name}</nav>\n      {children}\n    </div>\n  );\n}\n\n// app/dashboard/page.tsx\nimport { getUser } from '@/lib/get-user';\n\nexport default async function DashboardPage() {\n  const user = await getUser(); // Deduplicated \u2014 returns cached result\n  return <h1>{user.name}'s Dashboard</h1>;\n}\n```\n\n`React.cache()` deduplicates within a single server request. It does not persist across requests \u2014 that is what `fetch` caching or `unstable_cache` does. Both the layout and page call `getUser()` but only one actual execution happens.",
+    "tags": [
+      "react-19",
+      "cache",
+      "data-fetching",
+      "layout",
+      "deduplication"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Type-safe Server Actions with Zod validation pattern",
+    "body": "A reusable pattern for creating type-safe Server Actions with consistent error handling using Zod.\n\n```tsx\n// lib/action-utils.ts\nimport { z } from 'zod';\n\nexport type ActionResult<T = void> =\n  | { success: true; data: T }\n  | { success: false; error: string; fieldErrors?: Record<string, string[]> };\n\nexport function createAction<TInput, TOutput>(\n  schema: z.ZodSchema<TInput>,\n  handler: (data: TInput) => Promise<TOutput>\n) {\n  return async (\n    _prevState: ActionResult<TOutput>,\n    formData: FormData\n  ): Promise<ActionResult<TOutput>> => {\n    const parsed = schema.safeParse(Object.fromEntries(formData));\n    if (!parsed.success) {\n      return {\n        success: false,\n        error: 'Validation failed',\n        fieldErrors: parsed.error.flatten().fieldErrors as Record<string, string[]>,\n      };\n    }\n    try {\n      const result = await handler(parsed.data);\n      return { success: true, data: result };\n    } catch (e) {\n      return { success: false, error: e instanceof Error ? e.message : 'Unknown error' };\n    }\n  };\n}\n\n// app/actions.ts\n'use server';\nimport { createAction } from '@/lib/action-utils';\n\nexport const createPost = createAction(\n  z.object({ title: z.string().min(1), content: z.string().min(10) }),\n  async (data) => {\n    const post = await db.insert(posts).values(data).returning();\n    revalidatePath('/posts');\n    return post[0];\n  }\n);\n```\n\nThis pattern separates validation, error handling, and business logic. The `ActionResult` type makes it easy to handle success/error states in Client Components.",
+    "tags": [
+      "react-19",
+      "server-actions",
+      "zod",
+      "typescript",
+      "validation",
+      "pattern"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Parallel routes for modal pattern with URL-driven state",
+    "body": "Use parallel routes and intercepting routes to build modals that have their own URL, support back/forward navigation, and are shareable.\n\n```\napp/\n  layout.tsx\n  page.tsx\n  @modal/\n    default.tsx\n    (.)posts/\n      [id]/\n        page.tsx\n  posts/\n    [id]/\n      page.tsx\n```\n\n```tsx\n// app/layout.tsx\nexport default function Layout({\n  children,\n  modal,\n}: {\n  children: React.ReactNode;\n  modal: React.ReactNode;\n}) {\n  return (\n    <html><body>\n      {children}\n      {modal}\n    </body></html>\n  );\n}\n\n// app/@modal/default.tsx\nexport default function Default() {\n  return null;\n}\n\n// app/@modal/(.)posts/[id]/page.tsx \u2014 intercepted (modal view)\nexport default async function PostModal({ params }: { params: Promise<{ id: string }> }) {\n  const { id } = await params;\n  const post = await getPost(id);\n  return (\n    <Dialog>\n      <h2>{post.title}</h2>\n      <p>{post.content}</p>\n    </Dialog>\n  );\n}\n\n// app/posts/[id]/page.tsx \u2014 full page (direct navigation or hard refresh)\nexport default async function PostPage({ params }: { params: Promise<{ id: string }> }) {\n  const { id } = await params;\n  const post = await getPost(id);\n  return <article><h1>{post.title}</h1><p>{post.content}</p></article>;\n}\n```\n\nSoft navigation from the list shows the modal. Direct URL access or hard refresh shows the full page. This is the Instagram/Twitter photo modal pattern.",
+    "tags": [
+      "next-15",
+      "parallel-routes",
+      "intercepting-routes",
+      "modal",
+      "routing"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Middleware matcher pattern for protecting routes",
+    "body": "Configure middleware matchers to run only on specific routes, improving performance by skipping static assets and API routes.\n\n```tsx\n// middleware.ts\nimport { NextResponse } from 'next/server';\nimport type { NextRequest } from 'next/server';\n\nexport function middleware(request: NextRequest) {\n  const token = request.cookies.get('session')?.value;\n\n  // Check auth for protected routes\n  if (!token) {\n    const loginUrl = new URL('/login', request.url);\n    loginUrl.searchParams.set('from', request.nextUrl.pathname);\n    return NextResponse.redirect(loginUrl);\n  }\n\n  // Add custom headers\n  const response = NextResponse.next();\n  response.headers.set('x-user-authenticated', 'true');\n  return response;\n}\n\n// Only run on these paths \u2014 skip static files, images, etc.\nexport const config = {\n  matcher: [\n    // Match all paths except static files and _next\n    '/((?!_next/static|_next/image|favicon.ico|public/).*)',\n    // Or be explicit:\n    '/dashboard/:path*',\n    '/settings/:path*',\n    '/api/protected/:path*',\n  ],\n};\n```\n\nThe matcher uses a subset of regex. `:path*` matches zero or more path segments. Always exclude `_next/static`, `_next/image`, and `favicon.ico` to avoid running middleware on static assets.",
+    "tags": [
+      "next-15",
+      "middleware",
+      "matcher",
+      "authentication",
+      "routing"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Search with URL state using useSearchParams and Server Components",
+    "body": "Keep search state in the URL for shareability and SSR, using `useSearchParams` in a Client Component and reading `searchParams` in Server Components.\n\n```tsx\n// components/search-input.tsx\n'use client';\nimport { useSearchParams, useRouter, usePathname } from 'next/navigation';\nimport { useDebouncedCallback } from 'use-debounce';\n\nexport function SearchInput() {\n  const searchParams = useSearchParams();\n  const pathname = usePathname();\n  const router = useRouter();\n\n  const handleSearch = useDebouncedCallback((term: string) => {\n    const params = new URLSearchParams(searchParams.toString());\n    if (term) {\n      params.set('q', term);\n    } else {\n      params.delete('q');\n    }\n    params.set('page', '1');\n    router.replace(`${pathname}?${params.toString()}`);\n  }, 300);\n\n  return (\n    <input\n      defaultValue={searchParams.get('q') ?? ''}\n      onChange={(e) => handleSearch(e.target.value)}\n      placeholder=\"Search...\"\n    />\n  );\n}\n\n// app/posts/page.tsx (Server Component)\nexport default async function PostsPage({\n  searchParams,\n}: {\n  searchParams: Promise<{ q?: string; page?: string }>;\n}) {\n  const { q, page } = await searchParams;\n  const posts = await searchPosts(q, parseInt(page ?? '1'));\n  return (\n    <div>\n      <SearchInput />\n      <PostList posts={posts} />\n    </div>\n  );\n}\n```\n\nThe URL is the single source of truth. The Server Component reads `searchParams` and fetches data. The Client Component updates the URL on input change.",
+    "tags": [
+      "next-15",
+      "searchParams",
+      "useSearchParams",
+      "search",
+      "url-state"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Error handling pattern with error.tsx and toast notifications",
+    "body": "Combine `error.tsx` for unrecoverable errors with toast notifications for recoverable ones in Server Actions.\n\n```tsx\n// app/dashboard/error.tsx \u2014 catches unrecoverable errors\n'use client';\n\nexport default function Error({\n  error,\n  reset,\n}: {\n  error: Error & { digest?: string };\n  reset: () => void;\n}) {\n  return (\n    <div className=\"p-8 text-center\">\n      <h2 className=\"text-xl font-bold\">Something went wrong</h2>\n      <p className=\"text-gray-600 mt-2\">{error.message}</p>\n      <button onClick={reset} className=\"mt-4 px-4 py-2 bg-blue-500 text-white rounded\">\n        Try again\n      </button>\n    </div>\n  );\n}\n\n// For recoverable errors in Server Actions, return error state:\n'use server';\nexport async function updateProfile(\n  prevState: FormState,\n  formData: FormData\n): Promise<FormState> {\n  try {\n    await db.update(users).set({ name: formData.get('name') as string });\n    revalidatePath('/profile');\n    return { status: 'success', message: 'Profile updated!' };\n  } catch (e) {\n    // Return error instead of throwing \u2014 keeps the page intact\n    return { status: 'error', message: 'Failed to update profile. Try again.' };\n  }\n}\n\n// Client Component shows toast based on action result\n'use client';\nimport { useActionState, useEffect } from 'react';\nimport { toast } from 'sonner';\n\nexport function ProfileForm() {\n  const [state, formAction, isPending] = useActionState(updateProfile, {});\n\n  useEffect(() => {\n    if (state.status === 'success') toast.success(state.message);\n    if (state.status === 'error') toast.error(state.message);\n  }, [state]);\n\n  return <form action={formAction}>{/* ... */}</form>;\n}\n```",
+    "tags": [
+      "next-15",
+      "error-handling",
+      "error.tsx",
+      "server-actions",
+      "toast"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "On-demand ISR revalidation via webhook pattern",
+    "body": "Trigger ISR revalidation from a CMS webhook using a Route Handler with a secret token.\n\n```tsx\n// app/api/revalidate/route.ts\nimport { revalidatePath, revalidateTag } from 'next/cache';\nimport { NextRequest } from 'next/server';\n\nexport async function POST(request: NextRequest) {\n  const body = await request.json();\n  const secret = request.headers.get('x-revalidation-secret');\n\n  if (secret !== process.env.REVALIDATION_SECRET) {\n    return Response.json({ error: 'Invalid secret' }, { status: 401 });\n  }\n\n  // Revalidate specific paths or tags based on webhook payload\n  switch (body.type) {\n    case 'post.published':\n    case 'post.updated':\n      revalidateTag('posts');\n      revalidatePath(`/posts/${body.slug}`);\n      break;\n    case 'page.updated':\n      revalidatePath(body.path);\n      break;\n    default:\n      revalidatePath('/', 'layout'); // Revalidate everything\n  }\n\n  return Response.json({ revalidated: true, now: Date.now() });\n}\n\n// In your data fetching, tag requests for granular revalidation:\nasync function getPosts() {\n  const res = await fetch('https://cms.example.com/api/posts', {\n    next: { tags: ['posts'] },\n  });\n  return res.json();\n}\n```\n\nThis pattern lets your CMS trigger revalidation only for changed content. Use `revalidateTag` for granular control and `revalidatePath` for specific pages.",
+    "tags": [
+      "next-15",
+      "isr",
+      "revalidation",
+      "webhook",
+      "cms",
+      "on-demand"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Composing Server and Client Components \u2014 the donut pattern",
+    "body": "The 'donut' pattern keeps the outer shell as a Server Component and passes interactive Client Components as children slots.\n\n```tsx\n// app/page.tsx \u2014 Server Component (the donut)\nimport { Sidebar } from '@/components/sidebar';\nimport { InteractiveFilters } from '@/components/interactive-filters';\nimport { ProductGrid } from '@/components/product-grid';\n\nexport default async function Page() {\n  const categories = await getCategories(); // Server-side fetch\n  const products = await getProducts();      // Server-side fetch\n\n  return (\n    <div className=\"flex\">\n      {/* Server Component with interactive hole */}\n      <Sidebar>\n        <InteractiveFilters categories={categories} />\n      </Sidebar>\n\n      {/* Server Component rendering data */}\n      <ProductGrid products={products} />\n    </div>\n  );\n}\n\n// components/sidebar.tsx \u2014 Server Component wrapper\nexport function Sidebar({ children }: { children: React.ReactNode }) {\n  return <aside className=\"w-64 p-4 border-r\">{children}</aside>;\n}\n\n// components/interactive-filters.tsx \u2014 Client Component (the hole)\n'use client';\nimport { useState } from 'react';\n\nexport function InteractiveFilters({ categories }: { categories: Category[] }) {\n  const [selected, setSelected] = useState<string[]>([]);\n  return (\n    <div>\n      {categories.map((cat) => (\n        <label key={cat.id}>\n          <input\n            type=\"checkbox\"\n            checked={selected.includes(cat.id)}\n            onChange={() => /* toggle */}\n          />\n          {cat.name}\n        </label>\n      ))}\n    </div>\n  );\n}\n```\n\nThe Server Component fetches data and renders the layout. The Client Component receives serializable data as props and handles interactivity. This minimizes the client bundle.",
+    "tags": [
+      "react-19",
+      "server-components",
+      "client-components",
+      "composition",
+      "donut-pattern"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "community",
+    "title": "Infinite scroll with Server Actions and useTransition",
+    "body": "Implement infinite scroll using Server Actions for data fetching and `useTransition` for non-blocking updates.\n\n```tsx\n// app/actions.ts\n'use server';\nexport async function loadMorePosts(offset: number, limit: number = 10) {\n  const posts = await db.query.posts.findMany({\n    offset,\n    limit,\n    orderBy: (posts, { desc }) => [desc(posts.createdAt)],\n  });\n  return posts;\n}\n\n// components/infinite-posts.tsx\n'use client';\nimport { useState, useTransition, useCallback, useEffect, useRef } from 'react';\nimport { loadMorePosts } from '@/app/actions';\n\nexport function InfinitePosts({ initialPosts }: { initialPosts: Post[] }) {\n  const [posts, setPosts] = useState(initialPosts);\n  const [isPending, startTransition] = useTransition();\n  const [hasMore, setHasMore] = useState(true);\n  const loaderRef = useRef<HTMLDivElement>(null);\n\n  const loadMore = useCallback(() => {\n    if (isPending || !hasMore) return;\n    startTransition(async () => {\n      const newPosts = await loadMorePosts(posts.length);\n      if (newPosts.length === 0) setHasMore(false);\n      else setPosts((prev) => [...prev, ...newPosts]);\n    });\n  }, [posts.length, isPending, hasMore]);\n\n  useEffect(() => {\n    const observer = new IntersectionObserver(\n      ([entry]) => { if (entry.isIntersecting) loadMore(); },\n      { threshold: 0.1 }\n    );\n    if (loaderRef.current) observer.observe(loaderRef.current);\n    return () => observer.disconnect();\n  }, [loadMore]);\n\n  return (\n    <div>\n      {posts.map((p) => <PostCard key={p.id} post={p} />)}\n      <div ref={loaderRef}>\n        {isPending && <p>Loading more...</p>}\n      </div>\n    </div>\n  );\n}\n```",
+    "tags": [
+      "next-15",
+      "server-actions",
+      "infinite-scroll",
+      "useTransition",
+      "intersection-observer"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "community",
+    "title": "Multi-step form with Server Actions and hidden state",
+    "body": "Handle multi-step forms by passing step state through hidden form fields in Server Actions.\n\n```tsx\n// app/actions.ts\n'use server';\n\nexport type WizardState = {\n  step: number;\n  data: Record<string, string>;\n  errors?: Record<string, string>;\n};\n\nexport async function wizardAction(\n  prevState: WizardState,\n  formData: FormData\n): Promise<WizardState> {\n  const step = parseInt(formData.get('step') as string);\n  const direction = formData.get('direction') as 'next' | 'back';\n  const entries = Object.fromEntries(formData);\n\n  // Merge new data\n  const data = { ...prevState.data, ...entries };\n\n  if (direction === 'back') {\n    return { step: step - 1, data };\n  }\n\n  // Validate current step\n  // ... validation logic\n\n  if (step === 3) {\n    // Final step \u2014 submit\n    await db.insert(signups).values(data);\n    redirect('/success');\n  }\n\n  return { step: step + 1, data };\n}\n\n// components/wizard.tsx\n'use client';\nimport { useActionState } from 'react';\n\nexport function Wizard() {\n  const [state, formAction, isPending] = useActionState(wizardAction, {\n    step: 1,\n    data: {},\n  });\n\n  return (\n    <form action={formAction}>\n      <input type=\"hidden\" name=\"step\" value={state.step} />\n      {state.step === 1 && <Step1 data={state.data} />}\n      {state.step === 2 && <Step2 data={state.data} />}\n      {state.step === 3 && <Step3 data={state.data} />}\n      <div className=\"flex gap-2\">\n        {state.step > 1 && (\n          <button name=\"direction\" value=\"back\">Back</button>\n        )}\n        <button name=\"direction\" value=\"next\" disabled={isPending}>\n          {state.step === 3 ? 'Submit' : 'Next'}\n        </button>\n      </div>\n    </form>\n  );\n}\n```",
+    "tags": [
+      "react-19",
+      "server-actions",
+      "useActionState",
+      "multi-step-form",
+      "wizard"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "community",
+    "title": "Conditional middleware with multiple auth strategies",
+    "body": "Structure middleware to handle different auth strategies (JWT, API key, public) based on route patterns.\n\n```tsx\n// middleware.ts\nimport { NextResponse } from 'next/server';\nimport type { NextRequest } from 'next/server';\nimport { jwtVerify } from 'jose';\n\nconst publicPaths = ['/login', '/register', '/api/public'];\nconst apiKeyPaths = ['/api/webhook', '/api/external'];\n\nexport async function middleware(request: NextRequest) {\n  const { pathname } = request.nextUrl;\n\n  // Public routes \u2014 no auth needed\n  if (publicPaths.some((p) => pathname.startsWith(p))) {\n    return NextResponse.next();\n  }\n\n  // API key auth for webhook/external routes\n  if (apiKeyPaths.some((p) => pathname.startsWith(p))) {\n    const apiKey = request.headers.get('x-api-key');\n    if (apiKey !== process.env.API_KEY) {\n      return Response.json({ error: 'Unauthorized' }, { status: 401 });\n    }\n    return NextResponse.next();\n  }\n\n  // JWT auth for everything else\n  const token = request.cookies.get('session')?.value;\n  if (!token) {\n    return NextResponse.redirect(new URL('/login', request.url));\n  }\n\n  try {\n    const secret = new TextEncoder().encode(process.env.JWT_SECRET);\n    await jwtVerify(token, secret);\n    return NextResponse.next();\n  } catch {\n    return NextResponse.redirect(new URL('/login', request.url));\n  }\n}\n\nexport const config = {\n  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],\n};\n```",
+    "tags": [
+      "next-15",
+      "middleware",
+      "authentication",
+      "jwt",
+      "api-key",
+      "routing"
+    ]
+  },
+  {
+    "type": "pattern",
+    "trust": "community",
+    "title": "Reusable data table with Server Component sorting and pagination",
+    "body": "Build a sortable, paginated data table using URL search params for state, keeping sort/filter logic server-side.\n\n```tsx\n// app/users/page.tsx\nimport { DataTable } from '@/components/data-table';\n\nexport default async function UsersPage({\n  searchParams,\n}: {\n  searchParams: Promise<{ sort?: string; order?: string; page?: string }>;\n}) {\n  const { sort = 'name', order = 'asc', page = '1' } = await searchParams;\n  const pageNum = parseInt(page);\n  const pageSize = 20;\n\n  const { users, total } = await getUsers({\n    sortBy: sort,\n    sortOrder: order as 'asc' | 'desc',\n    offset: (pageNum - 1) * pageSize,\n    limit: pageSize,\n  });\n\n  return (\n    <DataTable\n      data={users}\n      columns={[\n        { key: 'name', label: 'Name', sortable: true },\n        { key: 'email', label: 'Email', sortable: true },\n        { key: 'role', label: 'Role', sortable: true },\n      ]}\n      currentSort={sort}\n      currentOrder={order}\n      currentPage={pageNum}\n      totalPages={Math.ceil(total / pageSize)}\n    />\n  );\n}\n\n// components/data-table.tsx\n'use client';\nimport Link from 'next/link';\nimport { usePathname, useSearchParams } from 'next/navigation';\n\nexport function DataTable({ data, columns, currentSort, currentOrder, currentPage, totalPages }) {\n  const pathname = usePathname();\n  const searchParams = useSearchParams();\n\n  function sortUrl(key: string) {\n    const params = new URLSearchParams(searchParams.toString());\n    params.set('sort', key);\n    params.set('order', currentSort === key && currentOrder === 'asc' ? 'desc' : 'asc');\n    params.set('page', '1');\n    return `${pathname}?${params.toString()}`;\n  }\n\n  return (\n    <table>\n      <thead>\n        <tr>\n          {columns.map((col) => (\n            <th key={col.key}>\n              {col.sortable ? <Link href={sortUrl(col.key)}>{col.label}</Link> : col.label}\n            </th>\n          ))}\n        </tr>\n      </thead>\n      <tbody>\n        {data.map((row, i) => (\n          <tr key={i}>\n            {columns.map((col) => <td key={col.key}>{row[col.key]}</td>)}\n          </tr>\n        ))}\n      </tbody>\n    </table>\n  );\n}\n```",
+    "tags": [
+      "next-15",
+      "data-table",
+      "sorting",
+      "pagination",
+      "searchParams",
+      "server-components"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Next.js 15 root layout with metadata, fonts, and providers",
+    "body": "A complete root layout template for Next.js 15 App Router with TypeScript.\n\n```tsx\n// app/layout.tsx\nimport type { Metadata } from 'next';\nimport { Inter } from 'next/font/google';\nimport { ThemeProvider } from '@/components/theme-provider';\nimport { Toaster } from '@/components/toaster';\nimport './globals.css';\n\nconst inter = Inter({\n  subsets: ['latin'],\n  display: 'swap',\n  variable: '--font-inter',\n});\n\nexport const metadata: Metadata = {\n  title: {\n    default: 'My App',\n    template: '%s | My App',\n  },\n  description: 'A Next.js 15 application',\n  metadataBase: new URL('https://myapp.com'),\n  openGraph: {\n    type: 'website',\n    siteName: 'My App',\n    locale: 'en_US',\n  },\n};\n\nexport default function RootLayout({\n  children,\n}: {\n  children: React.ReactNode;\n}) {\n  return (\n    <html lang=\"en\" className={inter.variable} suppressHydrationWarning>\n      <body className=\"font-sans antialiased\">\n        <ThemeProvider\n          attribute=\"class\"\n          defaultTheme=\"system\"\n          enableSystem\n          disableTransitionOnChange\n        >\n          {children}\n          <Toaster />\n        </ThemeProvider>\n      </body>\n    </html>\n  );\n}\n```\n\n`suppressHydrationWarning` on `<html>` is needed when using theme providers that modify the element before hydration. The `variable` prop on the font creates a CSS custom property for use in Tailwind.",
+    "tags": [
+      "next-15",
+      "layout",
+      "metadata",
+      "fonts",
+      "typescript",
+      "template"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Server Action with file upload using FormData",
+    "body": "Handle file uploads in a Server Action with validation.\n\n```tsx\n// app/actions.ts\n'use server';\nimport { writeFile } from 'fs/promises';\nimport path from 'path';\n\nexport async function uploadFile(\n  prevState: { message: string; url?: string },\n  formData: FormData\n) {\n  const file = formData.get('file') as File;\n\n  if (!file || file.size === 0) {\n    return { message: 'No file selected' };\n  }\n\n  if (file.size > 5 * 1024 * 1024) {\n    return { message: 'File must be less than 5MB' };\n  }\n\n  const allowedTypes = ['image/jpeg', 'image/png', 'image/webp'];\n  if (!allowedTypes.includes(file.type)) {\n    return { message: 'Only JPEG, PNG, and WebP images are allowed' };\n  }\n\n  const bytes = await file.arrayBuffer();\n  const buffer = Buffer.from(bytes);\n  const filename = `${Date.now()}-${file.name}`;\n  const filepath = path.join(process.cwd(), 'public/uploads', filename);\n  await writeFile(filepath, buffer);\n\n  return { message: 'Upload successful', url: `/uploads/${filename}` };\n}\n\n// components/upload-form.tsx\n'use client';\nimport { useActionState } from 'react';\nimport { uploadFile } from '@/app/actions';\n\nexport function UploadForm() {\n  const [state, formAction, isPending] = useActionState(uploadFile, {\n    message: '',\n  });\n\n  return (\n    <form action={formAction}>\n      <input type=\"file\" name=\"file\" accept=\"image/*\" />\n      <button disabled={isPending}>\n        {isPending ? 'Uploading...' : 'Upload'}\n      </button>\n      {state.message && <p>{state.message}</p>}\n      {state.url && <img src={state.url} alt=\"Uploaded\" width={200} />}\n    </form>\n  );\n}\n```",
+    "tags": [
+      "next-15",
+      "server-actions",
+      "file-upload",
+      "formData",
+      "validation"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Dynamic OG image with Next.js ImageResponse",
+    "body": "Generate dynamic Open Graph images using Next.js `ImageResponse` in a Route Handler.\n\n```tsx\n// app/api/og/route.tsx\nimport { ImageResponse } from 'next/og';\n\nexport const runtime = 'edge';\n\nexport async function GET(request: Request) {\n  const { searchParams } = new URL(request.url);\n  const title = searchParams.get('title') ?? 'My App';\n  const description = searchParams.get('description') ?? '';\n\n  return new ImageResponse(\n    (\n      <div\n        style={{\n          display: 'flex',\n          flexDirection: 'column',\n          alignItems: 'flex-start',\n          justifyContent: 'center',\n          width: '100%',\n          height: '100%',\n          padding: '80px',\n          background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',\n          color: 'white',\n          fontFamily: 'system-ui',\n        }}\n      >\n        <div style={{ fontSize: 64, fontWeight: 'bold', marginBottom: 20 }}>\n          {title}\n        </div>\n        {description && (\n          <div style={{ fontSize: 32, opacity: 0.8 }}>{description}</div>\n        )}\n        <div style={{ fontSize: 24, marginTop: 'auto', opacity: 0.6 }}>\n          myapp.com\n        </div>\n      </div>\n    ),\n    { width: 1200, height: 630 }\n  );\n}\n\n// Use in metadata:\nexport const metadata: Metadata = {\n  openGraph: {\n    images: [{ url: '/api/og?title=My+Page', width: 1200, height: 630 }],\n  },\n};\n```\n\n`ImageResponse` uses Satori to convert JSX to SVG to PNG. It only supports a subset of CSS (flexbox, no grid). The `edge` runtime is recommended for faster generation.",
+    "tags": [
+      "next-15",
+      "og-image",
+      "imageResponse",
+      "metadata",
+      "seo"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "useActionState with reset and multi-field form",
+    "body": "Complete form with `useActionState`, field validation, and form reset after successful submission.\n\n```tsx\n// app/actions.ts\n'use server';\nimport { z } from 'zod';\nimport { revalidatePath } from 'next/cache';\n\nconst contactSchema = z.object({\n  name: z.string().min(2, 'Name must be at least 2 characters'),\n  email: z.string().email('Invalid email address'),\n  message: z.string().min(10, 'Message must be at least 10 characters'),\n});\n\nexport type ContactState = {\n  success?: boolean;\n  errors?: Record<string, string[]>;\n  message?: string;\n};\n\nexport async function submitContact(\n  prevState: ContactState,\n  formData: FormData\n): Promise<ContactState> {\n  const parsed = contactSchema.safeParse(Object.fromEntries(formData));\n  if (!parsed.success) {\n    return { errors: parsed.error.flatten().fieldErrors };\n  }\n  await db.insert(contacts).values(parsed.data);\n  revalidatePath('/contact');\n  return { success: true, message: 'Message sent!' };\n}\n\n// components/contact-form.tsx\n'use client';\nimport { useActionState, useRef, useEffect } from 'react';\nimport { submitContact, type ContactState } from '@/app/actions';\n\nexport function ContactForm() {\n  const [state, formAction, isPending] = useActionState(submitContact, {});\n  const formRef = useRef<HTMLFormElement>(null);\n\n  useEffect(() => {\n    if (state.success) formRef.current?.reset();\n  }, [state.success]);\n\n  return (\n    <form ref={formRef} action={formAction} className=\"space-y-4\">\n      <div>\n        <input name=\"name\" placeholder=\"Name\" className=\"border p-2 w-full\" />\n        {state.errors?.name && <p className=\"text-red-500 text-sm\">{state.errors.name[0]}</p>}\n      </div>\n      <div>\n        <input name=\"email\" type=\"email\" placeholder=\"Email\" className=\"border p-2 w-full\" />\n        {state.errors?.email && <p className=\"text-red-500 text-sm\">{state.errors.email[0]}</p>}\n      </div>\n      <div>\n        <textarea name=\"message\" placeholder=\"Message\" className=\"border p-2 w-full\" rows={4} />\n        {state.errors?.message && <p className=\"text-red-500 text-sm\">{state.errors.message[0]}</p>}\n      </div>\n      <button disabled={isPending} className=\"bg-blue-500 text-white px-4 py-2 rounded\">\n        {isPending ? 'Sending...' : 'Send'}\n      </button>\n      {state.message && <p className=\"text-green-500\">{state.message}</p>}\n    </form>\n  );\n}\n```",
+    "tags": [
+      "react-19",
+      "useActionState",
+      "forms",
+      "validation",
+      "zod",
+      "snippet"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Route Handler streaming response with ReadableStream",
+    "body": "Stream a response from a Route Handler using the Web Streams API.\n\n```tsx\n// app/api/stream/route.ts\nexport async function GET() {\n  const encoder = new TextEncoder();\n\n  const stream = new ReadableStream({\n    async start(controller) {\n      const items = ['Processing step 1...', 'Processing step 2...', 'Done!'];\n\n      for (const item of items) {\n        controller.enqueue(encoder.encode(`data: ${item}\\n\\n`));\n        await new Promise((resolve) => setTimeout(resolve, 1000));\n      }\n\n      controller.close();\n    },\n  });\n\n  return new Response(stream, {\n    headers: {\n      'Content-Type': 'text/event-stream',\n      'Cache-Control': 'no-cache',\n      Connection: 'keep-alive',\n    },\n  });\n}\n\n// Client-side consumption:\n'use client';\nimport { useState } from 'react';\n\nexport function StreamDemo() {\n  const [messages, setMessages] = useState<string[]>([]);\n\n  async function startStream() {\n    const response = await fetch('/api/stream');\n    const reader = response.body!.getReader();\n    const decoder = new TextDecoder();\n\n    while (true) {\n      const { done, value } = await reader.read();\n      if (done) break;\n      const text = decoder.decode(value);\n      const lines = text.split('\\n').filter((l) => l.startsWith('data: '));\n      for (const line of lines) {\n        setMessages((prev) => [...prev, line.replace('data: ', '')]);\n      }\n    }\n  }\n\n  return (\n    <div>\n      <button onClick={startStream}>Start</button>\n      {messages.map((m, i) => <p key={i}>{m}</p>)}\n    </div>\n  );\n}\n```",
+    "tags": [
+      "next-15",
+      "route-handlers",
+      "streaming",
+      "sse",
+      "readableStream"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Middleware with rate limiting using headers",
+    "body": "Implement simple rate limiting in Next.js middleware using the IP address and a KV store.\n\n```tsx\n// middleware.ts\nimport { NextResponse } from 'next/server';\nimport type { NextRequest } from 'next/server';\n\n// Simple in-memory rate limiter (use Redis/KV in production)\nconst rateLimitMap = new Map<string, { count: number; resetTime: number }>();\n\nfunction rateLimit(ip: string, limit: number = 10, windowMs: number = 60000): boolean {\n  const now = Date.now();\n  const record = rateLimitMap.get(ip);\n\n  if (!record || now > record.resetTime) {\n    rateLimitMap.set(ip, { count: 1, resetTime: now + windowMs });\n    return true;\n  }\n\n  if (record.count >= limit) return false;\n  record.count++;\n  return true;\n}\n\nexport function middleware(request: NextRequest) {\n  // Only rate limit API routes\n  if (request.nextUrl.pathname.startsWith('/api/')) {\n    const ip = request.headers.get('x-forwarded-for') ?? request.ip ?? 'unknown';\n    const allowed = rateLimit(ip, 30, 60000); // 30 requests per minute\n\n    if (!allowed) {\n      return Response.json(\n        { error: 'Too many requests' },\n        {\n          status: 429,\n          headers: { 'Retry-After': '60' },\n        }\n      );\n    }\n  }\n\n  return NextResponse.next();\n}\n\nexport const config = {\n  matcher: ['/api/:path*'],\n};\n```\n\nNote: In-memory rate limiting only works for single-instance deployments. For production, use Vercel KV, Upstash Redis, or similar edge-compatible stores.",
+    "tags": [
+      "next-15",
+      "middleware",
+      "rate-limiting",
+      "api",
+      "security"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "generateMetadata with dynamic params and fallbacks",
+    "body": "Complete `generateMetadata` implementation with proper typing for Next.js 15.\n\n```tsx\n// app/posts/[slug]/page.tsx\nimport type { Metadata, ResolvingMetadata } from 'next';\nimport { notFound } from 'next/navigation';\n\ntype Props = {\n  params: Promise<{ slug: string }>;\n};\n\nexport async function generateMetadata(\n  { params }: Props,\n  parent: ResolvingMetadata\n): Promise<Metadata> {\n  const { slug } = await params;\n  const post = await getPost(slug);\n\n  if (!post) {\n    return { title: 'Not Found' };\n  }\n\n  // Access parent metadata (from layout)\n  const previousImages = (await parent).openGraph?.images || [];\n\n  return {\n    title: post.title,\n    description: post.excerpt,\n    authors: [{ name: post.author.name }],\n    openGraph: {\n      title: post.title,\n      description: post.excerpt,\n      type: 'article',\n      publishedTime: post.publishedAt,\n      authors: [post.author.name],\n      images: [\n        {\n          url: `/api/og?title=${encodeURIComponent(post.title)}`,\n          width: 1200,\n          height: 630,\n          alt: post.title,\n        },\n        ...previousImages,\n      ],\n    },\n    twitter: {\n      card: 'summary_large_image',\n      title: post.title,\n      description: post.excerpt,\n    },\n  };\n}\n\nexport default async function PostPage({ params }: Props) {\n  const { slug } = await params;\n  const post = await getPost(slug);\n  if (!post) notFound();\n  return <article>{post.content}</article>;\n}\n```",
+    "tags": [
+      "next-15",
+      "metadata",
+      "generateMetadata",
+      "seo",
+      "openGraph",
+      "dynamic"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Catch-all and optional catch-all routes in App Router",
+    "body": "Implement catch-all (`[...slug]`) and optional catch-all (`[[...slug]]`) routes in Next.js 15.\n\n```tsx\n// app/docs/[...slug]/page.tsx \u2014 catch-all (required)\n// Matches: /docs/getting-started, /docs/api/reference, /docs/a/b/c\n// Does NOT match: /docs (404)\n\nexport default async function DocsPage({\n  params,\n}: {\n  params: Promise<{ slug: string[] }>;\n}) {\n  const { slug } = await params;\n  // slug = ['getting-started'] for /docs/getting-started\n  // slug = ['api', 'reference'] for /docs/api/reference\n\n  const path = slug.join('/');\n  const doc = await getDoc(path);\n\n  return <article>{doc.content}</article>;\n}\n\n// For generateStaticParams with catch-all:\nexport async function generateStaticParams() {\n  const docs = await getAllDocs();\n  return docs.map((doc) => ({\n    slug: doc.path.split('/'), // Must be an array\n  }));\n}\n\n// app/shop/[[...slug]]/page.tsx \u2014 optional catch-all\n// Matches: /shop, /shop/shirts, /shop/shirts/xl\nexport default async function ShopPage({\n  params,\n}: {\n  params: Promise<{ slug?: string[] }>;\n}) {\n  const { slug } = await params;\n  // slug = undefined for /shop\n  // slug = ['shirts'] for /shop/shirts\n  // slug = ['shirts', 'xl'] for /shop/shirts/xl\n\n  if (!slug) return <AllProducts />;\n  return <FilteredProducts categories={slug} />;\n}\n```",
+    "tags": [
+      "next-15",
+      "routing",
+      "catch-all",
+      "dynamic-routes",
+      "app-router"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Next.js 15 middleware with geolocation and rewriting",
+    "body": "Use middleware to detect country and rewrite to localized content.\n\n```tsx\n// middleware.ts\nimport { NextResponse } from 'next/server';\nimport type { NextRequest } from 'next/server';\n\nconst SUPPORTED_LOCALES = ['en', 'fr', 'de', 'ja'] as const;\nconst DEFAULT_LOCALE = 'en';\n\nfunction getLocaleFromHeaders(request: NextRequest): string {\n  // Vercel provides geo data\n  const country = request.geo?.country ?? 'US';\n\n  const countryToLocale: Record<string, string> = {\n    FR: 'fr',\n    DE: 'de',\n    AT: 'de',\n    CH: 'de',\n    JP: 'ja',\n  };\n\n  return countryToLocale[country] ?? DEFAULT_LOCALE;\n}\n\nexport function middleware(request: NextRequest) {\n  const { pathname } = request.nextUrl;\n\n  // Skip if already has locale prefix\n  const hasLocale = SUPPORTED_LOCALES.some(\n    (locale) => pathname.startsWith(`/${locale}/`) || pathname === `/${locale}`\n  );\n  if (hasLocale) return NextResponse.next();\n\n  // Check cookie for user preference\n  const cookieLocale = request.cookies.get('locale')?.value;\n  const locale = cookieLocale ?? getLocaleFromHeaders(request);\n\n  // Rewrite (not redirect) to keep URL clean\n  const url = request.nextUrl.clone();\n  url.pathname = `/${locale}${pathname}`;\n  return NextResponse.rewrite(url);\n}\n\nexport const config = {\n  matcher: ['/((?!_next|api|favicon.ico).*)'],\n};\n```\n\nRewriting (vs redirecting) keeps the user's URL clean while serving localized content. The `geo` property is available on Vercel; for other platforms, use a geolocation API or the `Accept-Language` header.",
+    "tags": [
+      "next-15",
+      "middleware",
+      "i18n",
+      "geolocation",
+      "rewrite"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Debounced search with Server Actions and useTransition",
+    "body": "Implement a debounced search that calls a Server Action and shows loading state.\n\n```tsx\n// app/actions.ts\n'use server';\n\nexport async function searchProducts(query: string) {\n  if (!query || query.length < 2) return [];\n  const results = await db.query.products.findMany({\n    where: ilike(products.name, `%${query}%`),\n    limit: 20,\n  });\n  return results.map((p) => ({\n    id: p.id,\n    name: p.name,\n    price: p.price,\n  }));\n}\n\n// components/search.tsx\n'use client';\nimport { useState, useTransition, useCallback } from 'react';\nimport { searchProducts } from '@/app/actions';\n\ntype Product = { id: string; name: string; price: number };\n\nexport function Search() {\n  const [query, setQuery] = useState('');\n  const [results, setResults] = useState<Product[]>([]);\n  const [isPending, startTransition] = useTransition();\n  const timerRef = useRef<NodeJS.Timeout>();\n\n  const handleChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {\n    const value = e.target.value;\n    setQuery(value);\n\n    clearTimeout(timerRef.current);\n    timerRef.current = setTimeout(() => {\n      startTransition(async () => {\n        const data = await searchProducts(value);\n        setResults(data);\n      });\n    }, 300);\n  }, []);\n\n  return (\n    <div className=\"relative\">\n      <input\n        value={query}\n        onChange={handleChange}\n        placeholder=\"Search products...\"\n        className=\"border p-2 w-full\"\n      />\n      {isPending && <div className=\"absolute right-2 top-2\">Searching...</div>}\n      <ul className=\"border-t\">\n        {results.map((p) => (\n          <li key={p.id} className=\"p-2 border-b\">\n            {p.name} \u2014 ${p.price}\n          </li>\n        ))}\n      </ul>\n    </div>\n  );\n}\n```",
+    "tags": [
+      "next-15",
+      "server-actions",
+      "search",
+      "debounce",
+      "useTransition"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Protected API route handler with JWT verification",
+    "body": "A Route Handler with JWT auth, request validation, and proper error responses.\n\n```tsx\n// app/api/protected/data/route.ts\nimport { NextRequest } from 'next/server';\nimport { jwtVerify } from 'jose';\nimport { z } from 'zod';\n\nconst secret = new TextEncoder().encode(process.env.JWT_SECRET!);\n\nasync function verifyAuth(request: NextRequest) {\n  const token = request.headers.get('authorization')?.replace('Bearer ', '');\n  if (!token) return null;\n\n  try {\n    const { payload } = await jwtVerify(token, secret);\n    return payload as { sub: string; email: string };\n  } catch {\n    return null;\n  }\n}\n\nconst querySchema = z.object({\n  page: z.coerce.number().min(1).default(1),\n  limit: z.coerce.number().min(1).max(100).default(20),\n});\n\nexport async function GET(request: NextRequest) {\n  const user = await verifyAuth(request);\n  if (!user) {\n    return Response.json({ error: 'Unauthorized' }, { status: 401 });\n  }\n\n  const params = Object.fromEntries(request.nextUrl.searchParams);\n  const parsed = querySchema.safeParse(params);\n  if (!parsed.success) {\n    return Response.json(\n      { error: 'Invalid parameters', details: parsed.error.flatten() },\n      { status: 400 }\n    );\n  }\n\n  const { page, limit } = parsed.data;\n  const data = await db.query.items.findMany({\n    where: eq(items.userId, user.sub),\n    limit,\n    offset: (page - 1) * limit,\n  });\n\n  return Response.json({ data, page, limit });\n}\n```",
+    "tags": [
+      "next-15",
+      "route-handlers",
+      "jwt",
+      "authentication",
+      "api",
+      "zod"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "community",
+    "title": "Custom useMediaQuery hook safe for SSR in Next.js 15",
+    "body": "A media query hook that avoids hydration mismatches by returning a safe default during SSR.\n\n```tsx\n// hooks/use-media-query.ts\n'use client';\nimport { useState, useEffect } from 'react';\n\nexport function useMediaQuery(query: string): boolean {\n  const [matches, setMatches] = useState(false);\n\n  useEffect(() => {\n    const media = window.matchMedia(query);\n    setMatches(media.matches);\n\n    function listener(event: MediaQueryListEvent) {\n      setMatches(event.matches);\n    }\n\n    media.addEventListener('change', listener);\n    return () => media.removeEventListener('change', listener);\n  }, [query]);\n\n  return matches;\n}\n\n// Usage:\n'use client';\nimport { useMediaQuery } from '@/hooks/use-media-query';\n\nexport function ResponsiveNav() {\n  const isMobile = useMediaQuery('(max-width: 768px)');\n\n  // Renders false on server, then updates on client\n  // No hydration mismatch because initial state matches server\n  return isMobile ? <MobileNav /> : <DesktopNav />;\n}\n```\n\nBy initializing `matches` to `false`, the server and client render the same initial HTML. The `useEffect` then corrects the value on the client. This avoids hydration errors while keeping the hook simple.",
+    "tags": [
+      "react-19",
+      "hooks",
+      "media-query",
+      "ssr",
+      "hydration"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "community",
+    "title": "Next.js 15 sitemap.ts and robots.ts dynamic generation",
+    "body": "Generate dynamic sitemaps and robots.txt using the App Router file conventions.\n\n```tsx\n// app/sitemap.ts\nimport type { MetadataRoute } from 'next';\n\nexport default async function sitemap(): Promise<MetadataRoute.Sitemap> {\n  const baseUrl = 'https://myapp.com';\n\n  // Static pages\n  const staticPages: MetadataRoute.Sitemap = [\n    { url: baseUrl, lastModified: new Date(), changeFrequency: 'daily', priority: 1 },\n    { url: `${baseUrl}/about`, lastModified: new Date(), changeFrequency: 'monthly', priority: 0.8 },\n  ];\n\n  // Dynamic pages from database\n  const posts = await db.query.posts.findMany({\n    columns: { slug: true, updatedAt: true },\n  });\n\n  const postPages: MetadataRoute.Sitemap = posts.map((post) => ({\n    url: `${baseUrl}/posts/${post.slug}`,\n    lastModified: post.updatedAt,\n    changeFrequency: 'weekly',\n    priority: 0.6,\n  }));\n\n  return [...staticPages, ...postPages];\n}\n\n// app/robots.ts\nimport type { MetadataRoute } from 'next';\n\nexport default function robots(): MetadataRoute.Robots {\n  const baseUrl = 'https://myapp.com';\n  return {\n    rules: [\n      {\n        userAgent: '*',\n        allow: '/',\n        disallow: ['/api/', '/admin/', '/dashboard/'],\n      },\n    ],\n    sitemap: `${baseUrl}/sitemap.xml`,\n  };\n}\n```\n\nNext.js automatically serves these at `/sitemap.xml` and `/robots.txt`. For large sites with 50,000+ URLs, use `generateSitemaps()` to split into multiple sitemap files.",
+    "tags": [
+      "next-15",
+      "sitemap",
+      "robots",
+      "seo",
+      "metadata"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "community",
+    "title": "Type-safe Link component with Next.js 15 typed routes",
+    "body": "Enable typed routes for compile-time route validation.\n\n```tsx\n// next.config.ts\nimport type { NextConfig } from 'next';\n\nconst nextConfig: NextConfig = {\n  experimental: {\n    typedRoutes: true,\n  },\n};\n\nexport default nextConfig;\n\n// After enabling, run `next dev` or `next build` to generate types.\n// Then Link and useRouter get type-safe route checking:\n\nimport Link from 'next/link';\n\nexport function Navigation() {\n  return (\n    <nav>\n      {/* Type-safe \u2014 autocomplete works, typos are caught */}\n      <Link href=\"/dashboard\">Dashboard</Link>\n      <Link href=\"/posts/hello-world\">Post</Link>\n\n      {/* Type error \u2014 route doesn't exist */}\n      {/* <Link href=\"/dashbord\">Dashboard</Link> */}\n\n      {/* Dynamic routes work too */}\n      <Link href={`/posts/${slug}` as Route}>Post</Link>\n    </nav>\n  );\n}\n\n// useRouter is also typed:\n'use client';\nimport { useRouter } from 'next/navigation';\n\nexport function NavigateButton() {\n  const router = useRouter();\n  return (\n    <button onClick={() => router.push('/dashboard')}>\n      Go to Dashboard\n    </button>\n  );\n}\n```\n\nTyped routes are generated in `.next/types` and picked up by TypeScript. They catch broken links at compile time instead of runtime.",
+    "tags": [
+      "next-15",
+      "typed-routes",
+      "typescript",
+      "link",
+      "navigation"
+    ]
+  },
+  {
+    "type": "snippet",
+    "trust": "community",
+    "title": "Reusable Suspense wrapper with error boundary and retry",
+    "body": "A reusable component that combines Suspense and error boundary patterns.\n\n```tsx\n// components/async-boundary.tsx\n'use client';\nimport { Suspense, Component, type ReactNode, type ErrorInfo } from 'react';\n\ninterface ErrorBoundaryProps {\n  fallback: (error: Error, reset: () => void) => ReactNode;\n  children: ReactNode;\n}\n\ninterface ErrorBoundaryState {\n  error: Error | null;\n}\n\nclass ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {\n  state: ErrorBoundaryState = { error: null };\n\n  static getDerivedStateFromError(error: Error) {\n    return { error };\n  }\n\n  componentDidCatch(error: Error, info: ErrorInfo) {\n    console.error('AsyncBoundary caught:', error, info);\n  }\n\n  reset = () => this.setState({ error: null });\n\n  render() {\n    if (this.state.error) {\n      return this.props.fallback(this.state.error, this.reset);\n    }\n    return this.props.children;\n  }\n}\n\n// Reusable wrapper\nexport function AsyncBoundary({\n  children,\n  loading = <div className=\"animate-pulse h-32 bg-gray-200 rounded\" />,\n  errorFallback,\n}: {\n  children: ReactNode;\n  loading?: ReactNode;\n  errorFallback?: (error: Error, reset: () => void) => ReactNode;\n}) {\n  const defaultError = (error: Error, reset: () => void) => (\n    <div className=\"p-4 border border-red-200 rounded\">\n      <p className=\"text-red-600\">{error.message}</p>\n      <button onClick={reset} className=\"mt-2 text-sm underline\">Retry</button>\n    </div>\n  );\n\n  return (\n    <ErrorBoundary fallback={errorFallback ?? defaultError}>\n      <Suspense fallback={loading}>{children}</Suspense>\n    </ErrorBoundary>\n  );\n}\n\n// Usage:\n<AsyncBoundary loading={<Skeleton />}>\n  <SlowComponent />\n</AsyncBoundary>\n```",
+    "tags": [
+      "react-19",
+      "suspense",
+      "error-boundary",
+      "reusable",
+      "component"
+    ]
+  }
+]

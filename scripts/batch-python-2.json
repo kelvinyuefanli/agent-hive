@@ -1,0 +1,653 @@
+[
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "PEP 695 type alias syntax requires Python 3.12+",
+    "body": "Python 3.12 introduced a new `type` statement for type aliases. Code using the old `TypeAlias` annotation works everywhere, but the new syntax is cleaner and creates proper generic aliases.\n\n```python\n# Old way (3.10+)\nfrom typing import TypeAlias\nVector: TypeAlias = list[float]\n\n# New way (3.12+)\ntype Vector = list[float]\n\n# Generic alias — old way\nfrom typing import TypeVar\nT = TypeVar('T')\ntype OldMap = dict[str, T]  # error — T not scoped\n\n# New way with scoped type params\ntype Map[T] = dict[str, T]  # T is scoped to this alias\n```\n\nThe gotcha: the `type` keyword is soft — it's only a keyword in the `type X = ...` context. You can still have variables named `type` elsewhere, but linters may flag it.",
+    "tags": ["python", "type-hints", "pep-695", "python-3.12"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "New generic class syntax (PEP 695) does not support bounds the old way",
+    "body": "In Python 3.12, you can declare generic classes with inline type parameters, but specifying bounds uses a colon, not `TypeVar(bound=...)`.\n\n```python\n# Old way\nfrom typing import TypeVar, Generic\nT = TypeVar('T', bound=int)\nclass MyList(Generic[T]):\n    ...\n\n# New 3.12 way\nclass MyList[T: int]:\n    def append(self, item: T) -> None: ...\n\n# Constrained types use a tuple\nclass Processor[T: (str, bytes)]:\n    def process(self, data: T) -> T: ...\n```\n\nGotcha: if you accidentally write `T(bound=int)` inside the brackets, you get a confusing syntax error. The bound syntax is `T: BoundType` inside the `[]`.",
+    "tags": ["python", "type-hints", "pep-695", "generics", "python-3.12"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "ParamSpec loses type info when wrapping with extra arguments",
+    "body": "ParamSpec captures the full parameter signature of a callable, but if you try to add extra parameters to the wrapped function, the type checker loses track.\n\n```python\nfrom typing import ParamSpec, Callable, TypeVar\n\nP = ParamSpec('P')\nR = TypeVar('R')\n\n# This works — signature preserved\ndef decorator(fn: Callable[P, R]) -> Callable[P, R]:\n    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:\n        return fn(*args, **kwargs)\n    return wrapper\n\n# This breaks ParamSpec — adding extra param\ndef with_retry(fn: Callable[P, R]) -> Callable[..., R]:  # loses P\n    def wrapper(*args: P.args, retries: int = 3, **kwargs: P.kwargs) -> R:\n        # retries won't be recognized by type checkers\n        ...\n    return wrapper\n```\n\nWorkaround: use `Concatenate` to prepend parameters, but you cannot append them. This is a known limitation of ParamSpec.",
+    "tags": ["python", "type-hints", "paramspec", "decorators"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "asyncio.gather swallows exceptions with return_exceptions=True",
+    "body": "When using `asyncio.gather(return_exceptions=True)`, exceptions are returned as values in the result list. If you forget to check them, errors go completely silent.\n\n```python\nimport asyncio\n\nasync def failing():\n    raise ValueError(\"boom\")\n\nasync def main():\n    results = await asyncio.gather(\n        failing(),\n        asyncio.sleep(1),\n        return_exceptions=True\n    )\n    # results = [ValueError('boom'), None]\n    # No exception raised! You must check manually:\n    for r in results:\n        if isinstance(r, Exception):\n            raise r  # or log it\n```\n\nPrefer `TaskGroup` in Python 3.11+ which propagates exceptions properly and cancels sibling tasks on failure.",
+    "tags": ["python", "asyncio", "gather", "error-handling"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "asyncio.TaskGroup cancels all tasks when one fails",
+    "body": "Unlike `gather`, `TaskGroup` (Python 3.11+) cancels all remaining tasks when any task raises an exception. This is usually what you want, but can surprise you if you expect independent execution.\n\n```python\nimport asyncio\n\nasync def main():\n    try:\n        async with asyncio.TaskGroup() as tg:\n            tg.create_task(asyncio.sleep(10))  # cancelled!\n            tg.create_task(failing_task())      # raises after 1s\n    except* ValueError as eg:\n        # ExceptionGroup — must use except* syntax\n        for exc in eg.exceptions:\n            print(f\"Caught: {exc}\")\n```\n\nGotcha: TaskGroup raises `ExceptionGroup`, not a single exception. You must use `except*` (PEP 654) to catch them, or `exceptiongroup` backport for older code.",
+    "tags": ["python", "asyncio", "taskgroup", "exception-group", "python-3.11"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Running asyncio.run() inside an existing event loop raises RuntimeError",
+    "body": "If you call `asyncio.run()` from code that's already inside an async context (like Jupyter notebooks, or inside a running event loop), you get `RuntimeError: This event loop is already running`.\n\n```python\nimport asyncio\n\nasync def fetch():\n    return \"data\"\n\n# This fails inside Jupyter or any running loop:\nasyncio.run(fetch())  # RuntimeError!\n\n# Fix 1: In Jupyter, just await directly\nresult = await fetch()\n\n# Fix 2: Use nest_asyncio (hack, not recommended for production)\nimport nest_asyncio\nnest_asyncio.apply()\nasyncio.run(fetch())  # now works\n\n# Fix 3: Proper solution — schedule on existing loop\nloop = asyncio.get_event_loop()\ntask = loop.create_task(fetch())\n```\n\nThis is extremely common when mixing sync libraries (like Click CLI) with async code. Use `anyio.from_thread.run` or structure your app to have a single `asyncio.run()` at the top level.",
+    "tags": ["python", "asyncio", "event-loop", "jupyter"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Virtual environment not activated but pip installs globally",
+    "body": "A common mistake is creating a venv but forgetting to activate it, then `pip install` puts packages in the global site-packages. Worse, the shell may find a system `pip` that points to a different Python version.\n\n```bash\npython -m venv .venv\n# WRONG: forgot to activate\npip install requests  # installs globally!\n\n# CORRECT:\nsource .venv/bin/activate  # Unix\n.venv\\Scripts\\activate     # Windows\npip install requests\n\n# SAFER: always use the venv's pip directly\n.venv/bin/pip install requests\n\n# SAFEST: use python -m pip to ensure correct Python\n.venv/bin/python -m pip install requests\n```\n\nPro tip: set `PIP_REQUIRE_VIRTUALENV=1` in your shell profile to make pip refuse to install globally.",
+    "tags": ["python", "virtualenv", "pip", "environment"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "f-string backslash limitation removed in Python 3.12",
+    "body": "Before Python 3.12, you could not use backslashes inside f-string expressions. This was a common frustration. Python 3.12 removes this restriction.\n\n```python\n# Python 3.11 and earlier — FAILS\nnames = ['Alice', 'Bob']\nresult = f\"Names: {'\\n'.join(names)}\"  # SyntaxError!\n\n# Workaround for <3.12\nnewline = '\\n'\nresult = f\"Names: {newline.join(names)}\"\n\n# Python 3.12+ — WORKS\nresult = f\"Names: {'\\n'.join(names)}\"  # fine now\n\n# Also works: reuse quotes in 3.12\nresult = f\"Hello {\"world\"}\"  # 3.12+ only\n# In 3.11: f\"Hello {'world'}\"  # had to use different quotes\n```\n\nIf your project must support Python <3.12, avoid backslashes in f-string expressions and use the variable workaround.",
+    "tags": ["python", "f-string", "python-3.12", "string-formatting"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Walrus operator := has lower precedence than you expect",
+    "body": "The walrus operator (`:=`) has very low precedence, which means it binds loosely. This causes surprising behavior without parentheses.\n\n```python\n# This does NOT work as expected\nif x := get_value() is not None:  # x gets bool, not the value!\n    print(x)  # prints True/False\n\n# Correct — parenthesize the assignment\nif (x := get_value()) is not None:\n    print(x)  # prints the actual value\n\n# Common pattern: while loop with assignment\nwhile (line := file.readline()) != '':\n    process(line)\n\n# List comprehension filtering\nresults = [y for x in data if (y := expensive(x)) is not None]\n```\n\nThe walrus operator has the lowest precedence of any operator. Always wrap it in parentheses when combining with comparisons.",
+    "tags": ["python", "walrus-operator", "precedence", "assignment-expression"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "dataclass field with mutable default raises TypeError",
+    "body": "Dataclasses prevent you from using mutable defaults like `list` or `dict` directly, but the error message can be confusing.\n\n```python\nfrom dataclasses import dataclass, field\n\n# WRONG — raises ValueError\n@dataclass\nclass Config:\n    tags: list[str] = []  # ValueError: mutable default not allowed\n\n# CORRECT — use field(default_factory=...)\n@dataclass\nclass Config:\n    tags: list[str] = field(default_factory=list)\n    metadata: dict[str, str] = field(default_factory=dict)\n    scores: list[int] = field(default_factory=lambda: [0, 0, 0])\n```\n\nPydantic models handle this automatically — `tags: list[str] = []` works fine in Pydantic because it copies defaults per instance. This is a common reason people switch from dataclasses to Pydantic.",
+    "tags": ["python", "dataclasses", "mutable-default", "pydantic"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Pydantic V2 model_validate vs V1 parse_obj migration",
+    "body": "Pydantic V2 renamed most methods. Using V1 names silently fails or raises confusing errors.\n\n```python\nfrom pydantic import BaseModel\n\nclass User(BaseModel):\n    name: str\n    age: int\n\n# V1 (deprecated/removed)\nuser = User.parse_obj({\"name\": \"Alice\", \"age\": 30})  # V2: warning\ndata = user.dict()  # V2: warning\njson_str = user.json()  # V2: warning\n\n# V2 (correct)\nuser = User.model_validate({\"name\": \"Alice\", \"age\": 30})\ndata = user.model_dump()\njson_str = user.model_dump_json()\njson_schema = User.model_json_schema()\n\n# V2 from JSON string\nuser = User.model_validate_json('{\"name\": \"Alice\", \"age\": 30}')\n```\n\nSet `model_config = ConfigDict(strict=True)` to enforce type coercion rules. V2 is 5-50x faster than V1 due to Rust core.",
+    "tags": ["python", "pydantic", "migration", "pydantic-v2"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "FastAPI dependency injection runs per-request by default",
+    "body": "FastAPI's `Depends()` creates a new instance of the dependency for every request. If you're creating expensive objects (DB connections, HTTP clients), this causes performance issues.\n\n```python\nfrom fastapi import FastAPI, Depends\nimport httpx\n\napp = FastAPI()\n\n# WRONG — creates new client per request\ndef get_client():\n    return httpx.AsyncClient()  # new connection every time!\n\n# CORRECT — use lifespan for shared resources\nfrom contextlib import asynccontextmanager\n\n@asynccontextmanager\nasync def lifespan(app: FastAPI):\n    app.state.client = httpx.AsyncClient()\n    yield\n    await app.state.client.aclose()\n\napp = FastAPI(lifespan=lifespan)\n\ndef get_client(request: Request) -> httpx.AsyncClient:\n    return request.app.state.client\n\n@app.get(\"/data\")\nasync def get_data(client: httpx.AsyncClient = Depends(get_client)):\n    resp = await client.get(\"https://api.example.com\")\n    return resp.json()\n```\n\nThe `lifespan` context manager replaced the deprecated `on_event('startup')` / `on_event('shutdown')` pattern.",
+    "tags": ["python", "fastapi", "dependency-injection", "lifespan"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "FastAPI async def vs def changes concurrency behavior",
+    "body": "FastAPI runs `def` endpoints in a thread pool and `async def` endpoints on the event loop. Using `async def` with blocking code freezes the entire server.\n\n```python\nfrom fastapi import FastAPI\nimport time\n\napp = FastAPI()\n\n# WRONG — blocks the event loop\n@app.get(\"/slow\")\nasync def slow_endpoint():\n    time.sleep(5)  # blocks ALL requests for 5 seconds!\n    return {\"status\": \"done\"}\n\n# CORRECT option 1: use def (runs in threadpool)\n@app.get(\"/slow\")\ndef slow_endpoint():\n    time.sleep(5)  # runs in thread, doesn't block other requests\n    return {\"status\": \"done\"}\n\n# CORRECT option 2: use async with async operations\n@app.get(\"/slow\")\nasync def slow_endpoint():\n    await asyncio.sleep(5)  # non-blocking\n    return {\"status\": \"done\"}\n\n# CORRECT option 3: run blocking code in executor\n@app.get(\"/slow\")\nasync def slow_endpoint():\n    result = await asyncio.to_thread(time.sleep, 5)\n    return {\"status\": \"done\"}\n```\n\nRule of thumb: use `async def` only when you're calling `await` inside. Use plain `def` for CPU-bound or blocking I/O code.",
+    "tags": ["python", "fastapi", "async", "concurrency", "blocking"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Exception chaining lost when using bare raise in except block",
+    "body": "Python automatically chains exceptions in except blocks, but you can accidentally lose the chain.\n\n```python\n# Automatic chaining — context preserved\ntry:\n    int(\"abc\")\nexcept ValueError:\n    raise RuntimeError(\"parse failed\")\n# RuntimeError has __context__ = ValueError\n\n# Explicit chaining with 'from'\ntry:\n    int(\"abc\")\nexcept ValueError as e:\n    raise RuntimeError(\"parse failed\") from e\n# Shows: \"The above exception was the direct cause...\"\n\n# Suppress chain with 'from None'\ntry:\n    int(\"abc\")\nexcept ValueError:\n    raise RuntimeError(\"parse failed\") from None\n# Only shows RuntimeError, no chain\n\n# GOTCHA: re-raising a NEW exception in a nested try loses context\ntry:\n    int(\"abc\")\nexcept ValueError:\n    try:\n        do_cleanup()\n    except Exception:\n        raise RuntimeError(\"cleanup failed\")\n        # Original ValueError lost! Use 'from e' to preserve it\n```\n\nAlways use `from e` when you want explicit chaining, and `from None` when you intentionally want to hide the original exception.",
+    "tags": ["python", "exceptions", "chaining", "error-handling"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "GIL prevents true CPU parallelism with threads in CPython",
+    "body": "Python's Global Interpreter Lock means threads cannot execute Python bytecode in parallel. This only matters for CPU-bound work.\n\n```python\nimport time\nfrom concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor\n\ndef cpu_bound(n):\n    return sum(i * i for i in range(n))\n\n# Threads — NO speedup for CPU-bound (GIL)\nwith ThreadPoolExecutor(max_workers=4) as pool:\n    results = list(pool.map(cpu_bound, [10**7] * 4))\n# Takes ~same time as sequential\n\n# Processes — TRUE parallelism\nwith ProcessPoolExecutor(max_workers=4) as pool:\n    results = list(pool.map(cpu_bound, [10**7] * 4))\n# ~4x faster\n\n# Threads ARE useful for I/O-bound work\nimport urllib.request\ndef fetch(url):\n    return urllib.request.urlopen(url).read()\n\nwith ThreadPoolExecutor(max_workers=10) as pool:\n    results = list(pool.map(fetch, urls))  # 10x faster than sequential\n```\n\nPython 3.13 introduces experimental free-threaded mode (`--disable-gil`) for true thread parallelism, but it's not production-ready yet.",
+    "tags": ["python", "gil", "multiprocessing", "threading", "concurrency"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Poetry and pip lock files are incompatible",
+    "body": "Poetry uses `poetry.lock` and `pyproject.toml`, while pip uses `requirements.txt`. You cannot mix them without explicit export.\n\n```bash\n# Poetry -> pip (for deployment)\npoetry export -f requirements.txt --output requirements.txt --without-hashes\n\n# Common gotcha: poetry install ignores requirements.txt entirely\n# and pip install ignores pyproject.toml [tool.poetry] section\n\n# uv is compatible with both\nuv pip install -r requirements.txt  # works\nuv pip compile pyproject.toml -o requirements.txt  # works\n\n# If switching from Poetry to uv:\nuv init  # creates pyproject.toml with [project] (PEP 621)\nuv add requests  # adds to [project.dependencies]\nuv lock  # creates uv.lock\nuv sync  # installs from lock\n```\n\nThe ecosystem is converging on PEP 621 `[project]` metadata in `pyproject.toml`. Poetry uses its own `[tool.poetry]` format. `uv` is 10-100x faster than pip and supports both.",
+    "tags": ["python", "poetry", "pip", "uv", "package-management"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "logging.basicConfig does nothing if root logger already has handlers",
+    "body": "If any library has already configured logging before your `basicConfig` call, it silently does nothing.\n\n```python\nimport logging\n\n# This may do NOTHING if called after a library import that configures logging\nlogging.basicConfig(level=logging.DEBUG)\n\n# The fix: force reconfiguration\nlogging.basicConfig(level=logging.DEBUG, force=True)  # 3.8+\n\n# Or configure explicitly\nlogger = logging.getLogger(__name__)\nlogger.setLevel(logging.DEBUG)\nhandler = logging.StreamHandler()\nhandler.setFormatter(logging.Formatter(\n    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'\n))\nlogger.addHandler(handler)\n\n# GOTCHA: logger level vs handler level\nlogger.setLevel(logging.DEBUG)  # logger accepts DEBUG+\nhandler.setLevel(logging.WARNING)  # but handler only emits WARNING+\n# Result: only WARNING and above are printed\n```\n\nAlways use `force=True` with `basicConfig`, or configure handlers explicitly. The `force` parameter was added in Python 3.8.",
+    "tags": ["python", "logging", "configuration", "basicconfig"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Circular imports fail silently with partially initialized modules",
+    "body": "Python's import system can handle some circular imports, but the module may be partially initialized, leading to `AttributeError` at runtime.\n\n```python\n# models.py\nfrom services import UserService  # imports services.py\n\nclass User:\n    def get_service(self):\n        return UserService(self)\n\n# services.py\nfrom models import User  # circular! models.py not fully loaded yet\n\nclass UserService:\n    def create(self) -> User:\n        return User()\n```\n\nFixes:\n```python\n# Fix 1: Import inside function (lazy import)\nclass UserService:\n    def create(self):\n        from models import User  # imported when called, not at module load\n        return User()\n\n# Fix 2: Use TYPE_CHECKING for type hints only\nfrom __future__ import annotations\nfrom typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from models import User\n\nclass UserService:\n    def create(self) -> \"User\": ...  # string annotation, no runtime import\n\n# Fix 3: Restructure into a shared module\n```\n\nThe `from __future__ import annotations` (PEP 563) makes all annotations lazy strings, eliminating most circular import issues for type hints.",
+    "tags": ["python", "imports", "circular-imports", "type-checking"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Match statement with classes requires __match_args__",
+    "body": "Python's structural pattern matching (PEP 634) can match class instances, but only if the class defines `__match_args__` or you use keyword patterns.\n\n```python\n# Works with dataclasses (they set __match_args__ automatically)\nfrom dataclasses import dataclass\n\n@dataclass\nclass Point:\n    x: float\n    y: float\n\nmatch point:\n    case Point(0, 0): print(\"origin\")\n    case Point(x, 0): print(f\"on x-axis at {x}\")\n    case Point(0, y): print(f\"on y-axis at {y}\")\n\n# Regular classes need __match_args__ for positional matching\nclass Color:\n    __match_args__ = ('r', 'g', 'b')\n    def __init__(self, r, g, b):\n        self.r, self.g, self.b = r, g, b\n\nmatch color:\n    case Color(255, 0, 0): print(\"red\")\n\n# Without __match_args__, you must use keyword syntax\nmatch color:\n    case Color(r=255, g=0, b=0): print(\"red\")\n```\n\nGotcha: bare names in match are capture patterns, not comparisons. `case x:` captures everything. Use `case Foo.x:` or guards for value comparison.",
+    "tags": ["python", "match-statement", "pep-634", "structural-pattern-matching"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Pathlib / operator fails with strings on the left side",
+    "body": "Pathlib's `/` operator only works when a `Path` object is on the left side. A string on the left causes a `TypeError`.\n\n```python\nfrom pathlib import Path\n\nbase = Path(\"/usr/local\")\n\n# WORKS — Path on the left\nfull = base / \"bin\" / \"python\"  # PosixPath('/usr/local/bin/python')\n\n# FAILS — string on the left\nfull = \"/usr/local\" / Path(\"bin\")  # TypeError: unsupported operand type(s)\n\n# Fix: ensure Path is first\nfull = Path(\"/usr/local\") / \"bin\" / \"python\"\n\n# Common gotcha with config values\nconfig_dir = os.environ.get(\"CONFIG_DIR\", \"/etc/myapp\")  # returns str!\npath = config_dir / Path(\"settings.yaml\")  # TypeError!\npath = Path(config_dir) / \"settings.yaml\"  # correct\n```\n\nAlways wrap string paths in `Path()` before using the `/` operator.",
+    "tags": ["python", "pathlib", "file-paths", "os-path"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "pytest fixtures with module scope share mutable state across tests",
+    "body": "Module-scoped or session-scoped fixtures are created once and shared. If a test mutates the fixture's return value, subsequent tests see the mutation.\n\n```python\nimport pytest\n\n@pytest.fixture(scope=\"module\")\ndef shared_list():\n    return [1, 2, 3]\n\ndef test_append(shared_list):\n    shared_list.append(4)\n    assert shared_list == [1, 2, 3, 4]\n\ndef test_length(shared_list):\n    # FAILS! shared_list is [1, 2, 3, 4] from previous test\n    assert len(shared_list) == 3  # AssertionError: 4 != 3\n```\n\nFix: use function scope (default) for mutable data, or return a copy/factory:\n\n```python\n@pytest.fixture\ndef fresh_list():  # scope=\"function\" is default\n    return [1, 2, 3]  # new list per test\n\n# Or use a factory fixture\n@pytest.fixture(scope=\"module\")\ndef make_list():\n    def _make():\n        return [1, 2, 3]\n    return _make\n```",
+    "tags": ["python", "pytest", "fixtures", "testing", "mutable-state"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Generator exhaustion causes silent empty results",
+    "body": "Generators can only be iterated once. A second iteration silently produces nothing, with no error.\n\n```python\ndef get_numbers():\n    yield from range(5)\n\nnums = get_numbers()\nprint(list(nums))  # [0, 1, 2, 3, 4]\nprint(list(nums))  # [] — exhausted, no error!\n\n# Especially dangerous with filter/map\nfiltered = filter(lambda x: x > 2, range(10))\nprint(sum(filtered))  # 25\nprint(sum(filtered))  # 0 — filter object exhausted\n\n# Fix: materialize if you need multiple passes\nnums = list(get_numbers())\n\n# Or use itertools.tee for two independent iterators\nfrom itertools import tee\na, b = tee(get_numbers())\nprint(list(a))  # [0, 1, 2, 3, 4]\nprint(list(b))  # [0, 1, 2, 3, 4]\n```\n\nThis is a common source of bugs when passing generators to functions that iterate them multiple times.",
+    "tags": ["python", "generators", "itertools", "memory-management"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "FastAPI response_model silently filters out extra fields",
+    "body": "When you set `response_model` on a FastAPI endpoint, Pydantic silently strips any fields not in the model. This can hide bugs where you think you're returning data but it gets filtered.\n\n```python\nfrom pydantic import BaseModel\nfrom fastapi import FastAPI\n\nclass UserOut(BaseModel):\n    name: str\n    email: str\n\n@app.get(\"/user\", response_model=UserOut)\nasync def get_user():\n    return {\n        \"name\": \"Alice\",\n        \"email\": \"alice@example.com\",\n        \"password_hash\": \"abc123\",  # silently removed!\n        \"internal_id\": 42,           # silently removed!\n    }\n# Response: {\"name\": \"Alice\", \"email\": \"alice@example.com\"}\n```\n\nThis is actually a security feature — it prevents leaking internal fields. But it can make debugging confusing when fields you expect are missing from the response. Use `response_model_exclude_unset=True` if you want to omit only unset fields.",
+    "tags": ["python", "fastapi", "pydantic", "response-model", "api"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "multiprocessing on macOS defaults to spawn instead of fork",
+    "body": "Since Python 3.8 on macOS (and 3.12+ on all platforms trending toward it), the default multiprocessing start method is `spawn` instead of `fork`. This means child processes don't inherit the parent's memory — objects must be picklable.\n\n```python\nimport multiprocessing as mp\n\n# This works with fork but fails with spawn\nlambda_fn = lambda x: x * 2\nwith mp.Pool(4) as pool:\n    pool.map(lambda_fn, range(10))  # PicklingError on macOS!\n\n# Fix: use named functions\ndef double(x):\n    return x * 2\n\nwith mp.Pool(4) as pool:\n    pool.map(double, range(10))  # works\n\n# Or explicitly set fork (not recommended on macOS)\nmp.set_start_method('fork')  # can cause crashes with certain libs\n\n# Check current method\nprint(mp.get_start_method())  # 'spawn' on macOS\n```\n\nThe `spawn` method is safer but slower (new interpreter per process). Non-picklable objects like database connections, file handles, and lambdas will all fail.",
+    "tags": ["python", "multiprocessing", "macos", "spawn", "fork"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "uv is not a drop-in replacement for pip in all cases",
+    "body": "uv is much faster than pip but has some behavioral differences that can trip you up in CI/CD.\n\n```bash\n# pip allows this (installs into system/venv)\npip install requests\n\n# uv requires a venv by default (won't install globally)\nuv pip install requests  # error if no venv active!\n\n# uv creates and manages its own venvs\nuv venv  # creates .venv\nuv pip install requests  # auto-detects .venv\n\n# uv's native workflow (preferred)\nuv init\nuv add requests  # adds to pyproject.toml AND installs\nuv sync  # install from lock file\n\n# In Docker, use uv pip for speed\nFROM python:3.12-slim\nCOPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv\nRUN uv venv /app/.venv\nENV PATH=\"/app/.venv/bin:$PATH\"\nCOPY requirements.txt .\nRUN uv pip install -r requirements.txt\n```\n\nKey difference: uv does not support `pip install -e .` with `setup.py`-only projects. It requires a `pyproject.toml`.",
+    "tags": ["python", "uv", "pip", "package-management", "docker"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Python __init__.py controls what import * exports",
+    "body": "An `__init__.py` that imports submodules makes them available on the package, but `import *` only works if `__all__` is defined.\n\n```python\n# mypackage/__init__.py\nfrom .models import User, Post\nfrom .utils import helper\n\n# This works:\nfrom mypackage import User  # fine\n\n# But import * without __all__ may import unexpected things\nfrom mypackage import *  # imports everything in __init__.py namespace\n\n# Define __all__ to control * imports\n__all__ = ['User', 'Post']  # helper is excluded from *\n\n# Gotcha: empty __init__.py means the package is a namespace package\n# in some cases, submodules won't auto-import\nimport mypackage\nmypackage.models  # AttributeError if __init__.py is empty!\n\n# Fix: explicit import in __init__.py\n# mypackage/__init__.py\nfrom . import models  # now mypackage.models works\n```\n\nIn modern Python, `__init__.py` can be empty for namespace packages, but you lose the convenience of `from package import Thing`.",
+    "tags": ["python", "imports", "init-py", "packages", "namespace"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Match statement captures shadow existing variables",
+    "body": "In Python's match statement, bare names are capture patterns that create new bindings — they don't compare against existing variables.\n\n```python\nSTATUS_OK = 200\nSTATUS_ERROR = 500\n\nstatus = 200\n\n# WRONG — this captures, doesn't compare!\nmatch status:\n    case STATUS_OK:  # captures status into STATUS_OK!\n        print(\"ok\")\n    case STATUS_ERROR:  # unreachable, STATUS_OK already captured\n        print(\"error\")\n# STATUS_OK is now 200 (overwritten!)\n\n# CORRECT — use dotted names or guards\nimport http\nmatch status:\n    case http.HTTPStatus.OK:  # dotted name = comparison\n        print(\"ok\")\n\n# Or use a guard\nmatch status:\n    case code if code == STATUS_OK:\n        print(\"ok\")\n    case code if code == STATUS_ERROR:\n        print(\"error\")\n\n# Literal values work for comparison\nmatch status:\n    case 200: print(\"ok\")\n    case 500: print(\"error\")\n```\n\nThis is one of the most confusing aspects of PEP 634. Only dotted names (like `Enum.VALUE`) and literals are compared; bare names always capture.",
+    "tags": ["python", "match-statement", "pep-634", "variable-shadowing"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Pydantic validators run before defaults are applied in some cases",
+    "body": "In Pydantic V2, field validators and model validators have specific execution orders that can lead to unexpected behavior.\n\n```python\nfrom pydantic import BaseModel, field_validator, model_validator\n\nclass Config(BaseModel):\n    name: str = \"default\"\n    items: list[str] = []\n\n    @field_validator('name')\n    @classmethod\n    def validate_name(cls, v):\n        # v is the actual value, never None for required fields\n        return v.upper()\n\n    @model_validator(mode='before')\n    def check_data(cls, data):\n        # data is the raw input dict — defaults NOT applied yet\n        print(data)  # may not contain 'name' or 'items'\n        return data\n\n    @model_validator(mode='after')\n    def check_model(self):\n        # self is the fully constructed model — defaults ARE applied\n        print(self.name)  # always has a value\n        return self\n\n# Gotcha:\nConfig()  # mode='before' sees {}, mode='after' sees name='DEFAULT', items=[]\n```\n\nUse `mode='before'` when you need to transform raw input, and `mode='after'` when you need access to the fully initialized model.",
+    "tags": ["python", "pydantic", "validators", "pydantic-v2"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "asyncio.create_task without holding a reference silently drops tasks",
+    "body": "If you call `asyncio.create_task()` without saving the returned task object, the task can be garbage collected before completion.\n\n```python\nimport asyncio\n\nasync def background_work():\n    await asyncio.sleep(1)\n    print(\"done!\")  # may never print!\n\nasync def main():\n    # WRONG — task may be garbage collected\n    asyncio.create_task(background_work())\n    await asyncio.sleep(0.5)\n    # main exits, task not finished, gets cancelled\n\n    # CORRECT — hold a reference\n    task = asyncio.create_task(background_work())\n    await task  # ensure completion\n\n    # Or collect tasks in a set\n    background_tasks = set()\n    task = asyncio.create_task(background_work())\n    background_tasks.add(task)\n    task.add_done_callback(background_tasks.discard)\n```\n\nThis is documented in the Python docs but easy to miss. The garbage collector can collect the task object, and asyncio will log a warning: `Task was destroyed but it is pending!`",
+    "tags": ["python", "asyncio", "create-task", "garbage-collection"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "dataclasses __post_init__ does not run with unsafe_hash",
+    "body": "When using `@dataclass(frozen=True)`, you cannot assign attributes in `__post_init__` because the instance is frozen. Using `object.__setattr__` is the workaround.\n\n```python\nfrom dataclasses import dataclass, field\n\n@dataclass(frozen=True)\nclass Point:\n    x: float\n    y: float\n    magnitude: float = field(init=False)\n\n    def __post_init__(self):\n        # FAILS: FrozenInstanceError\n        self.magnitude = (self.x**2 + self.y**2)**0.5\n\n        # Fix: use object.__setattr__\n        object.__setattr__(self, 'magnitude', (self.x**2 + self.y**2)**0.5)\n\np = Point(3, 4)\nprint(p.magnitude)  # 5.0\n```\n\nThis is unintuitive because `__post_init__` is specifically designed for post-initialization logic, but frozen dataclasses prevent any attribute assignment. The `object.__setattr__` bypass works but feels like a hack.",
+    "tags": ["python", "dataclasses", "frozen", "post-init"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "pytest conftest.py fixtures have scope rules based on directory",
+    "body": "Fixtures defined in `conftest.py` are available to all tests in that directory and subdirectories, but NOT to tests in parent directories.\n\n```\ntests/\n├── conftest.py          # fixtures available to ALL tests\n├── test_basic.py\n├── unit/\n│   ├── conftest.py      # fixtures available only to tests/unit/\n│   └── test_models.py\n└── integration/\n    ├── conftest.py      # fixtures available only to tests/integration/\n    └── test_api.py\n```\n\n```python\n# tests/conftest.py — shared fixtures\nimport pytest\n\n@pytest.fixture\ndef db_url():\n    return \"sqlite:///test.db\"\n\n# tests/unit/conftest.py — can use parent fixtures\n@pytest.fixture\ndef mock_db(db_url):  # db_url from parent conftest\n    return MockDB(db_url)\n```\n\nGotcha: if you define a fixture with the same name in a child `conftest.py`, it overrides the parent's fixture for tests in that directory. This is useful for overriding, but confusing if accidental.",
+    "tags": ["python", "pytest", "conftest", "fixtures", "testing"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Pathlib read_text default encoding varies by platform",
+    "body": "`Path.read_text()` uses the platform's default encoding, which is UTF-8 on macOS/Linux but may be cp1252 on Windows. This causes cross-platform bugs.\n\n```python\nfrom pathlib import Path\n\n# Implicit encoding — platform-dependent!\ncontent = Path(\"data.txt\").read_text()  # cp1252 on some Windows\n\n# Explicit encoding — always safe\ncontent = Path(\"data.txt\").read_text(encoding=\"utf-8\")\n\n# Same for write_text\nPath(\"out.txt\").write_text(\"café\", encoding=\"utf-8\")\n\n# Python 3.15 will change the default to UTF-8 (PEP 686)\n# Until then, set PYTHONUTF8=1 env var for UTF-8 mode\n# or use -X utf8 flag\n```\n\nAlways specify `encoding='utf-8'` explicitly in `read_text()`, `write_text()`, and `open()` calls for cross-platform compatibility.",
+    "tags": ["python", "pathlib", "encoding", "utf-8", "cross-platform"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "FastAPI BackgroundTasks silently swallow exceptions",
+    "body": "FastAPI's `BackgroundTasks` run after the response is sent. If they raise an exception, it's logged but the client never sees it.\n\n```python\nfrom fastapi import BackgroundTasks, FastAPI\n\napp = FastAPI()\n\ndef send_email(email: str):\n    raise ConnectionError(\"SMTP down\")  # silently fails!\n\n@app.post(\"/signup\")\nasync def signup(bg: BackgroundTasks):\n    bg.add_task(send_email, \"user@example.com\")\n    return {\"status\": \"ok\"}  # returns 200, email never sent\n```\n\nFix: add error handling inside the background task itself:\n\n```python\ndef send_email_safe(email: str):\n    try:\n        send_email(email)\n    except Exception as e:\n        logger.error(f\"Background task failed: {e}\")\n        # Queue for retry, send to error tracker, etc.\n```\n\nFor reliable background processing, use Celery, ARQ, or a proper task queue instead of `BackgroundTasks`.",
+    "tags": ["python", "fastapi", "background-tasks", "error-handling"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "typing.Optional does not mean the argument is optional",
+    "body": "`Optional[X]` means `X | None`, not that the parameter has a default value. This naming confusion is widespread.\n\n```python\nfrom typing import Optional\n\n# Optional means: can be str or None\ndef greet(name: Optional[str]) -> str:  # name is REQUIRED!\n    ...\n\ngreet()  # TypeError: missing required argument\ngreet(None)  # OK\ngreet(\"Alice\")  # OK\n\n# To make it actually optional, add a default:\ndef greet(name: Optional[str] = None) -> str:\n    ...\n\ngreet()  # OK — name defaults to None\n\n# Modern Python (3.10+): use X | None instead\ndef greet(name: str | None = None) -> str:\n    ...\n```\n\n`Optional[X]` is just syntactic sugar for `Union[X, None]`. The name is misleading — it should have been called `Nullable`.",
+    "tags": ["python", "type-hints", "optional", "typing"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "logging propagation causes duplicate log messages",
+    "body": "By default, Python loggers propagate messages to parent loggers. If both a child and parent logger have handlers, you get duplicate messages.\n\n```python\nimport logging\n\n# Root logger\nlogging.basicConfig(level=logging.INFO)\n\n# Module logger\nlogger = logging.getLogger('myapp.api')\nlogger.addHandler(logging.StreamHandler())  # second handler!\nlogger.info(\"hello\")\n# Prints \"hello\" TWICE — once from logger's handler, once from root\n\n# Fix 1: Don't add handlers to child loggers\nlogger = logging.getLogger('myapp.api')\nlogger.info(\"hello\")  # propagates to root, prints once\n\n# Fix 2: Disable propagation\nlogger = logging.getLogger('myapp.api')\nlogger.addHandler(logging.StreamHandler())\nlogger.propagate = False  # don't send to parent\nlogger.info(\"hello\")  # prints once\n```\n\nThe propagation chain follows the dot-separated name hierarchy: `myapp.api` -> `myapp` -> root. Each logger with a handler in the chain will emit the message.",
+    "tags": ["python", "logging", "propagation", "duplicate-messages"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "Pydantic model_config replaces inner Config class in V2",
+    "body": "Pydantic V2 replaced the inner `class Config` with `model_config` dict. The old syntax still works but is deprecated.\n\n```python\nfrom pydantic import BaseModel, ConfigDict\n\n# V1 way (deprecated in V2)\nclass User(BaseModel):\n    name: str\n    class Config:\n        from_attributes = True\n        str_strip_whitespace = True\n\n# V2 way\nclass User(BaseModel):\n    model_config = ConfigDict(\n        from_attributes=True,\n        str_strip_whitespace=True,\n        strict=True,\n        frozen=True,  # makes model immutable\n    )\n    name: str\n\n# from_attributes replaces orm_mode\n# V1: class Config: orm_mode = True\n# V2: model_config = ConfigDict(from_attributes=True)\n\n# Usage with SQLAlchemy\nclass UserDB(Base):\n    __tablename__ = 'users'\n    name = Column(String)\n\nuser_db = session.query(UserDB).first()\nuser = User.model_validate(user_db)  # works with from_attributes=True\n```",
+    "tags": ["python", "pydantic", "pydantic-v2", "model-config", "migration"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "asyncio.wait_for does not cancel the task on timeout in all cases",
+    "body": "When `asyncio.wait_for` times out, it cancels the task and raises `TimeoutError`. But if the task catches `CancelledError` internally, it may continue running.\n\n```python\nimport asyncio\n\nasync def stubborn_task():\n    try:\n        await asyncio.sleep(100)\n    except asyncio.CancelledError:\n        print(\"caught cancel, ignoring!\")  # bad practice\n        await asyncio.sleep(100)  # keeps running!\n        return \"done anyway\"\n\nasync def main():\n    try:\n        result = await asyncio.wait_for(stubborn_task(), timeout=1.0)\n    except TimeoutError:\n        print(\"timed out\")  # but stubborn_task is still running!\n\n# Better: use asyncio.timeout (3.11+)\nasync def main():\n    try:\n        async with asyncio.timeout(1.0):\n            result = await stubborn_task()\n    except TimeoutError:\n        print(\"timed out\")\n```\n\nThe `asyncio.timeout` context manager (Python 3.11+) is preferred over `wait_for` because it works with structured concurrency and TaskGroups.",
+    "tags": ["python", "asyncio", "timeout", "cancellation"]
+  },
+  {
+    "type": "gotcha",
+    "trust": "verified",
+    "title": "pytest parametrize ids must be unique or tests silently collide",
+    "body": "When using `@pytest.mark.parametrize`, duplicate parameter representations cause test ID collisions, which can make pytest skip or overwrite tests.\n\n```python\nimport pytest\n\n# Gotcha: complex objects get the same repr\n@pytest.mark.parametrize(\"data\", [\n    {\"a\": 1, \"b\": 2},\n    {\"a\": 3, \"b\": 4},\n])  # IDs: test[data0], test[data1] — OK but not descriptive\n\n# Better: use explicit IDs\n@pytest.mark.parametrize(\"data\", [\n    pytest.param({\"a\": 1}, id=\"small\"),\n    pytest.param({\"a\": 100}, id=\"large\"),\n])\ndef test_process(data):\n    ...\n\n# Multiple parametrize decorators create cartesian product\n@pytest.mark.parametrize(\"x\", [1, 2])\n@pytest.mark.parametrize(\"y\", [3, 4])\ndef test_add(x, y):  # runs 4 times: (1,3), (1,4), (2,3), (2,4)\n    assert x + y > 0\n```",
+    "tags": ["python", "pytest", "parametrize", "testing"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "TypeError: 'type' object is not subscriptable (Python <3.9)",
+    "body": "Using built-in types as generic types (like `list[int]`) only works at runtime in Python 3.9+. In older versions, you must use `typing.List`.\n\n```python\n# Fails in Python 3.8\ndef process(items: list[int]) -> dict[str, int]:  # TypeError at runtime!\n    ...\n\n# Fix 1: Use typing imports\nfrom typing import List, Dict\ndef process(items: List[int]) -> Dict[str, int]:\n    ...\n\n# Fix 2: Use __future__ annotations (makes all annotations strings)\nfrom __future__ import annotations\ndef process(items: list[int]) -> dict[str, int]:  # OK — not evaluated at runtime\n    ...\n\n# In Python 3.9+, built-in types are directly subscriptable\n# In Python 3.12+, you can also use: type Vector = list[int]\n```\n\nThe `from __future__ import annotations` import makes all type annotations lazy strings, so they're never evaluated at runtime. This is the easiest fix for supporting older Python versions.",
+    "tags": ["python", "type-hints", "subscriptable", "python-3.9", "backwards-compatibility"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "RuntimeError: no current event loop in async code",
+    "body": "In Python 3.10+, `asyncio.get_event_loop()` raises `DeprecationWarning` (and will error in future versions) when there's no running loop.\n\n```python\nimport asyncio\n\n# WRONG in 3.10+\nloop = asyncio.get_event_loop()  # DeprecationWarning\nloop.run_until_complete(my_coro())\n\n# CORRECT\nasyncio.run(my_coro())  # creates and manages the loop\n\n# If you need the running loop inside async code:\nasync def my_coro():\n    loop = asyncio.get_running_loop()  # correct inside async context\n    loop.call_later(1.0, callback)\n\n# For libraries that need loop access:\nasync def setup():\n    loop = asyncio.get_running_loop()\n    server = await loop.create_server(MyProtocol, 'localhost', 8080)\n```\n\nAlways use `asyncio.run()` at the top level and `asyncio.get_running_loop()` inside coroutines. The old `get_event_loop()` pattern is deprecated.",
+    "tags": ["python", "asyncio", "event-loop", "deprecation"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "ImportError: cannot import name from partially initialized module (circular import)",
+    "body": "This error means Python is trying to import a name from a module that hasn't finished initializing — almost always a circular import.\n\n```python\n# app/models.py\nfrom app.services import create_user  # triggers services.py import\n\nclass User:\n    pass\n\n# app/services.py\nfrom app.models import User  # models.py not finished yet!\n# ImportError: cannot import name 'User' from partially initialized module\n\ndef create_user() -> User:\n    return User()\n```\n\nFixes in order of preference:\n\n```python\n# 1. Move import inside function\ndef create_user():\n    from app.models import User  # lazy import\n    return User()\n\n# 2. Use TYPE_CHECKING guard\nfrom __future__ import annotations\nfrom typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from app.models import User\n\n# 3. Restructure — extract shared types to a third module\n# app/types.py (no imports from app.models or app.services)\n```\n\nRun `python -v -c 'import app'` to trace the exact import order and find the cycle.",
+    "tags": ["python", "imports", "circular-imports", "import-error"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "ValueError: too many values to unpack in match statement",
+    "body": "Sequence patterns in match statements must match the exact structure, or you get unpacking errors.\n\n```python\ndata = [1, 2, 3, 4, 5]\n\n# WRONG — expects exactly 3 elements\nmatch data:\n    case [a, b, c]:  # ValueError if len != 3\n        print(a, b, c)\n\n# CORRECT — use * to capture rest\nmatch data:\n    case [first, *rest]:\n        print(first, rest)  # 1, [2, 3, 4, 5]\n    case [first, second, *_]:\n        print(first, second)  # matches 2+ elements\n    case []:\n        print(\"empty\")\n\n# Pattern with type checking\nmatch data:\n    case [int() as x, int() as y]:  # only matches 2-element list of ints\n        print(f\"point: {x}, {y}\")\n    case [str() as name, *_]:\n        print(f\"starts with string: {name}\")\n```\n\nAlways include a wildcard pattern (`case _:`) as a fallback to avoid `MatchError` in Python's structural pattern matching.",
+    "tags": ["python", "match-statement", "pep-634", "unpacking"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "AttributeError: module 'asyncio' has no attribute 'TaskGroup'",
+    "body": "TaskGroup was added in Python 3.11. Using it on 3.10 or earlier gives an AttributeError.\n\n```python\nimport asyncio\nimport sys\n\n# Only available in 3.11+\nasync with asyncio.TaskGroup() as tg:  # AttributeError on 3.10!\n    tg.create_task(coro())\n\n# Fix: check version or use backport\nif sys.version_info >= (3, 11):\n    from asyncio import TaskGroup\nelse:\n    from exceptiongroup import ExceptionGroup  # pip install exceptiongroup\n    from taskgroup import TaskGroup  # pip install taskgroup\n\n# Or use anyio for cross-version compatibility\nimport anyio\n\nasync def main():\n    async with anyio.create_task_group() as tg:\n        tg.start_soon(coro)  # works on all Python versions\n\nanyio.run(main)\n```\n\nIf you need TaskGroup on Python 3.10, the `anyio` library provides a compatible task group abstraction that works everywhere.",
+    "tags": ["python", "asyncio", "taskgroup", "python-3.11", "compatibility"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "pydantic.ValidationError shows cryptic error for wrong field type",
+    "body": "Pydantic V2 validation errors include detailed error chains, but the format can be confusing when debugging.\n\n```python\nfrom pydantic import BaseModel, ValidationError\n\nclass Item(BaseModel):\n    name: str\n    price: float\n    tags: list[str]\n\ntry:\n    Item(name=123, price=\"not a number\", tags=\"not a list\")\nexcept ValidationError as e:\n    print(e)\n    # 3 validation errors for Item\n    # name\n    #   Input should be a valid string [type=string_type]\n    # price\n    #   Input should be a valid number [type=float_parsing]\n    # tags\n    #   Input should be a valid list [type=list_type]\n\n    # Programmatic access:\n    for error in e.errors():\n        print(error['loc'], error['type'], error['msg'])\n        # ('name',) 'string_type' 'Input should be a valid string'\n\n    # JSON format for API responses\n    print(e.json())\n```\n\nNote: Pydantic V2 in lax mode (default) will coerce `name=123` to `\"123\"`. Use `model_config = ConfigDict(strict=True)` to enforce strict type checking.",
+    "tags": ["python", "pydantic", "validation-error", "debugging"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "RecursionError from dataclass with self-referential type",
+    "body": "Dataclasses with default `repr` or `eq` on self-referential structures cause infinite recursion.\n\n```python\nfrom dataclasses import dataclass\n\n@dataclass\nclass Node:\n    value: int\n    children: list['Node']\n\na = Node(1, [])\nb = Node(2, [a])\na.children.append(b)  # circular reference\n\nprint(a)  # RecursionError: maximum recursion depth exceeded\n\n# Fix: disable auto-generated repr\n@dataclass(repr=False)\nclass Node:\n    value: int\n    children: list['Node']\n\n    def __repr__(self):\n        child_vals = [c.value for c in self.children]\n        return f\"Node({self.value}, children={child_vals})\"\n\n# Also watch out for eq with circular references\n@dataclass(eq=False)\nclass Node:\n    value: int\n    children: list['Node']\n```\n\nPydantic handles this better with `model_config = ConfigDict(arbitrary_types_allowed=True)` and built-in circular reference detection.",
+    "tags": ["python", "dataclasses", "recursion", "circular-reference"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "SyntaxError: f-string expression part cannot include a backslash (pre-3.12)",
+    "body": "Before Python 3.12, backslashes were forbidden inside f-string expressions. This includes newlines, tabs, and escape sequences.\n\n```python\n# Fails in Python <3.12\nnames = ['a', 'b', 'c']\nprint(f\"{'\\n'.join(names)}\")  # SyntaxError!\nprint(f\"path: {'\\\\'.join(parts)}\")  # SyntaxError!\n\n# Workarounds for <3.12\nnl = '\\n'\nprint(f\"{nl.join(names)}\")\n\n# Or use format()\nprint(\"\\n\".join(names))\n\n# Or use chr()\nprint(f\"{chr(10).join(names)}\")\n\n# Python 3.12+ — all of these work\nprint(f\"{'\\n'.join(names)}\")  # OK\nprint(f\"{'\\t'.join(names)}\")  # OK\nprint(f\"{'\\\\'.join(parts)}\")  # OK\n```\n\nThis was one of the most requested Python improvements and was finally resolved in PEP 701 (Python 3.12).",
+    "tags": ["python", "f-string", "syntax-error", "pep-701", "python-3.12"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "TypeError: unhashable type 'list' when using list as dict key or set element",
+    "body": "Lists are mutable and therefore unhashable. You cannot use them as dictionary keys or add them to sets.\n\n```python\n# FAILS\nmy_dict = {[1, 2]: \"value\"}  # TypeError: unhashable type: 'list'\nmy_set = {[1, 2], [3, 4]}  # TypeError: unhashable type: 'list'\n\n# Fix: convert to tuple\nmy_dict = {(1, 2): \"value\"}  # works\nmy_set = {(1, 2), (3, 4)}  # works\n\n# Common gotcha: list of lists to set of unique \"rows\"\nrows = [[1, 2], [3, 4], [1, 2]]\nunique = set(rows)  # TypeError!\nunique = set(tuple(r) for r in rows)  # {(1, 2), (3, 4)}\n\n# frozenset for set-of-sets\ngroups = [{1, 2}, {3, 4}, {1, 2}]\nunique_groups = set(groups)  # TypeError!\nunique_groups = {frozenset(g) for g in groups}  # works\n```\n\nRule: any object used as a dict key or set element must implement `__hash__` and `__eq__`. Mutable containers (list, dict, set) are intentionally unhashable.",
+    "tags": ["python", "hashable", "dict", "set", "type-error"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "RuntimeWarning: coroutine was never awaited",
+    "body": "Calling an async function without `await` returns a coroutine object instead of executing it. Python logs a warning but doesn't raise an error.\n\n```python\nimport asyncio\n\nasync def fetch_data():\n    return {\"key\": \"value\"}\n\nasync def main():\n    # WRONG — missing await\n    result = fetch_data()  # RuntimeWarning: coroutine 'fetch_data' was never awaited\n    print(result)  # <coroutine object fetch_data at 0x...>\n\n    # CORRECT\n    result = await fetch_data()\n    print(result)  # {'key': 'value'}\n\n# Common mistake with libraries\nasync def handler():\n    # WRONG\n    db.close()  # if close() is async, this does nothing!\n    # CORRECT\n    await db.close()\n```\n\nEnable `asyncio` debug mode to get a traceback showing where the coroutine was created: `asyncio.run(main(), debug=True)` or set `PYTHONASYNCIODEBUG=1`.",
+    "tags": ["python", "asyncio", "coroutine", "await", "runtime-warning"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "ModuleNotFoundError with editable pip install and src layout",
+    "body": "When using a `src/` layout with pip editable installs, the import path must match the package structure exactly.\n\n```\nmy-project/\n├── src/\n│   └── mypackage/\n│       ├── __init__.py\n│       └── core.py\n├── tests/\n│   └── test_core.py\n└── pyproject.toml\n```\n\n```toml\n# pyproject.toml\n[build-system]\nrequires = [\"setuptools>=64\"]\nbuild-backend = \"setuptools.backends._legacy:_Backend\"\n\n[project]\nname = \"my-package\"\nversion = \"0.1.0\"\n\n[tool.setuptools.packages.find]\nwhere = [\"src\"]\n```\n\n```bash\n# Install in editable mode\npip install -e .\n\n# Now this works:\npython -c \"from mypackage.core import MyClass\"\n\n# Common error: forgetting where=[\"src\"]\n# Without it: ModuleNotFoundError: No module named 'mypackage'\n```\n\nWith `uv`, use `uv pip install -e .` or better yet, `uv sync` which handles editable installs automatically from `pyproject.toml`.",
+    "tags": ["python", "pip", "editable-install", "src-layout", "module-not-found"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "ExceptionGroup handling requires except* syntax in Python 3.11+",
+    "body": "TaskGroup and other structured concurrency primitives raise `ExceptionGroup`, which cannot be caught with regular `except`.\n\n```python\nimport asyncio\n\nasync def failing():\n    raise ValueError(\"bad value\")\n\nasync def main():\n    # WRONG — doesn't catch ExceptionGroup\n    try:\n        async with asyncio.TaskGroup() as tg:\n            tg.create_task(failing())\n    except ValueError:  # never catches!\n        print(\"caught\")  # this won't run\n\n    # CORRECT — use except*\n    try:\n        async with asyncio.TaskGroup() as tg:\n            tg.create_task(failing())\n    except* ValueError as eg:\n        for exc in eg.exceptions:\n            print(f\"caught: {exc}\")  # caught: bad value\n\n    # Multiple except* clauses for different types\n    try:\n        async with asyncio.TaskGroup() as tg:\n            tg.create_task(fail_value())\n            tg.create_task(fail_type())\n    except* ValueError as eg:\n        print(f\"Value errors: {eg.exceptions}\")\n    except* TypeError as eg:\n        print(f\"Type errors: {eg.exceptions}\")\n```\n\nNote: `except*` splits the ExceptionGroup — each clause gets a subgroup of matching exceptions. Unmatched exceptions propagate.",
+    "tags": ["python", "exception-group", "except-star", "taskgroup", "python-3.11"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "PicklingError when using multiprocessing with closures or lambdas",
+    "body": "The `multiprocessing` module uses pickle to serialize functions and data to child processes. Lambdas, closures, and nested functions are not picklable.\n\n```python\nimport multiprocessing as mp\n\n# FAILS — lambda not picklable\nwith mp.Pool(4) as pool:\n    results = pool.map(lambda x: x**2, range(10))\n# PicklingError: Can't pickle <function <lambda>>\n\n# FAILS — closure not picklable\ndef make_processor(factor):\n    def process(x):\n        return x * factor\n    return process\n\nwith mp.Pool(4) as pool:\n    results = pool.map(make_processor(2), range(10))\n# PicklingError\n\n# FIX: use top-level named functions\ndef square(x):\n    return x ** 2\n\nwith mp.Pool(4) as pool:\n    results = pool.map(square, range(10))  # works\n\n# FIX: use functools.partial for parameterized functions\nfrom functools import partial\n\ndef multiply(x, factor):\n    return x * factor\n\nwith mp.Pool(4) as pool:\n    results = pool.map(partial(multiply, factor=2), range(10))  # works\n```",
+    "tags": ["python", "multiprocessing", "pickle", "lambda", "serialization"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "FastAPI 422 Unprocessable Entity for missing request body",
+    "body": "FastAPI returns 422 (not 400) when request validation fails. This confuses API consumers who expect 400 Bad Request.\n\n```python\nfrom fastapi import FastAPI, Body\nfrom pydantic import BaseModel\n\napp = FastAPI()\n\nclass Item(BaseModel):\n    name: str\n    price: float\n\n@app.post(\"/items\")\nasync def create(item: Item):\n    return item\n\n# POST /items with {} -> 422 Unprocessable Entity\n# {\n#   \"detail\": [\n#     {\"loc\": [\"body\", \"name\"], \"msg\": \"Field required\", \"type\": \"missing\"},\n#     {\"loc\": [\"body\", \"price\"], \"msg\": \"Field required\", \"type\": \"missing\"}\n#   ]\n# }\n\n# To return 400 instead, add an exception handler:\nfrom fastapi.exceptions import RequestValidationError\nfrom fastapi.responses import JSONResponse\n\n@app.exception_handler(RequestValidationError)\nasync def validation_handler(request, exc):\n    return JSONResponse(\n        status_code=400,\n        content={\"error\": \"Invalid request\", \"details\": exc.errors()}\n    )\n```\n\nThe 422 status code is technically correct per the HTTP spec (RFC 4918) but many APIs prefer 400 for consistency.",
+    "tags": ["python", "fastapi", "validation", "422", "http-status"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "TypeError: object dict_keys is not subscriptable in Python 3",
+    "body": "In Python 3, `dict.keys()`, `dict.values()`, and `dict.items()` return views, not lists. You cannot index them.\n\n```python\nd = {\"a\": 1, \"b\": 2, \"c\": 3}\n\n# FAILS in Python 3\nfirst_key = d.keys()[0]  # TypeError: 'dict_keys' object is not subscriptable\n\n# Fix: convert to list\nfirst_key = list(d.keys())[0]  # \"a\"\n\n# Better: use next() with iter() — O(1) instead of O(n)\nfirst_key = next(iter(d))  # \"a\"\nfirst_value = next(iter(d.values()))  # 1\nfirst_item = next(iter(d.items()))  # (\"a\", 1)\n\n# In Python 3.7+, dicts maintain insertion order\n# So \"first\" actually means first inserted\n\n# For last item:\nlast_key = list(d.keys())[-1]  # O(n)\n# Or in 3.8+ use reversed()\nlast_key = next(reversed(d))  # O(1) in CPython 3.8+\n```",
+    "tags": ["python", "dict", "views", "subscriptable", "python-3"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "pytest fixture not found when conftest.py is in wrong directory",
+    "body": "Fixtures in `conftest.py` are only available to tests in the same directory or subdirectories. If pytest can't find a fixture, check the file location.\n\n```\n# WRONG structure — conftest not discovered\nproject/\n├── tests/\n│   ├── test_api.py\n│   └── conftest.py    # OK for test_api.py\n├── conftest.py        # only for files in project/, not tests/\n└── src/\n    └── conftest.py    # useless here — no tests in src/\n\n# Error:\n# ERRORS: fixture 'my_fixture' not found\n```\n\n```python\n# Common fix: ensure conftest.py is in the tests/ directory\n# tests/conftest.py\nimport pytest\n\n@pytest.fixture\ndef db():\n    # setup\n    conn = create_connection()\n    yield conn\n    conn.close()\n\n# Also check: is pytest discovering the right directory?\n# Run with: pytest tests/ -v --collect-only\n# This shows which tests and fixtures are found\n```\n\nAnother cause: the fixture is async but you're not using `pytest-asyncio`. Install it and mark fixtures with `@pytest.fixture` plus `@pytest.mark.asyncio`.",
+    "tags": ["python", "pytest", "fixtures", "conftest", "test-discovery"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "UnicodeDecodeError when reading files without explicit encoding",
+    "body": "On Windows, Python defaults to the system encoding (often cp1252), not UTF-8. Reading a UTF-8 file without specifying encoding fails.\n\n```python\n# FAILS on Windows if file is UTF-8\nwith open(\"data.txt\") as f:\n    content = f.read()\n# UnicodeDecodeError: 'cp1252' codec can't decode byte 0xc3\n\n# CORRECT — always specify encoding\nwith open(\"data.txt\", encoding=\"utf-8\") as f:\n    content = f.read()\n\n# For unknown encoding, detect it\nimport chardet\nwith open(\"data.txt\", \"rb\") as f:\n    raw = f.read()\n    detected = chardet.detect(raw)\n    content = raw.decode(detected['encoding'])\n\n# Handle BOM (byte order mark)\nwith open(\"data.txt\", encoding=\"utf-8-sig\") as f:  # strips BOM\n    content = f.read()\n\n# Set UTF-8 as default for your whole app\n# In pyproject.toml or as env var:\n# PYTHONUTF8=1\n# Or: python -X utf8 script.py\n```",
+    "tags": ["python", "encoding", "unicode", "utf-8", "file-io"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "TypeError: cannot unpack non-sequence NoneType in assignment",
+    "body": "This error occurs when you try to unpack a function's return value but the function returns `None`.\n\n```python\ndef find_user(user_id):\n    if user_id > 0:\n        return \"Alice\", 30\n    # implicit return None\n\n# Works when user_id > 0\nname, age = find_user(1)  # OK\n\n# Fails when user_id <= 0\nname, age = find_user(-1)  # TypeError: cannot unpack non-sequence NoneType\n\n# Fix: always return a consistent type\ndef find_user(user_id) -> tuple[str, int] | None:\n    if user_id > 0:\n        return \"Alice\", 30\n    return None\n\nresult = find_user(-1)\nif result is not None:\n    name, age = result\n\n# Or with walrus operator\nif (result := find_user(-1)) is not None:\n    name, age = result\n```\n\nThis is especially common with regex matches: `a, b = re.match(pattern, text).groups()` fails when there's no match.",
+    "tags": ["python", "unpacking", "none", "type-error"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "pip install fails with externally-managed-environment error on system Python",
+    "body": "On modern Linux distros and macOS with Homebrew Python, `pip install` outside a virtual environment is blocked by PEP 668.\n\n```bash\n# FAILS on Ubuntu 23.04+, Fedora 38+, macOS Homebrew Python\npip install requests\n# error: externally-managed-environment\n# This environment is externally managed\n\n# Fix 1: Use a virtual environment (recommended)\npython -m venv .venv\nsource .venv/bin/activate\npip install requests\n\n# Fix 2: Use pipx for CLI tools\npipx install black\npipx install ruff\n\n# Fix 3: Use uv (fastest)\nuv venv\nuv pip install requests\n\n# Fix 4: Force install (not recommended)\npip install --break-system-packages requests\n\n# Fix 5: Use system package manager\nsudo apt install python3-requests\nbrew install python-requests\n```\n\nPEP 668 prevents you from breaking system Python installations. Always use virtual environments for project dependencies.",
+    "tags": ["python", "pip", "pep-668", "virtual-environment", "system-python"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "asyncio.Semaphore RuntimeError when used across tasks incorrectly",
+    "body": "Creating a `Semaphore` before the event loop starts, or sharing it across loops, causes a `RuntimeError`.\n\n```python\nimport asyncio\n\n# WRONG — creating semaphore at module level\nsem = asyncio.Semaphore(10)  # created before any loop\n\nasync def worker():\n    async with sem:  # RuntimeError: ... attached to a different loop\n        await do_work()\n\nasyncio.run(main())  # creates a new loop, sem is from old loop\n\n# CORRECT — create inside async context\nasync def main():\n    sem = asyncio.Semaphore(10)\n\n    async def worker(i):\n        async with sem:\n            print(f\"Worker {i} running\")\n            await asyncio.sleep(1)\n\n    async with asyncio.TaskGroup() as tg:\n        for i in range(20):\n            tg.create_task(worker(i))\n\nasyncio.run(main())\n```\n\nThis applies to all asyncio synchronization primitives: `Lock`, `Event`, `Semaphore`, `Condition`. Always create them inside the async context, not at module level.",
+    "tags": ["python", "asyncio", "semaphore", "event-loop", "runtime-error"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "TypeError: 'coroutine' object is not iterable — missing await in for loop",
+    "body": "When you use a regular `for` loop on an async generator or forget `await` on an async function that returns an iterable, you get this error.\n\n```python\nimport asyncio\n\n# WRONG — using for instead of async for\nasync def get_items():\n    for i in range(5):\n        yield i\n        await asyncio.sleep(0.1)\n\nasync def main():\n    for item in get_items():  # TypeError: 'async_generator' is not iterable\n        print(item)\n\n    # CORRECT — use async for\n    async for item in get_items():\n        print(item)\n\n    # Also collect with list comprehension\n    items = [item async for item in get_items()]\n\n# WRONG — missing await returns coroutine, not list\nasync def fetch_all():\n    return [1, 2, 3]\n\nasync def main():\n    for item in fetch_all():  # TypeError: 'coroutine' not iterable\n        print(item)\n\n    # CORRECT\n    for item in await fetch_all():\n        print(item)\n```",
+    "tags": ["python", "asyncio", "async-for", "generators", "type-error"]
+  },
+  {
+    "type": "error",
+    "trust": "verified",
+    "title": "SyntaxWarning: invalid escape sequence in string literals",
+    "body": "Python 3.12 changed invalid escape sequences from `DeprecationWarning` to `SyntaxWarning`, and 3.13+ will make them errors.\n\n```python\n# These produce SyntaxWarning in 3.12\npath = \"C:\\new_folder\\test\"  # \\n and \\t are escape chars!\n# SyntaxWarning: invalid escape sequence '\\t'\n\nregex = \"\\d+\\.\\d+\"  # \\d is not a valid escape sequence\n# SyntaxWarning: invalid escape sequence '\\d'\n\n# Fix: use raw strings\npath = r\"C:\\new_folder\\test\"\nregex = r\"\\d+\\.\\d+\"\n\n# Or double backslashes\npath = \"C:\\\\new_folder\\\\test\"\n\n# Pathlib avoids the issue entirely\nfrom pathlib import Path\npath = Path(\"C:/new_folder/test\")  # forward slashes work on Windows\n```\n\nThis will become a `SyntaxError` in a future Python version. Fix all warnings now to avoid breaking changes.",
+    "tags": ["python", "escape-sequence", "syntax-warning", "raw-string", "python-3.12"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Repository pattern with async SQLAlchemy and FastAPI dependency injection",
+    "body": "Separating database access into a repository layer makes FastAPI endpoints testable and decoupled from SQLAlchemy.\n\n```python\nfrom sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker\nfrom fastapi import FastAPI, Depends\nfrom contextlib import asynccontextmanager\n\n# Database setup\nengine = create_async_engine(\"postgresql+asyncpg://...\")\nSessionLocal = async_sessionmaker(engine, expire_on_commit=False)\n\nasync def get_db() -> AsyncGenerator[AsyncSession, None]:\n    async with SessionLocal() as session:\n        yield session\n\n# Repository\nclass UserRepository:\n    def __init__(self, db: AsyncSession):\n        self.db = db\n\n    async def get_by_id(self, user_id: int) -> User | None:\n        result = await self.db.execute(\n            select(UserModel).where(UserModel.id == user_id)\n        )\n        return result.scalar_one_or_none()\n\n    async def create(self, name: str, email: str) -> User:\n        user = UserModel(name=name, email=email)\n        self.db.add(user)\n        await self.db.commit()\n        await self.db.refresh(user)\n        return user\n\ndef get_user_repo(db: AsyncSession = Depends(get_db)) -> UserRepository:\n    return UserRepository(db)\n\n@app.get(\"/users/{user_id}\")\nasync def get_user(user_id: int, repo: UserRepository = Depends(get_user_repo)):\n    user = await repo.get_by_id(user_id)\n    if not user:\n        raise HTTPException(404)\n    return user\n```\n\nThis pattern makes testing easy — inject a mock repository instead of hitting the database.",
+    "tags": ["python", "fastapi", "sqlalchemy", "repository-pattern", "async"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Structured logging with structlog for production Python apps",
+    "body": "structlog produces JSON logs that are easily parsed by log aggregation tools like Datadog, ELK, or CloudWatch.\n\n```python\nimport structlog\n\nstructlog.configure(\n    processors=[\n        structlog.contextvars.merge_contextvars,\n        structlog.processors.add_log_level,\n        structlog.processors.TimeStamper(fmt=\"iso\"),\n        structlog.processors.StackInfoRenderer(),\n        structlog.processors.format_exc_info,\n        # JSON in production, pretty in dev\n        structlog.dev.ConsoleRenderer() if DEV else structlog.processors.JSONRenderer(),\n    ],\n    context_class=dict,\n    logger_factory=structlog.PrintLoggerFactory(),\n)\n\nlogger = structlog.get_logger()\n\n# Usage\nlogger.info(\"user_login\", user_id=123, ip=\"1.2.3.4\")\n# {\"event\": \"user_login\", \"user_id\": 123, \"ip\": \"1.2.3.4\", \"level\": \"info\", \"timestamp\": \"2024-...\"}\n\n# Context binding — attach fields to all subsequent logs\nlog = logger.bind(request_id=\"abc-123\")\nlog.info(\"processing\")  # includes request_id automatically\nlog.info(\"done\")  # includes request_id automatically\n\n# Context vars — share context across async tasks\nstructlog.contextvars.bind_contextvars(request_id=\"abc-123\")\nlogger.info(\"works in any function\")  # includes request_id\n```",
+    "tags": ["python", "logging", "structlog", "json", "observability"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Rate limiting async tasks with asyncio.Semaphore",
+    "body": "Use a semaphore to limit concurrent async operations — essential for API calls, database connections, or any resource with limits.\n\n```python\nimport asyncio\nimport httpx\n\nasync def fetch_with_limit(client, url, semaphore):\n    async with semaphore:\n        response = await client.get(url)\n        return response.json()\n\nasync def main():\n    urls = [f\"https://api.example.com/items/{i}\" for i in range(100)]\n    semaphore = asyncio.Semaphore(10)  # max 10 concurrent requests\n\n    async with httpx.AsyncClient() as client:\n        tasks = [fetch_with_limit(client, url, semaphore) for url in urls]\n        results = await asyncio.gather(*tasks)\n\n    return results\n\n# Even better with TaskGroup (3.11+)\nasync def main():\n    semaphore = asyncio.Semaphore(10)\n    results = []\n\n    async with httpx.AsyncClient() as client:\n        async with asyncio.TaskGroup() as tg:\n            for url in urls:\n                async def bounded_fetch(u=url):\n                    async with semaphore:\n                        r = await client.get(u)\n                        results.append(r.json())\n                tg.create_task(bounded_fetch())\n\nasyncio.run(main())\n```\n\nWithout a semaphore, 100 concurrent HTTP requests can overwhelm the target server, exhaust file descriptors, or trigger rate limiting.",
+    "tags": ["python", "asyncio", "semaphore", "rate-limiting", "concurrency"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Context manager pattern for resource cleanup in Python",
+    "body": "Context managers ensure resources are properly cleaned up, even when exceptions occur. Use them for files, connections, locks, and temporary state.\n\n```python\nfrom contextlib import contextmanager, asynccontextmanager\n\n# Sync context manager\n@contextmanager\ndef db_transaction(conn):\n    cursor = conn.cursor()\n    try:\n        yield cursor\n        conn.commit()\n    except Exception:\n        conn.rollback()\n        raise\n    finally:\n        cursor.close()\n\nwith db_transaction(conn) as cursor:\n    cursor.execute(\"INSERT INTO ...\")\n\n# Async context manager\n@asynccontextmanager\nasync def get_client():\n    client = httpx.AsyncClient(\n        timeout=30.0,\n        limits=httpx.Limits(max_connections=20)\n    )\n    try:\n        yield client\n    finally:\n        await client.aclose()\n\nasync def main():\n    async with get_client() as client:\n        resp = await client.get(\"https://api.example.com\")\n\n# Class-based for complex state\nclass Timer:\n    def __enter__(self):\n        self.start = time.perf_counter()\n        return self\n\n    def __exit__(self, *exc):\n        self.elapsed = time.perf_counter() - self.start\n        return False  # don't suppress exceptions\n\nwith Timer() as t:\n    do_work()\nprint(f\"Took {t.elapsed:.2f}s\")\n```",
+    "tags": ["python", "context-manager", "resource-cleanup", "with-statement"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Retry with exponential backoff using tenacity",
+    "body": "The `tenacity` library provides a clean decorator pattern for retrying failed operations with configurable backoff.\n\n```python\nfrom tenacity import (\n    retry,\n    stop_after_attempt,\n    wait_exponential,\n    retry_if_exception_type,\n    before_sleep_log,\n)\nimport logging\n\nlogger = logging.getLogger(__name__)\n\n@retry(\n    stop=stop_after_attempt(5),\n    wait=wait_exponential(multiplier=1, min=1, max=60),\n    retry=retry_if_exception_type((ConnectionError, TimeoutError)),\n    before_sleep=before_sleep_log(logger, logging.WARNING),\n    reraise=True,\n)\nasync def fetch_with_retry(url: str) -> dict:\n    async with httpx.AsyncClient() as client:\n        resp = await client.get(url, timeout=10)\n        resp.raise_for_status()\n        return resp.json()\n\n# Custom retry condition\n@retry(\n    stop=stop_after_attempt(3),\n    retry=lambda retry_state: (\n        retry_state.outcome\n        and retry_state.outcome.result().status_code >= 500\n    ),\n)\ndef call_api(payload):\n    return requests.post(\"https://api.example.com\", json=payload)\n```\n\nBackoff pattern: 1s, 2s, 4s, 8s, 16s (capped at max=60). This prevents thundering herd while still retrying quickly on transient failures.",
+    "tags": ["python", "retry", "tenacity", "backoff", "resilience"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Pydantic Settings for environment variable configuration",
+    "body": "Pydantic Settings provides type-safe configuration from environment variables with validation and defaults.\n\n```python\nfrom pydantic_settings import BaseSettings\nfrom pydantic import Field\nfrom functools import lru_cache\n\nclass Settings(BaseSettings):\n    model_config = SettingsConfigDict(\n        env_file=\".env\",\n        env_file_encoding=\"utf-8\",\n        env_prefix=\"APP_\",\n        case_sensitive=False,\n    )\n\n    database_url: str = Field(description=\"PostgreSQL connection string\")\n    redis_url: str = \"redis://localhost:6379\"\n    debug: bool = False\n    api_keys: list[str] = []  # APP_API_KEYS='[\"key1\",\"key2\"]'\n    log_level: str = \"INFO\"\n\n@lru_cache\ndef get_settings() -> Settings:\n    return Settings()\n\n# Usage in FastAPI\nfrom fastapi import Depends\n\n@app.get(\"/health\")\nasync def health(settings: Settings = Depends(get_settings)):\n    return {\"debug\": settings.debug, \"db\": bool(settings.database_url)}\n```\n\n```bash\n# .env file\nAPP_DATABASE_URL=postgresql://user:pass@localhost/db\nAPP_DEBUG=true\nAPP_API_KEYS='[\"sk-abc\", \"sk-def\"]'\n```\n\nThe `lru_cache` ensures settings are loaded once. Pydantic validates types on startup, catching misconfiguration early.",
+    "tags": ["python", "pydantic", "settings", "environment-variables", "configuration"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Factory pattern with Protocol for dependency inversion",
+    "body": "Use `Protocol` (structural typing) instead of ABC for interfaces. This supports duck typing while maintaining type safety.\n\n```python\nfrom typing import Protocol, runtime_checkable\n\n@runtime_checkable\nclass Repository(Protocol):\n    async def get(self, id: str) -> dict | None: ...\n    async def save(self, id: str, data: dict) -> None: ...\n\n# Implementations don't need to inherit — just match the protocol\nclass PostgresRepo:\n    def __init__(self, pool):\n        self.pool = pool\n\n    async def get(self, id: str) -> dict | None:\n        async with self.pool.acquire() as conn:\n            row = await conn.fetchrow(\"SELECT * FROM items WHERE id=$1\", id)\n            return dict(row) if row else None\n\n    async def save(self, id: str, data: dict) -> None:\n        async with self.pool.acquire() as conn:\n            await conn.execute(\n                \"INSERT INTO items (id, data) VALUES ($1, $2)\",\n                id, json.dumps(data)\n            )\n\nclass InMemoryRepo:\n    def __init__(self):\n        self.store: dict[str, dict] = {}\n\n    async def get(self, id: str) -> dict | None:\n        return self.store.get(id)\n\n    async def save(self, id: str, data: dict) -> None:\n        self.store[id] = data\n\n# Service depends on protocol, not implementation\nclass ItemService:\n    def __init__(self, repo: Repository):\n        self.repo = repo\n\n# Use InMemoryRepo in tests, PostgresRepo in production\nassert isinstance(InMemoryRepo(), Repository)  # True at runtime\n```",
+    "tags": ["python", "protocol", "factory-pattern", "dependency-injection", "typing"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "pytest async testing with pytest-asyncio and fixtures",
+    "body": "Testing async code requires `pytest-asyncio`. Configure it properly to avoid common fixture and event loop issues.\n\n```python\n# pyproject.toml\n# [tool.pytest.ini_options]\n# asyncio_mode = \"auto\"  # auto-detect async tests\n\nimport pytest\nimport httpx\nfrom httpx import ASGITransport, AsyncClient\n\n# Async fixture\n@pytest.fixture\nasync def db_session():\n    async with AsyncSessionLocal() as session:\n        yield session\n        await session.rollback()  # clean up after each test\n\n# Testing FastAPI endpoints\n@pytest.fixture\nasync def client():\n    from myapp.main import app\n    transport = ASGITransport(app=app)\n    async with AsyncClient(transport=transport, base_url=\"http://test\") as client:\n        yield client\n\nasync def test_create_user(client: AsyncClient, db_session):\n    response = await client.post(\"/users\", json={\"name\": \"Alice\"})\n    assert response.status_code == 201\n    data = response.json()\n    assert data[\"name\"] == \"Alice\"\n\n# Mock async dependencies\n@pytest.fixture\ndef mock_repo():\n    repo = AsyncMock(spec=UserRepository)\n    repo.get_by_id.return_value = User(id=1, name=\"Alice\")\n    return repo\n\nasync def test_get_user(client, mock_repo):\n    app.dependency_overrides[get_user_repo] = lambda: mock_repo\n    response = await client.get(\"/users/1\")\n    assert response.status_code == 200\n```",
+    "tags": ["python", "pytest", "async", "fastapi", "testing"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Enum with methods for domain modeling in Python",
+    "body": "Python enums can have methods, properties, and custom behaviors — making them powerful for domain modeling with pattern matching.\n\n```python\nfrom enum import Enum, auto, StrEnum\n\n# StrEnum (3.11+) — values are strings\nclass Status(StrEnum):\n    PENDING = auto()    # \"pending\"\n    ACTIVE = auto()     # \"active\"\n    ARCHIVED = auto()   # \"archived\"\n\n    @property\n    def is_terminal(self) -> bool:\n        return self == Status.ARCHIVED\n\n    def can_transition_to(self, target: 'Status') -> bool:\n        transitions = {\n            Status.PENDING: {Status.ACTIVE, Status.ARCHIVED},\n            Status.ACTIVE: {Status.ARCHIVED},\n            Status.ARCHIVED: set(),\n        }\n        return target in transitions[self]\n\n# Works with match statements\nmatch status:\n    case Status.PENDING:\n        print(\"waiting\")\n    case Status.ACTIVE:\n        print(\"running\")\n    case Status.ARCHIVED:\n        print(\"done\")\n\n# Works with Pydantic\nclass Task(BaseModel):\n    name: str\n    status: Status = Status.PENDING\n\n# JSON serialization is automatic with StrEnum\ntask = Task(name=\"test\", status=\"active\")  # coerces string to enum\nprint(task.model_dump_json())  # {\"name\": \"test\", \"status\": \"active\"}\n```",
+    "tags": ["python", "enum", "strenum", "domain-modeling", "pattern-matching"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Middleware pattern for FastAPI request/response processing",
+    "body": "FastAPI supports both Starlette middleware and pure ASGI middleware. Use the right approach for your use case.\n\n```python\nfrom fastapi import FastAPI, Request\nfrom starlette.middleware.base import BaseHTTPMiddleware\nimport time\nimport structlog\n\nlogger = structlog.get_logger()\n\n# Simple middleware with BaseHTTPMiddleware\nclass TimingMiddleware(BaseHTTPMiddleware):\n    async def dispatch(self, request: Request, call_next):\n        start = time.perf_counter()\n        response = await call_next(request)\n        duration = time.perf_counter() - start\n        response.headers[\"X-Process-Time\"] = f\"{duration:.4f}\"\n        logger.info(\"request\",\n            method=request.method,\n            path=request.url.path,\n            status=response.status_code,\n            duration_ms=round(duration * 1000, 2)\n        )\n        return response\n\n# Pure ASGI middleware (better performance)\nclass CORSHeaderMiddleware:\n    def __init__(self, app):\n        self.app = app\n\n    async def __call__(self, scope, receive, send):\n        if scope[\"type\"] != \"http\":\n            await self.app(scope, receive, send)\n            return\n\n        async def send_with_headers(message):\n            if message[\"type\"] == \"http.response.start\":\n                headers = dict(message.get(\"headers\", []))\n                headers[b\"x-custom\"] = b\"value\"\n                message[\"headers\"] = list(headers.items())\n            await send(message)\n\n        await self.app(scope, receive, send_with_headers)\n\napp = FastAPI()\napp.add_middleware(TimingMiddleware)\n```\n\n`BaseHTTPMiddleware` is simpler but has limitations with streaming responses. Use pure ASGI middleware for high-performance scenarios.",
+    "tags": ["python", "fastapi", "middleware", "asgi", "starlette"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Generator pipeline for memory-efficient data processing",
+    "body": "Chain generators to process large datasets without loading everything into memory. Each stage yields one item at a time.\n\n```python\nfrom pathlib import Path\nfrom typing import Generator, Iterator\nimport csv\n\ndef read_csv_rows(path: Path) -> Generator[dict, None, None]:\n    with path.open(encoding=\"utf-8\") as f:\n        reader = csv.DictReader(f)\n        yield from reader  # yields one row at a time\n\ndef filter_active(rows: Iterator[dict]) -> Generator[dict, None, None]:\n    for row in rows:\n        if row[\"status\"] == \"active\":\n            yield row\n\ndef transform(rows: Iterator[dict]) -> Generator[dict, None, None]:\n    for row in rows:\n        yield {\n            \"name\": row[\"name\"].strip().title(),\n            \"email\": row[\"email\"].lower(),\n            \"score\": float(row[\"score\"]),\n        }\n\ndef batch(items: Iterator, size: int = 1000) -> Generator[list, None, None]:\n    batch = []\n    for item in items:\n        batch.append(item)\n        if len(batch) >= size:\n            yield batch\n            batch = []\n    if batch:\n        yield batch\n\n# Pipeline — processes millions of rows with constant memory\nrows = read_csv_rows(Path(\"huge_file.csv\"))\nactive = filter_active(rows)\ntransformed = transform(active)\nfor chunk in batch(transformed, size=500):\n    db.bulk_insert(chunk)\n```\n\nMemory usage is O(batch_size) regardless of file size. Each generator only holds one item in memory at a time.",
+    "tags": ["python", "generators", "pipeline", "memory-efficiency", "data-processing"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Type-safe dependency injection without frameworks",
+    "body": "Use Python's type system and closures for simple, testable dependency injection without any framework.\n\n```python\nfrom dataclasses import dataclass\nfrom typing import Protocol\n\nclass EmailSender(Protocol):\n    async def send(self, to: str, subject: str, body: str) -> None: ...\n\nclass Logger(Protocol):\n    def info(self, msg: str, **kwargs) -> None: ...\n\n@dataclass\nclass Services:\n    email: EmailSender\n    logger: Logger\n    db_url: str\n\n# Production wiring\ndef create_services() -> Services:\n    return Services(\n        email=SMTPEmailSender(host=\"smtp.example.com\"),\n        logger=structlog.get_logger(),\n        db_url=os.environ[\"DATABASE_URL\"],\n    )\n\n# Test wiring\ndef create_test_services() -> Services:\n    return Services(\n        email=MockEmailSender(),\n        logger=MockLogger(),\n        db_url=\"sqlite:///test.db\",\n    )\n\n# Usage\nasync def register_user(name: str, email: str, services: Services):\n    services.logger.info(\"registering\", name=name)\n    user = await create_user(name, email, services.db_url)\n    await services.email.send(email, \"Welcome!\", f\"Hi {name}\")\n    return user\n\n# Test\nasync def test_register():\n    services = create_test_services()\n    user = await register_user(\"Alice\", \"a@b.com\", services)\n    assert services.email.sent[-1].to == \"a@b.com\"\n```",
+    "tags": ["python", "dependency-injection", "protocol", "testing", "architecture"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Python dataclass with slots for memory and speed optimization",
+    "body": "Adding `slots=True` to dataclasses (Python 3.10+) reduces memory usage by 15-25% and speeds up attribute access.\n\n```python\nfrom dataclasses import dataclass\nimport sys\n\n@dataclass\nclass PointRegular:\n    x: float\n    y: float\n    z: float\n\n@dataclass(slots=True)\nclass PointSlots:\n    x: float\n    y: float\n    z: float\n\n# Memory comparison\np1 = PointRegular(1, 2, 3)\np2 = PointSlots(1, 2, 3)\nprint(sys.getsizeof(p1))  # 56 bytes\nprint(sys.getsizeof(p2))  # 48 bytes\n\n# Slots prevents adding arbitrary attributes\np2.w = 4  # AttributeError: 'PointSlots' has no attribute 'w'\n\n# Combine with frozen for immutable value objects\n@dataclass(frozen=True, slots=True)\nclass Color:\n    r: int\n    g: int\n    b: int\n\n# Can be used as dict keys (frozen makes it hashable)\ncolors = {Color(255, 0, 0): \"red\", Color(0, 0, 255): \"blue\"}\n```\n\nCaveat: `slots=True` doesn't work with multiple inheritance if parent classes also use `__slots__` differently. It also prevents the use of `__dict__`.",
+    "tags": ["python", "dataclasses", "slots", "memory-optimization", "python-3.10"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Match statement with guard clauses for complex routing",
+    "body": "Combine structural pattern matching with guard clauses for clean, readable routing logic that replaces complex if/elif chains.\n\n```python\nfrom dataclasses import dataclass\n\n@dataclass\nclass Request:\n    method: str\n    path: str\n    body: dict | None = None\n    user_role: str = \"guest\"\n\ndef handle_request(req: Request) -> dict:\n    match req:\n        case Request(method=\"GET\", path=\"/health\"):\n            return {\"status\": \"ok\"}\n\n        case Request(method=\"GET\", path=p) if p.startswith(\"/api/users/\"):\n            user_id = p.split(\"/\")[-1]\n            return {\"user_id\": user_id}\n\n        case Request(method=\"POST\", path=\"/api/admin\", user_role=role) if role != \"admin\":\n            return {\"error\": \"forbidden\"}\n\n        case Request(method=\"POST\", path=\"/api/admin\", body=body) if body:\n            return {\"created\": body}\n\n        case Request(method=method, path=path):\n            return {\"error\": f\"{method} {path} not found\"}\n\n# Match with nested structures\nevent = {\"type\": \"click\", \"target\": {\"id\": \"submit-btn\", \"class\": \"primary\"}}\n\nmatch event:\n    case {\"type\": \"click\", \"target\": {\"id\": str(element_id)}}:\n        print(f\"Clicked: {element_id}\")\n    case {\"type\": \"keypress\", \"key\": \"Enter\"}:\n        print(\"Enter pressed\")\n```",
+    "tags": ["python", "match-statement", "pattern-matching", "routing", "guard-clauses"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "pytest fixtures with dependency injection for database tests",
+    "body": "Structure database test fixtures with proper isolation, transaction rollback, and factory patterns.\n\n```python\nimport pytest\nfrom sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker\n\n@pytest.fixture(scope=\"session\")\ndef event_loop():\n    \"\"\"Create event loop for session-scoped async fixtures.\"\"\"\n    import asyncio\n    loop = asyncio.new_event_loop()\n    yield loop\n    loop.close()\n\n@pytest.fixture(scope=\"session\")\nasync def engine():\n    engine = create_async_engine(\"sqlite+aiosqlite:///:memory:\")\n    async with engine.begin() as conn:\n        await conn.run_sync(Base.metadata.create_all)\n    yield engine\n    await engine.dispose()\n\n@pytest.fixture\nasync def db_session(engine):\n    \"\"\"Each test gets its own transaction that's rolled back.\"\"\"\n    async with engine.connect() as conn:\n        trans = await conn.begin()\n        session = AsyncSession(bind=conn)\n        yield session\n        await session.close()\n        await trans.rollback()  # undo all changes\n\n@pytest.fixture\ndef user_factory(db_session):\n    \"\"\"Factory fixture for creating test users.\"\"\"\n    async def _create(name=\"Test\", email=None):\n        email = email or f\"{name.lower()}@test.com\"\n        user = User(name=name, email=email)\n        db_session.add(user)\n        await db_session.flush()\n        return user\n    return _create\n\nasync def test_user_creation(db_session, user_factory):\n    user = await user_factory(name=\"Alice\")\n    assert user.id is not None\n    assert user.email == \"alice@test.com\"\n```",
+    "tags": ["python", "pytest", "database", "fixtures", "sqlalchemy"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Graceful shutdown pattern for asyncio applications",
+    "body": "Handle SIGTERM/SIGINT properly in async applications to clean up resources before exit.\n\n```python\nimport asyncio\nimport signal\nimport structlog\n\nlogger = structlog.get_logger()\n\nclass GracefulApp:\n    def __init__(self):\n        self.shutdown_event = asyncio.Event()\n        self.tasks: set[asyncio.Task] = set()\n\n    async def worker(self, name: str):\n        while not self.shutdown_event.is_set():\n            try:\n                await asyncio.wait_for(\n                    self.shutdown_event.wait(),\n                    timeout=5.0  # check every 5s\n                )\n            except asyncio.TimeoutError:\n                logger.info(f\"{name} doing work\")\n                await self.do_work()\n        logger.info(f\"{name} shutting down\")\n\n    async def run(self):\n        loop = asyncio.get_running_loop()\n        for sig in (signal.SIGTERM, signal.SIGINT):\n            loop.add_signal_handler(\n                sig, lambda: self.shutdown_event.set()\n            )\n\n        # Start workers\n        for i in range(3):\n            task = asyncio.create_task(self.worker(f\"worker-{i}\"))\n            self.tasks.add(task)\n\n        # Wait for shutdown signal\n        await self.shutdown_event.wait()\n        logger.info(\"shutdown signal received, draining...\")\n\n        # Wait for all workers to finish\n        await asyncio.gather(*self.tasks)\n        logger.info(\"clean shutdown complete\")\n\nif __name__ == \"__main__\":\n    app = GracefulApp()\n    asyncio.run(app.run())\n```",
+    "tags": ["python", "asyncio", "graceful-shutdown", "signals", "production"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Caching with TTL using functools and async support",
+    "body": "Python's `functools.lru_cache` works for sync code, but async and TTL-based caching need different approaches.\n\n```python\nfrom functools import lru_cache, cache\nimport time\nimport asyncio\n\n# Simple memoization (3.9+)\n@cache  # same as lru_cache(maxsize=None)\ndef fibonacci(n: int) -> int:\n    if n < 2:\n        return n\n    return fibonacci(n-1) + fibonacci(n-2)\n\n# LRU cache with size limit\n@lru_cache(maxsize=128)\ndef get_config(key: str) -> dict:\n    return load_from_disk(key)\n\n# TTL cache using cachetools\nfrom cachetools import TTLCache, cached\n\n_cache = TTLCache(maxsize=100, ttl=300)  # 5 minute TTL\n\n@cached(cache=_cache)\ndef get_user(user_id: int) -> dict:\n    return db.query(f\"SELECT * FROM users WHERE id={user_id}\")\n\n# Async TTL cache\nclass AsyncTTLCache:\n    def __init__(self, ttl: float = 300):\n        self._cache: dict[str, tuple[float, any]] = {}\n        self._ttl = ttl\n\n    def get(self, key: str):\n        if key in self._cache:\n            ts, value = self._cache[key]\n            if time.monotonic() - ts < self._ttl:\n                return value\n            del self._cache[key]\n        return None\n\n    def set(self, key: str, value):\n        self._cache[key] = (time.monotonic(), value)\n\ncache = AsyncTTLCache(ttl=60)\n\nasync def get_data(key: str) -> dict:\n    if (cached := cache.get(key)) is not None:\n        return cached\n    result = await fetch_from_api(key)\n    cache.set(key, result)\n    return result\n```",
+    "tags": ["python", "caching", "lru-cache", "ttl", "async"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Type narrowing with TypeGuard and TypeIs for precise type checking",
+    "body": "TypeGuard (3.10+) and TypeIs (3.12+) help type checkers understand custom type-narrowing functions.\n\n```python\nfrom typing import TypeGuard, TypeIs  # TypeIs is 3.12+\n\n# TypeGuard narrows the type in the positive branch\ndef is_string_list(val: list[object]) -> TypeGuard[list[str]]:\n    return all(isinstance(x, str) for x in val)\n\ndef process(data: list[object]):\n    if is_string_list(data):\n        # type checker knows: data is list[str]\n        print(data[0].upper())\n    else:\n        # type checker still sees: list[object]\n        pass\n\n# TypeIs (3.12+) — narrows in BOTH branches\ndef is_int(val: int | str) -> TypeIs[int]:\n    return isinstance(val, int)\n\ndef handle(x: int | str):\n    if is_int(x):\n        print(x + 1)    # x is int\n    else:\n        print(x.upper())  # x is str (narrowed in negative branch!)\n\n# TypeGuard would NOT narrow the else branch\ndef is_int_guard(val: int | str) -> TypeGuard[int]:\n    return isinstance(val, int)\n\ndef handle2(x: int | str):\n    if is_int_guard(x):\n        print(x + 1)    # x is int\n    else:\n        print(x.upper())  # x is still int | str (not narrowed!)\n```\n\nUse `TypeIs` when your check is a true type narrowing (input and output types are related). Use `TypeGuard` when the narrowed type might not be a subtype.",
+    "tags": ["python", "type-hints", "typeguard", "typeis", "type-narrowing"]
+  },
+  {
+    "type": "pattern",
+    "trust": "verified",
+    "title": "Async generator pattern for streaming API responses",
+    "body": "Use async generators with FastAPI's `StreamingResponse` to stream large datasets without buffering in memory.\n\n```python\nfrom fastapi import FastAPI\nfrom fastapi.responses import StreamingResponse\nimport json\nimport asyncio\n\napp = FastAPI()\n\nasync def generate_results(query: str):\n    \"\"\"Async generator that yields results as they become available.\"\"\"\n    async for batch in fetch_batches(query):\n        for item in batch:\n            yield json.dumps(item) + \"\\n\"\n        await asyncio.sleep(0)  # yield control to event loop\n\n@app.get(\"/stream\")\nasync def stream_results(q: str):\n    return StreamingResponse(\n        generate_results(q),\n        media_type=\"application/x-ndjson\",\n    )\n\n# Server-Sent Events (SSE) pattern\nasync def event_stream():\n    while True:\n        data = await get_next_event()\n        yield f\"data: {json.dumps(data)}\\n\\n\"\n\n@app.get(\"/events\")\nasync def sse():\n    return StreamingResponse(\n        event_stream(),\n        media_type=\"text/event-stream\",\n        headers={\"Cache-Control\": \"no-cache\"},\n    )\n\n# Client consumption\nimport httpx\n\nasync def consume_stream():\n    async with httpx.AsyncClient() as client:\n        async with client.stream(\"GET\", \"http://localhost:8000/stream?q=test\") as resp:\n            async for line in resp.aiter_lines():\n                item = json.loads(line)\n                process(item)\n```",
+    "tags": ["python", "fastapi", "streaming", "async-generator", "sse"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Python dataclass with validation and JSON serialization",
+    "body": "A complete dataclass setup with custom validation, JSON round-tripping, and optional fields.\n\n```python\nfrom dataclasses import dataclass, field, asdict\nfrom datetime import datetime\nfrom typing import Self\nimport json\n\n@dataclass(slots=True, frozen=True)\nclass Event:\n    name: str\n    timestamp: datetime\n    tags: list[str] = field(default_factory=list)\n    metadata: dict[str, str] = field(default_factory=dict)\n    id: str = field(default_factory=lambda: str(uuid.uuid4()))\n\n    def __post_init__(self):\n        if not self.name:\n            raise ValueError(\"name cannot be empty\")\n        if len(self.tags) > 10:\n            raise ValueError(\"max 10 tags\")\n\n    def to_json(self) -> str:\n        d = asdict(self)\n        d[\"timestamp\"] = self.timestamp.isoformat()\n        return json.dumps(d)\n\n    @classmethod\n    def from_json(cls, data: str) -> Self:\n        d = json.loads(data)\n        d[\"timestamp\"] = datetime.fromisoformat(d[\"timestamp\"])\n        return cls(**d)\n\n    @classmethod\n    def create(cls, name: str, **kwargs) -> Self:\n        return cls(name=name, timestamp=datetime.now(), **kwargs)\n\n# Usage\nevent = Event.create(\"deploy\", tags=[\"production\", \"v2.1\"])\njson_str = event.to_json()\nrestored = Event.from_json(json_str)\nassert event == restored\n```",
+    "tags": ["python", "dataclasses", "json", "serialization", "validation"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "FastAPI CRUD router with proper error handling and typing",
+    "body": "A reusable CRUD router pattern for FastAPI with Pydantic models and proper HTTP semantics.\n\n```python\nfrom fastapi import APIRouter, HTTPException, status\nfrom pydantic import BaseModel, ConfigDict\n\nclass ItemCreate(BaseModel):\n    name: str\n    price: float\n    tags: list[str] = []\n\nclass ItemUpdate(BaseModel):\n    name: str | None = None\n    price: float | None = None\n    tags: list[str] | None = None\n\nclass ItemOut(BaseModel):\n    model_config = ConfigDict(from_attributes=True)\n    id: int\n    name: str\n    price: float\n    tags: list[str]\n\nrouter = APIRouter(prefix=\"/items\", tags=[\"items\"])\n\n@router.get(\"\", response_model=list[ItemOut])\nasync def list_items(skip: int = 0, limit: int = 20):\n    return await Item.query.offset(skip).limit(min(limit, 100)).all()\n\n@router.get(\"/{item_id}\", response_model=ItemOut)\nasync def get_item(item_id: int):\n    item = await Item.get(item_id)\n    if not item:\n        raise HTTPException(status.HTTP_404_NOT_FOUND, f\"Item {item_id} not found\")\n    return item\n\n@router.post(\"\", response_model=ItemOut, status_code=status.HTTP_201_CREATED)\nasync def create_item(data: ItemCreate):\n    item = await Item.create(**data.model_dump())\n    return item\n\n@router.patch(\"/{item_id}\", response_model=ItemOut)\nasync def update_item(item_id: int, data: ItemUpdate):\n    item = await Item.get(item_id)\n    if not item:\n        raise HTTPException(status.HTTP_404_NOT_FOUND)\n    updates = data.model_dump(exclude_unset=True)\n    if not updates:\n        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, \"No fields to update\")\n    return await item.update(**updates)\n\n@router.delete(\"/{item_id}\", status_code=status.HTTP_204_NO_CONTENT)\nasync def delete_item(item_id: int):\n    item = await Item.get(item_id)\n    if not item:\n        raise HTTPException(status.HTTP_404_NOT_FOUND)\n    await item.delete()\n```",
+    "tags": ["python", "fastapi", "crud", "pydantic", "rest-api"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Async retry decorator with backoff and jitter",
+    "body": "A standalone async retry decorator with exponential backoff, jitter, and configurable exception types.\n\n```python\nimport asyncio\nimport random\nimport functools\nimport logging\nfrom typing import TypeVar, ParamSpec, Callable\n\nP = ParamSpec('P')\nR = TypeVar('R')\n\ndef async_retry(\n    max_attempts: int = 3,\n    base_delay: float = 1.0,\n    max_delay: float = 60.0,\n    exceptions: tuple[type[Exception], ...] = (Exception,),\n    jitter: bool = True,\n) -> Callable[[Callable[P, R]], Callable[P, R]]:\n    def decorator(func: Callable[P, R]) -> Callable[P, R]:\n        @functools.wraps(func)\n        async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:\n            last_exception = None\n            for attempt in range(max_attempts):\n                try:\n                    return await func(*args, **kwargs)\n                except exceptions as e:\n                    last_exception = e\n                    if attempt < max_attempts - 1:\n                        delay = min(base_delay * (2 ** attempt), max_delay)\n                        if jitter:\n                            delay *= random.uniform(0.5, 1.5)\n                        logging.warning(\n                            f\"{func.__name__} attempt {attempt+1} failed: {e}. \"\n                            f\"Retrying in {delay:.1f}s\"\n                        )\n                        await asyncio.sleep(delay)\n            raise last_exception\n        return wrapper\n    return decorator\n\n# Usage\n@async_retry(max_attempts=5, exceptions=(ConnectionError, TimeoutError))\nasync def fetch_data(url: str) -> dict:\n    async with httpx.AsyncClient() as client:\n        resp = await client.get(url, timeout=10)\n        resp.raise_for_status()\n        return resp.json()\n```",
+    "tags": ["python", "async", "retry", "decorator", "backoff"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Python logging configuration with JSON and file rotation",
+    "body": "Complete logging setup with JSON formatting, file rotation, and separate handlers for different log levels.\n\n```python\nimport logging\nimport logging.config\n\nLOGGING_CONFIG = {\n    \"version\": 1,\n    \"disable_existing_loggers\": False,\n    \"formatters\": {\n        \"standard\": {\n            \"format\": \"%(asctime)s [%(levelname)s] %(name)s: %(message)s\"\n        },\n        \"json\": {\n            \"()\": \"pythonjsonlogger.jsonlogger.JsonFormatter\",\n            \"format\": \"%(asctime)s %(levelname)s %(name)s %(message)s\",\n        },\n    },\n    \"handlers\": {\n        \"console\": {\n            \"class\": \"logging.StreamHandler\",\n            \"level\": \"DEBUG\",\n            \"formatter\": \"standard\",\n            \"stream\": \"ext://sys.stdout\",\n        },\n        \"file\": {\n            \"class\": \"logging.handlers.RotatingFileHandler\",\n            \"level\": \"INFO\",\n            \"formatter\": \"json\",\n            \"filename\": \"app.log\",\n            \"maxBytes\": 10_000_000,  # 10MB\n            \"backupCount\": 5,\n        },\n        \"error_file\": {\n            \"class\": \"logging.handlers.RotatingFileHandler\",\n            \"level\": \"ERROR\",\n            \"formatter\": \"json\",\n            \"filename\": \"error.log\",\n            \"maxBytes\": 10_000_000,\n            \"backupCount\": 10,\n        },\n    },\n    \"loggers\": {\n        \"\": {  # root logger\n            \"handlers\": [\"console\", \"file\", \"error_file\"],\n            \"level\": \"INFO\",\n        },\n        \"uvicorn\": {\"level\": \"WARNING\"},\n        \"sqlalchemy.engine\": {\"level\": \"WARNING\"},\n    },\n}\n\nlogging.config.dictConfig(LOGGING_CONFIG)\nlogger = logging.getLogger(__name__)\n\nlogger.info(\"Application started\", extra={\"version\": \"2.0\"})\n```",
+    "tags": ["python", "logging", "json-logging", "rotation", "configuration"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "pytest parametrize with complex fixtures and expected errors",
+    "body": "Advanced pytest parametrize patterns for testing edge cases, error conditions, and complex scenarios.\n\n```python\nimport pytest\nfrom decimal import Decimal\n\n# Parametrize with expected exceptions\n@pytest.mark.parametrize(\"input_val,expected\", [\n    (\"10.5\", Decimal(\"10.5\")),\n    (\"0\", Decimal(\"0\")),\n    (\"-3.14\", Decimal(\"-3.14\")),\n    pytest.param(\"abc\", None, marks=pytest.mark.xfail(raises=ValueError)),\n    pytest.param(\"\", None, marks=pytest.mark.xfail(raises=ValueError)),\n])\ndef test_parse_decimal(input_val, expected):\n    result = parse_decimal(input_val)\n    assert result == expected\n\n# Parametrize with IDs and indirect fixtures\n@pytest.fixture\ndef api_client(request):\n    \"\"\"Create client with specified auth level.\"\"\"\n    auth = request.param\n    return TestClient(app, headers={\"Authorization\": f\"Bearer {auth}\"})\n\n@pytest.mark.parametrize(\"api_client,expected_status\", [\n    pytest.param(\"admin-token\", 200, id=\"admin-can-access\"),\n    pytest.param(\"user-token\", 403, id=\"user-forbidden\"),\n    pytest.param(\"invalid\", 401, id=\"invalid-unauthorized\"),\n], indirect=[\"api_client\"])\nasync def test_admin_endpoint(api_client, expected_status):\n    resp = await api_client.get(\"/admin\")\n    assert resp.status_code == expected_status\n\n# Parametrize class for shared test data\n@pytest.mark.parametrize(\"x,y,expected\", [\n    (0, 0, 0), (1, 1, 2), (-1, 1, 0), (100, -100, 0),\n])\nclass TestAddition:\n    def test_add(self, x, y, expected):\n        assert add(x, y) == expected\n\n    def test_commutative(self, x, y, expected):\n        assert add(y, x) == expected\n```",
+    "tags": ["python", "pytest", "parametrize", "testing", "edge-cases"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Async context manager for database connection pooling",
+    "body": "A reusable async connection pool pattern for PostgreSQL with asyncpg.\n\n```python\nimport asyncpg\nfrom contextlib import asynccontextmanager\nfrom typing import AsyncGenerator\nimport logging\n\nlogger = logging.getLogger(__name__)\n\nclass Database:\n    def __init__(self, dsn: str, min_size: int = 5, max_size: int = 20):\n        self.dsn = dsn\n        self.min_size = min_size\n        self.max_size = max_size\n        self._pool: asyncpg.Pool | None = None\n\n    async def connect(self):\n        self._pool = await asyncpg.create_pool(\n            self.dsn,\n            min_size=self.min_size,\n            max_size=self.max_size,\n            command_timeout=30,\n        )\n        logger.info(f\"Database pool created (min={self.min_size}, max={self.max_size})\")\n\n    async def disconnect(self):\n        if self._pool:\n            await self._pool.close()\n            logger.info(\"Database pool closed\")\n\n    @asynccontextmanager\n    async def acquire(self) -> AsyncGenerator[asyncpg.Connection, None]:\n        async with self._pool.acquire() as conn:\n            yield conn\n\n    @asynccontextmanager\n    async def transaction(self) -> AsyncGenerator[asyncpg.Connection, None]:\n        async with self._pool.acquire() as conn:\n            async with conn.transaction():\n                yield conn\n\n    async def fetch(self, query: str, *args):\n        async with self.acquire() as conn:\n            return await conn.fetch(query, *args)\n\n    async def fetchrow(self, query: str, *args):\n        async with self.acquire() as conn:\n            return await conn.fetchrow(query, *args)\n\n    async def execute(self, query: str, *args):\n        async with self.acquire() as conn:\n            return await conn.execute(query, *args)\n\n# Usage with FastAPI lifespan\ndb = Database(\"postgresql://user:pass@localhost/mydb\")\n\n@asynccontextmanager\nasync def lifespan(app):\n    await db.connect()\n    yield\n    await db.disconnect()\n\napp = FastAPI(lifespan=lifespan)\n\n@app.get(\"/users/{user_id}\")\nasync def get_user(user_id: int):\n    row = await db.fetchrow(\"SELECT * FROM users WHERE id = $1\", user_id)\n    if not row:\n        raise HTTPException(404)\n    return dict(row)\n```",
+    "tags": ["python", "asyncpg", "connection-pool", "database", "async"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Python CLI with Click and async support",
+    "body": "Building a CLI tool with Click that supports async operations, environment config, and proper error handling.\n\n```python\nimport click\nimport asyncio\nfrom functools import wraps\n\n# Async support for Click\ndef async_command(f):\n    @wraps(f)\n    def wrapper(*args, **kwargs):\n        return asyncio.run(f(*args, **kwargs))\n    return wrapper\n\n@click.group()\n@click.option(\"--verbose\", \"-v\", is_flag=True)\n@click.pass_context\ndef cli(ctx, verbose):\n    ctx.ensure_object(dict)\n    ctx.obj[\"verbose\"] = verbose\n\n@cli.command()\n@click.argument(\"url\")\n@click.option(\"--output\", \"-o\", type=click.Path(), default=\"output.json\")\n@click.option(\"--timeout\", type=float, default=30.0)\n@click.pass_context\n@async_command\nasync def fetch(ctx, url, output, timeout):\n    \"\"\"Fetch data from URL and save to file.\"\"\"\n    if ctx.obj[\"verbose\"]:\n        click.echo(f\"Fetching {url}...\")\n\n    try:\n        import httpx\n        async with httpx.AsyncClient() as client:\n            resp = await client.get(url, timeout=timeout)\n            resp.raise_for_status()\n\n        with open(output, \"w\") as f:\n            f.write(resp.text)\n\n        click.secho(f\"Saved to {output}\", fg=\"green\")\n    except httpx.HTTPError as e:\n        click.secho(f\"Error: {e}\", fg=\"red\", err=True)\n        raise SystemExit(1)\n\n@cli.command()\n@click.confirmation_option(prompt=\"Are you sure you want to reset?\")\ndef reset():\n    \"\"\"Reset all data.\"\"\"\n    click.echo(\"Reset complete.\")\n\nif __name__ == \"__main__\":\n    cli()\n```\n\nUsage: `python cli.py -v fetch https://api.example.com -o data.json`",
+    "tags": ["python", "click", "cli", "async", "command-line"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Pydantic model inheritance with discriminated unions",
+    "body": "Use discriminated unions for type-safe polymorphism in API schemas — essential for handling different event types or message formats.\n\n```python\nfrom pydantic import BaseModel, Field\nfrom typing import Literal, Annotated, Union\nfrom datetime import datetime\n\nclass BaseEvent(BaseModel):\n    timestamp: datetime\n\nclass ClickEvent(BaseEvent):\n    type: Literal[\"click\"] = \"click\"\n    element_id: str\n    x: int\n    y: int\n\nclass PageViewEvent(BaseEvent):\n    type: Literal[\"page_view\"] = \"page_view\"\n    url: str\n    referrer: str | None = None\n\nclass ErrorEvent(BaseEvent):\n    type: Literal[\"error\"] = \"error\"\n    message: str\n    stack_trace: str | None = None\n\n# Discriminated union — Pydantic checks 'type' field to pick the right model\nEvent = Annotated[\n    Union[ClickEvent, PageViewEvent, ErrorEvent],\n    Field(discriminator=\"type\")\n]\n\nclass EventBatch(BaseModel):\n    events: list[Event]\n\n# Usage\nbatch = EventBatch.model_validate({\n    \"events\": [\n        {\"type\": \"click\", \"element_id\": \"btn\", \"x\": 10, \"y\": 20, \"timestamp\": \"2024-01-01T00:00:00Z\"},\n        {\"type\": \"page_view\", \"url\": \"/home\", \"timestamp\": \"2024-01-01T00:00:01Z\"},\n    ]\n})\n\nfor event in batch.events:\n    match event:\n        case ClickEvent(element_id=eid):\n            print(f\"Click on {eid}\")\n        case PageViewEvent(url=url):\n            print(f\"Viewed {url}\")\n```\n\nDiscriminated unions are much faster than regular unions because Pydantic checks the discriminator field first instead of trying each model.",
+    "tags": ["python", "pydantic", "discriminated-union", "polymorphism", "typing"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Dockerfile for production Python app with uv and multi-stage build",
+    "body": "An optimized Dockerfile using uv for fast installs and multi-stage build for small image size.\n\n```dockerfile\n# Stage 1: Build\nFROM python:3.12-slim AS builder\n\nCOPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv\n\nWORKDIR /app\n\n# Install dependencies first (cached layer)\nCOPY pyproject.toml uv.lock ./\nRUN uv sync --frozen --no-install-project --no-dev\n\n# Copy source and install project\nCOPY src/ src/\nRUN uv sync --frozen --no-dev\n\n# Stage 2: Runtime\nFROM python:3.12-slim AS runtime\n\nWORKDIR /app\n\n# Copy virtual environment from builder\nCOPY --from=builder /app/.venv /app/.venv\n\n# Ensure venv is on PATH\nENV PATH=\"/app/.venv/bin:$PATH\"\nENV PYTHONUNBUFFERED=1\nENV PYTHONDONTWRITEBYTECODE=1\n\n# Copy application code\nCOPY src/ src/\nCOPY alembic/ alembic/\nCOPY alembic.ini .\n\n# Non-root user\nRUN useradd --create-home appuser\nUSER appuser\n\nEXPOSE 8000\n\nCMD [\"uvicorn\", \"src.main:app\", \"--host\", \"0.0.0.0\", \"--port\", \"8000\", \"--workers\", \"4\"]\n```\n\nThis produces a ~150MB image vs ~1GB for a naive Dockerfile. The `uv sync --frozen` ensures reproducible installs from the lock file.",
+    "tags": ["python", "docker", "uv", "multi-stage", "production"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Python asyncio worker pool with graceful shutdown and health checks",
+    "body": "A production-ready async worker pool for processing jobs from a queue.\n\n```python\nimport asyncio\nimport signal\nfrom dataclasses import dataclass, field\nfrom datetime import datetime\n\n@dataclass\nclass WorkerPool:\n    num_workers: int = 4\n    queue: asyncio.Queue = field(default_factory=lambda: asyncio.Queue(maxsize=100))\n    _running: bool = False\n    _tasks: list[asyncio.Task] = field(default_factory=list)\n    _processed: int = 0\n    _errors: int = 0\n\n    async def worker(self, worker_id: int):\n        while self._running:\n            try:\n                job = await asyncio.wait_for(self.queue.get(), timeout=1.0)\n            except asyncio.TimeoutError:\n                continue\n\n            try:\n                await self.process(job)\n                self._processed += 1\n            except Exception as e:\n                self._errors += 1\n                logging.error(f\"Worker {worker_id} error: {e}\", exc_info=True)\n            finally:\n                self.queue.task_done()\n\n    async def process(self, job: dict):\n        \"\"\"Override this method with your job logic.\"\"\"\n        await asyncio.sleep(0.1)  # simulate work\n\n    async def start(self):\n        self._running = True\n        loop = asyncio.get_running_loop()\n        for sig in (signal.SIGTERM, signal.SIGINT):\n            loop.add_signal_handler(sig, lambda: asyncio.create_task(self.stop()))\n\n        self._tasks = [\n            asyncio.create_task(self.worker(i))\n            for i in range(self.num_workers)\n        ]\n        logging.info(f\"Started {self.num_workers} workers\")\n        await asyncio.gather(*self._tasks)\n\n    async def stop(self):\n        logging.info(\"Shutting down workers...\")\n        self._running = False\n        await self.queue.join()  # wait for pending jobs\n        logging.info(f\"Processed: {self._processed}, Errors: {self._errors}\")\n\n    @property\n    def health(self) -> dict:\n        return {\n            \"running\": self._running,\n            \"workers\": self.num_workers,\n            \"queue_size\": self.queue.qsize(),\n            \"processed\": self._processed,\n            \"errors\": self._errors,\n        }\n```",
+    "tags": ["python", "asyncio", "worker-pool", "queue", "production"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Python type hints cheat sheet for modern Python 3.12+",
+    "body": "Quick reference for Python 3.12+ type annotation syntax, covering the most common patterns.\n\n```python\nfrom typing import Self, Never, TypeGuard, override\nfrom collections.abc import Callable, Sequence, Mapping, AsyncIterator\n\n# New 3.12 syntax for generics\ndef first[T](items: Sequence[T]) -> T:\n    return items[0]\n\n# New 3.12 syntax for type aliases\ntype JSON = dict[str, 'JSON'] | list['JSON'] | str | int | float | bool | None\ntype Handler[T] = Callable[[T], None]\ntype Result[T, E] = T | E\n\n# Bounded type variables\ndef max_value[T: (int, float)](a: T, b: T) -> T:\n    return a if a > b else b\n\n# Class with generic\nclass Stack[T]:\n    def __init__(self) -> None:\n        self._items: list[T] = []\n\n    def push(self, item: T) -> None:\n        self._items.append(item)\n\n    def pop(self) -> T:\n        return self._items.pop()\n\n# Self type for fluent interfaces\nclass Builder:\n    def set_name(self, name: str) -> Self:\n        self.name = name\n        return self\n\n# Override decorator (3.12+)\nclass Child(Parent):\n    @override\n    def method(self) -> None:  # type checker ensures Parent has this method\n        ...\n\n# Never type for functions that don't return\ndef fatal_error(msg: str) -> Never:\n    raise SystemExit(msg)\n\n# Unpack for variadic generics\nfrom typing import Unpack, TypedDict\n\nclass Options(TypedDict, total=False):\n    timeout: float\n    retries: int\n\ndef request(url: str, **kwargs: Unpack[Options]) -> None: ...\n```",
+    "tags": ["python", "type-hints", "python-3.12", "generics", "cheat-sheet"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Python match statement patterns comprehensive examples",
+    "body": "All structural pattern matching forms in one reference, showing the versatility of PEP 634.\n\n```python\ndef process(data):\n    match data:\n        # Literal pattern\n        case 0:\n            return \"zero\"\n\n        # OR pattern\n        case 1 | 2 | 3:\n            return \"small\"\n\n        # Capture pattern\n        case int(n) if n > 100:\n            return f\"big: {n}\"\n\n        # Sequence pattern with star\n        case [first, *middle, last]:\n            return f\"list: {first}...{last}\"\n\n        # Mapping pattern\n        case {\"type\": \"user\", \"name\": str(name), **rest}:\n            return f\"user: {name}, extra: {rest}\"\n\n        # Class pattern\n        case Point(x=0, y=0):\n            return \"origin\"\n\n        # Nested pattern\n        case {\"data\": [{\"id\": int(id)}, *_]}:\n            return f\"first id: {id}\"\n\n        # Guard clause\n        case str(s) if len(s) > 100:\n            return f\"long string ({len(s)} chars)\"\n\n        # AS pattern (capture matched value)\n        case [int(), int()] as pair:\n            return f\"int pair: {pair}\"\n\n        # Wildcard\n        case _:\n            return \"unknown\"\n\n# Real-world: API response handling\nmatch response.json():\n    case {\"status\": \"ok\", \"data\": list(items)}:\n        process_items(items)\n    case {\"status\": \"error\", \"message\": str(msg)}:\n        raise APIError(msg)\n    case {\"status\": \"redirect\", \"url\": str(url)}:\n        return fetch(url)\n```",
+    "tags": ["python", "match-statement", "pattern-matching", "pep-634", "reference"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Python concurrent.futures for parallel CPU-bound work",
+    "body": "ProcessPoolExecutor with proper error handling and progress tracking for CPU-intensive tasks.\n\n```python\nfrom concurrent.futures import ProcessPoolExecutor, as_completed\nimport multiprocessing as mp\n\ndef process_chunk(chunk: list[dict]) -> list[dict]:\n    \"\"\"CPU-bound processing — runs in separate process.\"\"\"\n    results = []\n    for item in chunk:\n        result = heavy_computation(item)\n        results.append(result)\n    return results\n\ndef parallel_process(items: list[dict], chunk_size: int = 100) -> list[dict]:\n    chunks = [items[i:i+chunk_size] for i in range(0, len(items), chunk_size)]\n    num_workers = min(mp.cpu_count(), len(chunks))\n    results = []\n    errors = []\n\n    with ProcessPoolExecutor(max_workers=num_workers) as executor:\n        future_to_chunk = {\n            executor.submit(process_chunk, chunk): i\n            for i, chunk in enumerate(chunks)\n        }\n\n        for future in as_completed(future_to_chunk):\n            chunk_idx = future_to_chunk[future]\n            try:\n                result = future.result(timeout=60)\n                results.extend(result)\n                print(f\"Chunk {chunk_idx}/{len(chunks)} done\")\n            except Exception as e:\n                errors.append((chunk_idx, str(e)))\n                print(f\"Chunk {chunk_idx} failed: {e}\")\n\n    if errors:\n        print(f\"Completed with {len(errors)} errors\")\n\n    return results\n\n# Usage\nif __name__ == \"__main__\":  # required for multiprocessing!\n    data = load_data()\n    results = parallel_process(data, chunk_size=500)\n    print(f\"Processed {len(results)} items\")\n```",
+    "tags": ["python", "multiprocessing", "concurrent-futures", "parallel", "cpu-bound"]
+  },
+  {
+    "type": "snippet",
+    "trust": "verified",
+    "title": "Python pyproject.toml complete configuration for modern projects",
+    "body": "A comprehensive `pyproject.toml` with project metadata, tool configuration, and build system settings.\n\n```toml\n[project]\nname = \"mypackage\"\nversion = \"0.1.0\"\ndescription = \"A modern Python package\"\nreadme = \"README.md\"\nrequires-python = \">=3.12\"\nlicense = {text = \"MIT\"}\nauthors = [{name = \"Your Name\", email = \"you@example.com\"}]\ndependencies = [\n    \"fastapi>=0.109\",\n    \"pydantic>=2.5\",\n    \"httpx>=0.26\",\n]\n\n[project.optional-dependencies]\ndev = [\n    \"pytest>=8.0\",\n    \"pytest-asyncio>=0.23\",\n    \"pytest-cov>=4.1\",\n    \"ruff>=0.2\",\n    \"mypy>=1.8\",\n]\n\n[project.scripts]\nmyapp = \"mypackage.cli:main\"\n\n[build-system]\nrequires = [\"hatchling\"]\nbuild-backend = \"hatchling.build\"\n\n[tool.ruff]\ntarget-version = \"py312\"\nline-length = 100\n\n[tool.ruff.lint]\nselect = [\"E\", \"F\", \"I\", \"N\", \"W\", \"UP\", \"B\", \"SIM\", \"RUF\"]\nignore = [\"E501\"]\n\n[tool.mypy]\npython_version = \"3.12\"\nstrict = true\nwarn_return_any = true\n\n[tool.pytest.ini_options]\nasyncio_mode = \"auto\"\ntestpaths = [\"tests\"]\naddopts = \"-ra -q --strict-markers\"\nmarkers = [\n    \"slow: marks tests as slow\",\n    \"integration: marks integration tests\",\n]\n\n[tool.coverage.run]\nsource = [\"src/mypackage\"]\nomit = [\"*/tests/*\"]\n\n[tool.coverage.report]\nexclude_lines = [\"if TYPE_CHECKING:\", \"pragma: no cover\"]\n```",
+    "tags": ["python", "pyproject-toml", "configuration", "ruff", "mypy"]
+  }
+]
