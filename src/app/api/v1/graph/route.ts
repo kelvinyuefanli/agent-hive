@@ -6,12 +6,12 @@ import { sql } from "drizzle-orm";
 export const GET = withSafety({
   requireAuth: false,
 })(async () => {
-  // Top 100 nodes by score
+  // Top 500 nodes by score
   const nodeRows = await db.execute(sql`
     SELECT id, title AS label, type, score, trust_level AS trust
     FROM knowledge_nodes
     ORDER BY score DESC
-    LIMIT 100
+    LIMIT 500
   `);
 
   const nodes = Array.from(nodeRows) as Record<string, unknown>[];
