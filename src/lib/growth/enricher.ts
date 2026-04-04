@@ -58,7 +58,8 @@ export async function runEnricherCycle(): Promise<void> {
     try {
       breaker = await checkCircuitBreaker();
     } catch (error) {
-      console.warn("[enricher] Circuit breaker check failed (schema may be incomplete):", error);
+      console.warn("[enricher] Circuit breaker check failed, skipping cycle for safety:", error);
+      breaker = { tripped: true, reason: "circuit breaker check error" };
     }
     if (breaker.tripped) {
       const durationMs = Date.now() - startTime;

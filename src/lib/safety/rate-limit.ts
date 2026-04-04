@@ -21,6 +21,22 @@ export const RATE_LIMIT_DEFAULTS = {
 // In-memory sliding-window store. Keyed by `orgId:endpoint`.
 const windows = new Map<string, WindowEntry>();
 
+// Evict stale entries every 5 minutes to prevent unbounded growth
+const EVICTION_INTERVAL_MS = 5 * 60 * 1000;
+let lastEviction = Date.now();
+
+function evictStaleEntries(): void {
+  const now = Date.now();
+  if (now - lastEviction < EVICTION_INTERVAL_MS) return;
+  lastEviction = now;
+  for (const [key, entry] of windows) {
+    // Evict entries whose window has expired (default max window is 1h)
+    if (now - entry.windowStart > 3_600_000) {
+      windows.delete(key);
+    }
+  }
+}
+
 /**
  * Check whether the caller has exceeded their rate limit for the given endpoint.
  * Throws RateLimitError (429) when the limit is exceeded.
@@ -30,6 +46,8 @@ export function checkRateLimit(
   endpoint: string,
   config?: RateLimitConfig,
 ): void {
+  evictStaleEntries();
+
   const effectiveConfig = config ?? RATE_LIMIT_DEFAULTS.write;
   const key = `${orgId}:${endpoint}`;
   const now = Date.now();

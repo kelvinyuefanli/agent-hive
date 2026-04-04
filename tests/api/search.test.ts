@@ -3,7 +3,11 @@ import { NextRequest } from "next/server";
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 
-const mockInsertValues = vi.fn(() => ({ returning: vi.fn() }));
+const mockInsertValues = vi.fn(() => {
+  const p = Promise.resolve([]) as any;
+  p.returning = vi.fn().mockResolvedValue([]);
+  return p;
+});
 const mockInsert = vi.fn(() => ({ values: mockInsertValues }));
 const mockExecute = vi.fn();
 const mockUpdateSetWhere = vi.fn();

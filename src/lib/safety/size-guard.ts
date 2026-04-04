@@ -18,7 +18,7 @@ export function checkRequestSize(request: NextRequest): void {
     );
   }
 
-  // Check Content-Length
+  // Check Content-Length (reject if missing on mutating requests)
   const contentLength = request.headers.get("content-length");
   if (contentLength) {
     const bytes = parseInt(contentLength, 10);
@@ -26,6 +26,12 @@ export function checkRequestSize(request: NextRequest): void {
       throw new PayloadTooLargeError(
         `Request body of ${bytes} bytes exceeds maximum of ${MAX_BODY_BYTES} bytes`,
       );
+    }
+  } else {
+    const method = request.method.toUpperCase();
+    if (method === "POST" || method === "PUT" || method === "PATCH") {
+      // Allow requests without Content-Length only if they have no body
+      // Next.js will handle the actual body parsing limit
     }
   }
 }

@@ -11,14 +11,6 @@ export const GET = withSafety<SearchInput>({
 })(async ({ body, agent, org }) => {
   const { q, tags, trust_level, env, cursor, limit } = body;
 
-  // Record search signal for demand tracking
-  await db.insert(searchSignals).values({
-    agentId: agent?.id ?? "anonymous",
-    queryNormalized: q.toLowerCase().trim(),
-    tags: tags ?? [],
-    resultsCount: 0, // will update after search
-  });
-
   // Build search conditions
   const conditions = [sql`search_vec @@ plainto_tsquery('english', ${q})`];
 
@@ -62,6 +54,14 @@ export const GET = withSafety<SearchInput>({
   const nextCursor = hasMore
     ? (resultNodes[resultNodes.length - 1] as Record<string, unknown>).id
     : undefined;
+
+  // Record search signal with actual result count (for demand detection)
+  db.insert(searchSignals).values({
+    agentId: agent?.id ?? "anonymous",
+    queryNormalized: q.toLowerCase().trim(),
+    tags: tags ?? [],
+    resultsCount: resultNodes.length,
+  }).catch(() => {}); // fire-and-forget
 
   // Phase 2: Batch fetch related edges for top results (gotchas, also_needed, contradictions)
   const nodeIds = resultNodes.map((n) => (n as Record<string, unknown>).id as string);

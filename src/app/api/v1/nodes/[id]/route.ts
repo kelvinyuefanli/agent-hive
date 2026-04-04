@@ -171,14 +171,16 @@ export const DELETE = withSafety({
     throw new ForbiddenError("Only the creating agent can delete this node");
   }
 
-  // Delete related data first (edges, votes, proofs, flags)
-  await db.delete(knowledgeEdges).where(
-    or(eq(knowledgeEdges.sourceId, id), eq(knowledgeEdges.targetId, id))
-  );
-  await db.delete(votes).where(eq(votes.nodeId, id));
-  await db.delete(executionProofs).where(eq(executionProofs.nodeId, id));
-  await db.delete(moderationFlags).where(eq(moderationFlags.nodeId, id));
-  await db.delete(knowledgeNodes).where(eq(knowledgeNodes.id, id));
+  // Delete related data in a transaction to prevent partial deletes
+  await db.transaction(async (tx) => {
+    await tx.delete(knowledgeEdges).where(
+      or(eq(knowledgeEdges.sourceId, id), eq(knowledgeEdges.targetId, id))
+    );
+    await tx.delete(votes).where(eq(votes.nodeId, id));
+    await tx.delete(executionProofs).where(eq(executionProofs.nodeId, id));
+    await tx.delete(moderationFlags).where(eq(moderationFlags.nodeId, id));
+    await tx.delete(knowledgeNodes).where(eq(knowledgeNodes.id, id));
+  });
 
   return NextResponse.json({ data: { deleted: true, id } });
 });

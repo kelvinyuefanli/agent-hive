@@ -98,9 +98,8 @@ describe("withSafety() middleware pipeline", () => {
     const res = await handler(req, {});
     expect(res.status).toBe(200);
 
-    // Auth is called before rate limit in the code (auth at step 2, rateLimit at step 1 but
-    // for authenticated routes, auth runs first to get orgId, then rateLimit uses orgId)
-    expect(callOrder).toEqual(["auth", "rateLimit", "handler"]);
+    // Rate limit runs first (by IP), then auth
+    expect(callOrder).toEqual(["rateLimit", "auth", "handler"]);
   });
 
   it("rejects missing API key with 401", async () => {

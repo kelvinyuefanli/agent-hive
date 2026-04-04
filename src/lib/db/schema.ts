@@ -102,6 +102,7 @@ export const knowledgeNodes = pgTable(
     index("knowledge_nodes_agent_id_idx").on(table.agentId),
     index("knowledge_nodes_type_idx").on(table.type),
     index("knowledge_nodes_trust_level_idx").on(table.trustLevel),
+    index("knowledge_nodes_score_idx").on(table.score),
   ],
 );
 
@@ -140,6 +141,11 @@ export const knowledgeEdges = pgTable(
       table.relation,
     ),
     index("knowledge_edges_target_relation_idx").on(
+      table.targetId,
+      table.relation,
+    ),
+    uniqueIndex("knowledge_edges_source_target_relation_unique").on(
+      table.sourceId,
       table.targetId,
       table.relation,
     ),

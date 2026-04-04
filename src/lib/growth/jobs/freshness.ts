@@ -7,7 +7,7 @@ export const freshness: EnricherJob = {
 
   async process(tx): Promise<{ processed: number; created: number }> {
     // 1. Get all unique node_ids from read_signals
-    const signals = await tx.select().from(readSignals);
+    const signals = await tx.select().from(readSignals).limit(50000);
 
     if (signals.length === 0) {
       return { processed: 0, created: 0 };

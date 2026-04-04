@@ -37,7 +37,7 @@ describe('freshness', () => {
     ];
 
     tx.select.mockReturnValueOnce({
-      from: vi.fn().mockResolvedValue(signals),
+      from: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(signals) }),
     });
 
     const result = await freshness.process(tx);
@@ -52,7 +52,7 @@ describe('freshness', () => {
     const tx = makeTx();
 
     tx.select.mockReturnValueOnce({
-      from: vi.fn().mockResolvedValue([]),
+      from: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
     });
 
     const result = await freshness.process(tx);
@@ -74,7 +74,7 @@ describe('freshness', () => {
     ];
 
     tx.select.mockReturnValueOnce({
-      from: vi.fn().mockResolvedValue(signals),
+      from: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(signals) }),
     });
 
     const result = await freshness.process(tx);
@@ -89,7 +89,7 @@ describe('freshness', () => {
     const signals = [{ nodeId: 'node-1' }, { nodeId: 'node-2' }];
 
     tx.select.mockReturnValueOnce({
-      from: vi.fn().mockResolvedValue(signals),
+      from: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(signals) }),
     });
 
     const result = await freshness.process(tx);

@@ -88,21 +88,19 @@ export function withSafety<T = unknown>(config: SafetyConfig = {}) {
         const effectiveRateLimit =
           rateLimit ?? (isMutating ? RATE_LIMIT_DEFAULTS.write : RATE_LIMIT_DEFAULTS.read);
 
-        // ── 1. Rate limit ──────────────────────────────────────────────
-        // We need an org identifier; for unauthenticated routes we use IP.
-        let orgId = "anonymous";
+        // ── 1. Pre-auth rate limit (by IP) ─────────────────────────────
+        const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+        checkRateLimit(`ip:${ip}`, req.nextUrl.pathname, effectiveRateLimit);
+
+        // ── 2. Auth check ─────────────────────────────────────────────
         let org: AuthResult["org"] | null = null;
         let agent: AuthResult["agent"] | null = null;
 
         if (requireAuth) {
-          // ── 2. Auth check ────────────────────────────────────────────
           const authResult = await verifyApiKey(req);
           org = authResult.org;
           agent = authResult.agent;
-          orgId = org.id;
         }
-
-        checkRateLimit(orgId, req.nextUrl.pathname, effectiveRateLimit);
 
         // ── 3. Size guard (mutating requests) ──────────────────────────
         if (isMutating) {

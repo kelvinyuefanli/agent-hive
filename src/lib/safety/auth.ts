@@ -35,12 +35,6 @@ export async function verifyApiKey(request: NextRequest): Promise<AuthResult> {
     throw new AuthError("Missing API key");
   }
 
-  const keyPrefix = rawKey.slice(0, 8);
-  const endpoint = request.nextUrl.pathname;
-  console.log(
-    `[auth] key_prefix=${keyPrefix} endpoint=${endpoint}`,
-  );
-
   const keyHash = createHash("sha256").update(rawKey).digest("hex");
 
   const [org] = await db
