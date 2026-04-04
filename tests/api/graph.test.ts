@@ -29,6 +29,15 @@ function makeRequest(): NextRequest {
   });
 }
 
+// The new query returns nodes and edges in a single UNION ALL result
+function makeNodeRow(id: string, label: string, type: string, score: number, trust: string) {
+  return { _kind: "node", id, label, type, score, trust, source: null, target: null, relation: null };
+}
+
+function makeEdgeRow(source: string, target: string, relation: string) {
+  return { _kind: "edge", id: null, label: null, type: null, score: null, trust: null, source, target, relation };
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 describe("GET /api/v1/graph", () => {
@@ -37,7 +46,7 @@ describe("GET /api/v1/graph", () => {
   });
 
   it("returns empty nodes and edges arrays on empty DB", async () => {
-    mockExecute.mockResolvedValueOnce([]); // nodes query
+    mockExecute.mockResolvedValueOnce([]);
 
     const res = await GET(makeRequest(), {});
     expect(res.status).toBe(200);
@@ -48,17 +57,9 @@ describe("GET /api/v1/graph", () => {
   });
 
   it("returns nodes with correct shape (id, label, type, score, trust)", async () => {
-    mockExecute
-      .mockResolvedValueOnce([
-        {
-          id: "node-1",
-          label: "How to parse JSON?",
-          type: "question",
-          score: 42,
-          trust: "verified",
-        },
-      ])
-      .mockResolvedValueOnce([]); // edges query
+    mockExecute.mockResolvedValueOnce([
+      makeNodeRow("node-1", "How to parse JSON?", "question", 42, "verified"),
+    ]);
 
     const res = await GET(makeRequest(), {});
     const json = await res.json();
@@ -73,14 +74,11 @@ describe("GET /api/v1/graph", () => {
   });
 
   it("returns only edges between returned nodes", async () => {
-    mockExecute
-      .mockResolvedValueOnce([
-        { id: "node-1", label: "A", type: "answer", score: 10, trust: "unverified" },
-        { id: "node-2", label: "B", type: "question", score: 5, trust: "unverified" },
-      ])
-      .mockResolvedValueOnce([
-        { source: "node-1", target: "node-2", relation: "answers" },
-      ]);
+    mockExecute.mockResolvedValueOnce([
+      makeNodeRow("node-1", "A", "answer", 10, "unverified"),
+      makeNodeRow("node-2", "B", "question", 5, "unverified"),
+      makeEdgeRow("node-1", "node-2", "answers"),
+    ]);
 
     const res = await GET(makeRequest(), {});
     const json = await res.json();
@@ -93,36 +91,25 @@ describe("GET /api/v1/graph", () => {
     });
   });
 
-  it("limits to 100 nodes max", async () => {
-    // The SQL query contains LIMIT 100; we simulate the DB returning exactly 100
-    const hundredNodes = Array.from({ length: 100 }, (_, i) => ({
-      id: `node-${i}`,
-      label: `Node ${i}`,
-      type: "answer",
-      score: 100 - i,
-      trust: "unverified",
-    }));
+  it("returns 200 nodes from combined result", async () => {
+    const rows = Array.from({ length: 200 }, (_, i) =>
+      makeNodeRow(`node-${i}`, `Node ${i}`, "answer", 200 - i, "unverified"),
+    );
 
-    mockExecute
-      .mockResolvedValueOnce(hundredNodes)
-      .mockResolvedValueOnce([]);
+    mockExecute.mockResolvedValueOnce(rows);
 
     const res = await GET(makeRequest(), {});
     const json = await res.json();
 
-    expect(json.data.nodes).toHaveLength(100);
+    expect(json.data.nodes).toHaveLength(200);
   });
 
   it("orders nodes by score DESC", async () => {
-    const nodes = [
-      { id: "node-high", label: "High", type: "answer", score: 99, trust: "verified" },
-      { id: "node-mid", label: "Mid", type: "answer", score: 50, trust: "unverified" },
-      { id: "node-low", label: "Low", type: "question", score: 1, trust: "unverified" },
-    ];
-
-    mockExecute
-      .mockResolvedValueOnce(nodes)
-      .mockResolvedValueOnce([]);
+    mockExecute.mockResolvedValueOnce([
+      makeNodeRow("node-high", "High", "answer", 99, "verified"),
+      makeNodeRow("node-mid", "Mid", "answer", 50, "unverified"),
+      makeNodeRow("node-low", "Low", "question", 1, "unverified"),
+    ]);
 
     const res = await GET(makeRequest(), {});
     const json = await res.json();

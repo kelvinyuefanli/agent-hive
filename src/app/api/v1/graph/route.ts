@@ -6,27 +6,29 @@ import { sql } from "drizzle-orm";
 export const GET = withSafety({
   requireAuth: false,
 })(async () => {
-  // Top 500 nodes by score
-  const nodeRows = await db.execute(sql`
-    SELECT id, title AS label, type, score, trust_level AS trust
-    FROM knowledge_nodes
-    ORDER BY score DESC
-    LIMIT 500
+  // Single query: top 200 nodes + their interconnecting edges (capped at 2000)
+  const result = await db.execute(sql`
+    WITH top_nodes AS (
+      SELECT id, title AS label, type, score, trust_level AS trust
+      FROM knowledge_nodes
+      ORDER BY score DESC
+      LIMIT 200
+    ),
+    top_edges AS (
+      SELECT e.source_id AS source, e.target_id AS target, e.relation
+      FROM knowledge_edges e
+      INNER JOIN top_nodes s ON e.source_id = s.id
+      INNER JOIN top_nodes t ON e.target_id = t.id
+      LIMIT 2000
+    )
+    SELECT 'node' AS _kind, id, label, type, score, trust, NULL AS source, NULL AS target, NULL AS relation FROM top_nodes
+    UNION ALL
+    SELECT 'edge' AS _kind, NULL, NULL, NULL, NULL, NULL, source, target, relation FROM top_edges
   `);
 
-  const nodes = Array.from(nodeRows) as Record<string, unknown>[];
-  const nodeIds = nodes.map((n) => n.id as string);
-
-  let edges: Record<string, unknown>[] = [];
-  if (nodeIds.length > 0) {
-    const edgeRows = await db.execute(sql`
-      SELECT source_id AS source, target_id AS target, relation
-      FROM knowledge_edges
-      WHERE source_id = ANY(ARRAY[${sql.join(nodeIds.map(id => sql`${id}::uuid`), sql`,`)}])
-        AND target_id = ANY(ARRAY[${sql.join(nodeIds.map(id => sql`${id}::uuid`), sql`,`)}])
-    `);
-    edges = Array.from(edgeRows) as Record<string, unknown>[];
-  }
+  const rows = Array.from(result) as Record<string, unknown>[];
+  const nodes = rows.filter((r) => r._kind === "node").map(({ _kind, source, target, relation, ...n }) => n);
+  const edges = rows.filter((r) => r._kind === "edge").map(({ _kind, id, label, type, score, trust, ...e }) => e);
 
   return successResponse({ nodes, edges });
 });
