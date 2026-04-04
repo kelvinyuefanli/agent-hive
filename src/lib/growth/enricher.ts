@@ -53,8 +53,13 @@ export async function runEnricherCycle(): Promise<void> {
   }
 
   try {
-    // 2. Check circuit breaker
-    const breaker = await checkCircuitBreaker();
+    // 2. Check circuit breaker (graceful if schema incomplete)
+    let breaker = { tripped: false, reason: undefined as string | undefined };
+    try {
+      breaker = await checkCircuitBreaker();
+    } catch (error) {
+      console.warn("[enricher] Circuit breaker check failed (schema may be incomplete):", error);
+    }
     if (breaker.tripped) {
       const durationMs = Date.now() - startTime;
       console.log(
@@ -88,8 +93,13 @@ export async function runEnricherCycle(): Promise<void> {
     await db.transaction(async (tx) => {
       for (const config of jobConfigs) {
         if (!isJobEnabled(config.envVar)) continue;
-        const result = await config.job.process(tx);
-        results[config.job.name] = result;
+        try {
+          const result = await config.job.process(tx);
+          results[config.job.name] = result;
+        } catch (error) {
+          console.warn(`[enricher] Job ${config.shortName} failed (skipping):`, error);
+          results[config.job.name] = { processed: 0, created: 0 };
+        }
       }
 
       // Batched TTL sweep: delete signals older than 24h in batches
@@ -133,62 +143,37 @@ export async function runEnricherCycle(): Promise<void> {
         totalReadDeleted += deleted;
       } while (deleted >= DELETE_BATCH_SIZE);
 
-      // Batched delete for outcome_reports (7-day TTL)
+      // Batched delete for new tables (7-day TTL) — graceful if tables don't exist yet
       let totalOutcomeDeleted = 0;
-      do {
-        const result = await tx.execute(sql`
-          WITH deleted AS (
-            DELETE FROM outcome_reports
-            WHERE id IN (
-              SELECT id FROM outcome_reports
-              WHERE created_at < NOW() - INTERVAL '${sql.raw(String(OUTCOME_TTL_HOURS))} hours'
-              LIMIT ${DELETE_BATCH_SIZE}
-            )
-            RETURNING id
-          )
-          SELECT count(*)::int AS cnt FROM deleted
-        `);
-        deleted = Number((result as unknown as Array<{ cnt: number }>)[0]?.cnt ?? 0);
-        totalOutcomeDeleted += deleted;
-      } while (deleted >= DELETE_BATCH_SIZE);
-
-      // Batched delete for usage_reports (7-day TTL)
       let totalUsageDeleted = 0;
-      do {
-        const result = await tx.execute(sql`
-          WITH deleted AS (
-            DELETE FROM usage_reports
-            WHERE id IN (
-              SELECT id FROM usage_reports
-              WHERE created_at < NOW() - INTERVAL '${sql.raw(String(OUTCOME_TTL_HOURS))} hours'
-              LIMIT ${DELETE_BATCH_SIZE}
-            )
-            RETURNING id
-          )
-          SELECT count(*)::int AS cnt FROM deleted
-        `);
-        deleted = Number((result as unknown as Array<{ cnt: number }>)[0]?.cnt ?? 0);
-        totalUsageDeleted += deleted;
-      } while (deleted >= DELETE_BATCH_SIZE);
-
-      // Batched delete for failure_reports (7-day TTL)
       let totalFailureDeleted = 0;
-      do {
-        const result = await tx.execute(sql`
-          WITH deleted AS (
-            DELETE FROM failure_reports
-            WHERE id IN (
-              SELECT id FROM failure_reports
-              WHERE created_at < NOW() - INTERVAL '${sql.raw(String(OUTCOME_TTL_HOURS))} hours'
-              LIMIT ${DELETE_BATCH_SIZE}
-            )
-            RETURNING id
-          )
-          SELECT count(*)::int AS cnt FROM deleted
-        `);
-        deleted = Number((result as unknown as Array<{ cnt: number }>)[0]?.cnt ?? 0);
-        totalFailureDeleted += deleted;
-      } while (deleted >= DELETE_BATCH_SIZE);
+
+      for (const table of ["outcome_reports", "usage_reports", "failure_reports"]) {
+        try {
+          let tableDeleted = 0;
+          do {
+            const result = await tx.execute(sql`
+              WITH deleted AS (
+                DELETE FROM ${sql.raw(table)}
+                WHERE id IN (
+                  SELECT id FROM ${sql.raw(table)}
+                  WHERE created_at < NOW() - INTERVAL '${sql.raw(String(OUTCOME_TTL_HOURS))} hours'
+                  LIMIT ${DELETE_BATCH_SIZE}
+                )
+                RETURNING id
+              )
+              SELECT count(*)::int AS cnt FROM deleted
+            `);
+            deleted = Number((result as unknown as Array<{ cnt: number }>)[0]?.cnt ?? 0);
+            tableDeleted += deleted;
+          } while (deleted >= DELETE_BATCH_SIZE);
+          if (table === "outcome_reports") totalOutcomeDeleted = tableDeleted;
+          else if (table === "usage_reports") totalUsageDeleted = tableDeleted;
+          else totalFailureDeleted = tableDeleted;
+        } catch {
+          // Table may not exist yet — skip silently
+        }
+      }
 
       // Store sweep count for logging
       (results as any).__signalsSwept = totalSearchDeleted + totalReadDeleted + totalOutcomeDeleted + totalUsageDeleted + totalFailureDeleted;
